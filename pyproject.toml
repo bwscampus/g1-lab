@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "g1-lab"
+version = "0.1.0"
+description = "Policies for the Unitree G1 and the check / sim / robot environments that run them"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+]
+
+[project.optional-dependencies]
+# MuJoCo viewer stage. unitree_sdk2py is not on PyPI; install it from
+# https://github.com/unitreerobotics/unitree_sdk2_python for --env robot.
+sim = ["mujoco>=3.1", "mujoco-menagerie"]
+dev = ["pytest"]
+
+[project.scripts]
+g1 = "run:main"
+
+[tool.setuptools]
+py-modules = ["config", "policy", "run"]
+packages = ["envs", "policies"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
