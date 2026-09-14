@@ -11,7 +11,7 @@ Two modes, ``--mode`` (required, no default):
             Damp -> FSM 4 (locked stand) -> FSM 200 (main operation) -> run
             -> release arms -> Damp
   standing  robot must already be in FSM 4 (locked stand) or the run aborts:
-            FSM 200 -> run -> release arms. Stays in FSM 200; never damps.
+            FSM 200 -> run -> release arms -> FSM 4. Never damps.
 
 Pre-flight:
   * robot NOT in debug mode
@@ -104,7 +104,7 @@ class RobotEnv(Env):
                        help="network interface or IP of the robot (required for --env robot)")
         g.add_argument("--mode", choices=sorted(MODES), default=None,
                        help="required for --env robot. gantry: Damp->FSM4->FSM200, run, release, Damp. "
-                            "standing: require FSM 4, ->FSM200, run, release, no Damp")
+                            "standing: require FSM 4, ->FSM200, run, release, ->FSM4, no Damp")
         g.add_argument("--countdown", type=int, default=3,
                        help="seconds to count down before taking over the arms")
 
@@ -145,7 +145,7 @@ class RobotEnv(Env):
 
     def teardown(self) -> None:
         # Whatever happened (normal end, Ctrl-C, exception): release the arms,
-        # then damp only in gantry mode.
+        # then Damp (gantry) or return to FSM 4 locked stand (standing).
         arm = getattr(self, "arm", None)
         if arm is not None:
             print("Releasing arms")
@@ -157,6 +157,10 @@ class RobotEnv(Env):
             print("Damp")
             loco.Damp()
             time.sleep(1.0)
+        else:  # standing
+            print("FSM 4 (locked stand)")
+            loco.SetFsmId(FSM_LOCKED_STAND)
+            time.sleep(3.0)
         print("fsm:", self._fsm(), " Done.")
 
     def reset(self) -> np.ndarray:

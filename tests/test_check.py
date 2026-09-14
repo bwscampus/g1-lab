@@ -2,8 +2,9 @@ import numpy as np
 
 from config import LEFT_ARM, UPPER_BODY
 from envs import CheckEnv
-from policies import TPose
+from motions import TPose
 from policy import Policy, Segment, SegmentPolicy
+from routines import Routine
 from run import build_parser, run
 
 
@@ -14,7 +15,7 @@ def make_check(*extra):
 
 def test_tpose_passes_check():
     env = make_check()
-    assert run(TPose(), env) is True
+    assert run(Routine(TPose()), env) is True
     assert env.violations == []
     assert env.ticks == int(round(18.0 / 0.02))
 

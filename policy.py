@@ -13,7 +13,7 @@ from typing import Callable, Optional, Sequence
 
 import numpy as np
 
-from config import CONTROL_DT, NUM_JOINTS
+from config import CONTROL_DT, NUM_JOINTS, UPPER_BODY
 
 
 @dataclass
@@ -84,11 +84,34 @@ class Segment:
 
 class SegmentPolicy(Policy):
     """Chain of interpolated pose segments. Each segment starts from where the
-    previous one ended; the very first starts from the pose observed at reset."""
+    previous one ended; the very first starts from the pose observed at reset.
+
+    Segments, joints and name can be given to the constructor or, in subclass
+    style, as class attributes."""
 
     segments: Sequence[Segment] = ()
 
+    def __init__(self, segments: Sequence[Segment] | None = None, *,
+                 joints: list[int] | None = None, name: str | None = None) -> None:
+        if segments is not None:
+            self.segments = tuple(segments)
+        if joints is not None:
+            self.joints = list(joints)
+        if name is not None:
+            self.name = name
+
+    @property
+    def duration(self) -> float:
+        return sum(seg.duration for seg in self.segments)
+
     def reset(self, q0: np.ndarray) -> None:
+        allowed = set(self.joints)
+        for seg in self.segments:
+            if isinstance(seg.goal, dict):
+                bad = sorted(set(seg.goal) - allowed)
+                if bad:
+                    raise ValueError(f"[{self.name}] segment {seg.label!r} sets joints {bad} "
+                                     f"outside this policy's joints")
         self._q0 = np.array(q0, dtype=float)
         self._start = {j: float(q0[j]) for j in self.joints}
         # Resolve each segment's start/goal into concrete poses.
@@ -115,3 +138,27 @@ class SegmentPolicy(Policy):
                     out[j] = start[j] + a * (goal[j] - start[j])
                 return self.action(out, weight=seg.weight(a))
         return None
+
+
+class Motion:
+    """A reusable building block: a factory for a tuple of Segments, with NO
+    takeover/handback bookends. Routines (see routines.py) concatenate motions
+    and add the bookends once.
+
+    Contract:
+      * never use the "start" goal (reserved for the Takeover bookend)
+      * the first segment should specify the motion's full entry pose so it is
+        robust to whatever motion preceded it
+      * a motion may end anywhere; the Handback bookend returns to STAND
+    Parametrise via __init__ (e.g. ``TPose(hold=5.0)``, ``SixSeven(reps=3)``).
+    """
+
+    name: str = "motion"
+    joints: list[int] = UPPER_BODY
+
+    def segments(self) -> tuple[Segment, ...]:
+        raise NotImplementedError
+
+    @property
+    def duration(self) -> float:
+        return sum(seg.duration for seg in self.segments())

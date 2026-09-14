@@ -1,6 +1,6 @@
 # g1-lab
 
-Monorepo for Unitree G1 movement policies. Every policy goes through the same
+Monorepo for Unitree G1 movement routines. Every routine goes through the same
 three stages, chosen with one flag on the run command:
 
 | stage   | `--env` | what it does |
@@ -13,11 +13,12 @@ three stages, chosen with one flag on the run command:
 python   run.py --env check --policy tpose
 mjpython run.py --env sim   --policy tpose            # macOS needs mjpython for the viewer
 python   run.py --env robot --policy tpose --iface eth0 --mode gantry
+python   run.py --env robot --policy sixseven --iface eth0 --mode standing
 ```
 
 After `pip install -e .`, `g1` is a shortcut for `python run.py`. `--env` falls back to
 `$G1_ENV` and `--policy` to `$G1_POLICY`, so `G1_ENV=sim g1 -p tpose` also works.
-`g1 --list` prints the registered envs and policies; `g1 --help` shows every
+`g1 --list` prints the registered envs, routines and motions; `g1 --help` shows every
 env's flags.
 
 ## Setup
@@ -42,34 +43,52 @@ envs/
   check.py          stage 1
   sim.py            stage 2
   robot.py          stage 3 (ArmSdk publisher + LocoClient bring-up)
-policies/
-  tpose.py          neutral -> T-pose -> neutral (neutral -> arms out -> neutral)
+motions/            reusable building blocks (no takeover/handback), MOTIONS registry
+  poses.py          shared pose dicts: STAND (baseline), ARMS_UP, SIXSEVEN
+  bookends.py       Takeover, Handback, Hold
+  tpose.py          TPose(hold, rise)
+  sixseven.py       SixSeven(reps, swing_time, ...)
+routines.py         Routine = Takeover + motions (+ pauses) + Handback; ROUTINES registry
 tests/              pytest; the sim test runs headless
 ```
 
-## Writing a policy
+## Motions and routines
 
-A policy commands a set of joints and returns an `Action` per 20 ms tick, or
-`None` when done. It never knows which env it is in.
+A **motion** is a reusable building block: a class returning a tuple of pose
+segments, with no takeover/handback. Its first segment should set its full entry
+pose so it works after any other motion; it may end anywhere. It must not use
+the `"start"` goal (reserved for the takeover bookend). Parameters go through
+`__init__`.
 
 ```python
-from config import UPPER_BODY
-from policy import Segment, SegmentPolicy
+from motions.poses import STAND
+from policy import Motion, Segment
 
-class Wave(SegmentPolicy):
+class Wave(Motion):
     name = "wave"
-    joints = UPPER_BODY
-    segments = (
-        Segment("start", 2.0, weight=lambda a: a),   # ramp arm_sdk weight in while holding
-        Segment({18: 0.5}, 1.5),                     # left elbow
-        Segment({18: 1.5}, 1.5),
-        Segment("start", 2.0, weight=lambda a: 1 - a),
-    )
+
+    def __init__(self, reps: int = 2):
+        self.reps = reps
+
+    def segments(self):
+        out = [Segment(STAND, 2.0, label="to stand")]
+        for _ in range(self.reps):
+            out += [Segment({18: 0.5}, 0.8, label="elbow up"), Segment({18: 1.28}, 0.8)]
+        return tuple(out)
 ```
 
-Register it in `policies/__init__.py`, then run it through `check`, `sim`,
-`robot` in that order. For anything not expressible as pose segments, subclass
-`Policy` directly and implement `reset(q0)` and `step(t, q)`.
+Register it in `motions/__init__.py`, then it is runnable on its own
+(`--policy wave`) or chained (`--policy tpose,wave`). A **routine** wraps motions
+with the bookends exactly once: takeover, motion, pause, motion, ..., handback.
+The baseline both bookends go to is `STAND`, the Menagerie `stand` keyframe's relaxed
+hanging-arm pose, which is also what `check` and `sim` start from.
+Name a composition in `routines.py` (`ROUTINES["demo"]`) when it is worth keeping.
+
+Composition happens at the segment level, so every transition between motions is
+one continuous command stream and the `check` env's velocity limit covers it.
+
+For anything not expressible as pose segments, subclass `Policy` directly and
+implement `reset(q0)` and `step(t, q)`.
 
 ### Robot modes
 
@@ -80,8 +99,8 @@ gantry. Damp, FSM 4 (locked stand), FSM 200 (main operation), run the policy,
 release the arms, Damp.
 
 `--mode standing`: the robot must already be in FSM 4 (locked stand) or the run
-aborts. Goes to FSM 200, runs the policy, releases the arms and leaves the robot
-in FSM 200. It never damps.
+aborts. Goes to FSM 200, runs the policy, releases the arms and returns the
+robot to FSM 4. It never damps.
 
 Both modes release the arms on exit, including on Ctrl-C. Pre-flight for either:
 not in debug mode, clear space around the arms, someone on the remote with L2+B

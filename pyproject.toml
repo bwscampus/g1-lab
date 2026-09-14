@@ -21,8 +21,8 @@ dev = ["pytest"]
 g1 = "run:main"
 
 [tool.setuptools]
-py-modules = ["config", "policy", "run"]
-packages = ["envs", "policies"]
+py-modules = ["config", "policy", "run", "routines"]
+packages = ["envs", "motions"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
