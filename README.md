@@ -12,7 +12,7 @@ three stages, chosen with one flag on the run command:
 ```
 python   run.py --env check --policy tpose
 mjpython run.py --env sim   --policy tpose            # macOS needs mjpython for the viewer
-python   run.py --env robot --policy tpose --iface eth0
+python   run.py --env robot --policy tpose --iface eth0 --mode gantry
 ```
 
 After `pip install -e .`, `g1` is a shortcut for `python run.py`. `--env` falls back to
@@ -71,8 +71,18 @@ Register it in `policies/__init__.py`, then run it through `check`, `sim`,
 `robot` in that order. For anything not expressible as pose segments, subclass
 `Policy` directly and implement `reset(q0)` and `step(t, q)`.
 
-### Robot pre-flight
+### Robot modes
 
-Robot standing on the floor in FSM 200, not in debug mode, clear space around
-the arms, someone on the remote with L2+B ready. The robot env always releases
-the arms and damps on exit, including on Ctrl-C.
+`--mode` is required for `--env robot`; there is no default.
+
+`--mode gantry`: full bring-up and shutdown for a robot hanging in a
+gantry. Damp, FSM 4 (locked stand), FSM 200 (main operation), run the policy,
+release the arms, Damp.
+
+`--mode standing`: the robot must already be in FSM 4 (locked stand) or the run
+aborts. Goes to FSM 200, runs the policy, releases the arms and leaves the robot
+in FSM 200. It never damps.
+
+Both modes release the arms on exit, including on Ctrl-C. Pre-flight for either:
+not in debug mode, clear space around the arms, someone on the remote with L2+B
+ready.

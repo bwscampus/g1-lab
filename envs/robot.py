@@ -1,17 +1,24 @@
 """Stage 3: live deployment through unitree_sdk2py.
 
-High-level bring-up with LocoClient (Damp -> FSM 4 locked stand -> FSM 200 main
-operation, ai_sport balancing), then upper-body targets are published on
-``rt/arm_sdk`` at 50 Hz with the blend weight in ``motor_cmd[29].q``. Same
-handover protocol as the original standalone script: release any stale takeover first,
-read a fresh LowState, and always release + damp in teardown.
+High-level control with LocoClient, then upper-body targets published on
+``rt/arm_sdk`` at 50 Hz with the blend weight in ``motor_cmd[29].q``. Handover
+protocol: release any stale takeover first, read a fresh LowState, and always
+release the arms in teardown (normal end, Ctrl-C, or exception).
+
+Two modes, ``--mode`` (required, no default):
+
+  gantry    full bring-up and shutdown, for a robot hanging in a gantry:
+            Damp -> FSM 4 (locked stand) -> FSM 200 (main operation) -> run
+            -> release arms -> Damp
+  standing  robot must already be in FSM 4 (locked stand) or the run aborts:
+            FSM 200 -> run -> release arms. Stays in FSM 200; never damps.
 
 Pre-flight:
-  * robot standing on the floor, NOT in debug mode
+  * robot NOT in debug mode
   * clear space around the arms
   * someone on the remote with L2+B ready
 
-    python run.py --env robot --policy tpose --iface eth0
+    python run.py --env robot --policy tpose --iface eth0 --mode standing
 """
 from __future__ import annotations
 
@@ -23,6 +30,11 @@ import numpy as np
 from config import ARM_SDK_WEIGHT_IDX, CONTROL_DT, NUM_JOINTS, UPPER_BODY
 from policy import Action
 from envs.base import Env
+
+
+FSM_LOCKED_STAND = 4
+FSM_MAIN = 200
+MODES = ("gantry", "standing")
 
 
 class ArmSdk:
@@ -90,14 +102,18 @@ class RobotEnv(Env):
         g = parser.add_argument_group("robot")
         g.add_argument("--iface", default=None,
                        help="network interface or IP of the robot (required for --env robot)")
-        g.add_argument("--skip-bringup", action="store_true",
-                       help="assume the robot is already in FSM 200; skip Damp/FSM4/FSM200")
+        g.add_argument("--mode", choices=sorted(MODES), default=None,
+                       help="required for --env robot. gantry: Damp->FSM4->FSM200, run, release, Damp. "
+                            "standing: require FSM 4, ->FSM200, run, release, no Damp")
         g.add_argument("--countdown", type=int, default=3,
                        help="seconds to count down before taking over the arms")
 
     def setup(self) -> None:
         if not self.args.iface:
             raise SystemExit("--env robot requires --iface <network_interface_or_ip>")
+        if self.args.mode not in MODES:
+            raise SystemExit("--env robot requires --mode gantry|standing (no default: "
+                             "gantry damps the robot at the end, standing does not)")
         from unitree_sdk2py.core.channel import ChannelFactoryInitialize
         from unitree_sdk2py.g1.loco.g1_loco_client import LocoClient
 
@@ -106,28 +122,42 @@ class RobotEnv(Env):
         self.loco.SetTimeout(10.0)
         self.loco.Init()
 
-        if not self.args.skip_bringup:
-            print("Damp");                self.loco.Damp();        time.sleep(1.0)
-            print("FSM 4 (locked stand)"); self.loco.SetFsmId(4);   time.sleep(7.0)
-            print("FSM 200 (main operation)"); self.loco.SetFsmId(200); time.sleep(3.0)
-        print("fsm:", self.loco.GetFsmId(), "(robot should be balancing on its own now)")
+        if self.args.mode == "gantry":
+            print("Damp");                     self.loco.Damp();        time.sleep(1.0)
+            print("FSM 4 (locked stand)");     self.loco.SetFsmId(4);   time.sleep(7.0)
+        else:  # standing
+            fsm = self._fsm()
+            if fsm != FSM_LOCKED_STAND:
+                raise SystemExit(f"--mode standing requires the robot in FSM {FSM_LOCKED_STAND} "
+                                 f"(locked stand); it reports FSM {fsm}")
+        print("FSM 200 (main operation)");     self.loco.SetFsmId(FSM_MAIN); time.sleep(3.0)
+        print("fsm:", self._fsm(), "(robot should be balancing on its own now)")
         for s in range(self.args.countdown, 0, -1):
             print(f"Taking over arms in {s}...")
             time.sleep(1.0)
         self.arm = ArmSdk()
 
+    def _fsm(self):
+        code, fsm = self.loco.GetFsmId()
+        if code != 0:
+            raise RuntimeError(f"GetFsmId failed with code {code}")
+        return fsm
+
     def teardown(self) -> None:
-        # Whatever happened (normal end, Ctrl-C, exception): release, then damp.
+        # Whatever happened (normal end, Ctrl-C, exception): release the arms,
+        # then damp only in gantry mode.
         arm = getattr(self, "arm", None)
         if arm is not None:
             print("Releasing arms")
             arm.release(1.0)
         loco = getattr(self, "loco", None)
-        if loco is not None:
+        if loco is None:
+            return
+        if self.args.mode == "gantry":
             print("Damp")
             loco.Damp()
             time.sleep(1.0)
-            print("fsm:", loco.GetFsmId(), " Done.")
+        print("fsm:", self._fsm(), " Done.")
 
     def reset(self) -> np.ndarray:
         print("Releasing any stale arm_sdk state")

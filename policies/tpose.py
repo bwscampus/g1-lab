@@ -29,6 +29,7 @@ class TPose(SegmentPolicy):
         Segment("start", 2.0, weight=lambda a: a, label="taking over (hold)"),
         Segment(NEUTRAL, 3.0, label="moving to neutral"),
         Segment(ARMS_UP, 3.0, label="arms up"),
+        Segment(ARMS_UP, 5.0, label="holding T-pose"),
         Segment(NEUTRAL, 3.0, label="returning to neutral"),
         # Ramp weight 1->0 at neutral so the controller takes the arms back smoothly.
         Segment(NEUTRAL, 2.0, weight=lambda a: 1.0 - a, label="handing back"),

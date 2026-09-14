@@ -16,7 +16,7 @@ def test_tpose_passes_check():
     env = make_check()
     assert run(TPose(), env) is True
     assert env.violations == []
-    assert env.ticks == int(round(13.0 / 0.02))
+    assert env.ticks == int(round(18.0 / 0.02))
 
 
 class OutOfBounds(SegmentPolicy):
