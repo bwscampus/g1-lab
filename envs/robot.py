@@ -3,7 +3,7 @@
 High-level bring-up with LocoClient (Damp -> FSM 4 locked stand -> FSM 200 main
 operation, ai_sport balancing), then upper-body targets are published on
 ``rt/arm_sdk`` at 50 Hz with the blend weight in ``motor_cmd[29].q``. Same
-handover protocol as arm_movements/tpose.py: release any stale takeover first,
+handover protocol as the original standalone script: release any stale takeover first,
 read a fresh LowState, and always release + damp in teardown.
 
 Pre-flight:

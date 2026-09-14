@@ -1,6 +1,6 @@
 """T-pose: neutral -> arms straight out to the sides -> neutral.
 
-Port of arm_movements/tpose.py onto the Policy interface.
+Ported from the original standalone arm_sdk script onto the Policy interface.
 """
 from __future__ import annotations
 

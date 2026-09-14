@@ -43,8 +43,7 @@ envs/
   sim.py            stage 2
   robot.py          stage 3 (ArmSdk publisher + LocoClient bring-up)
 policies/
-  tpose.py          neutral -> T-pose -> neutral (port of arm_movements/tpose.py)
-arm_movements/      original standalone scripts, kept as-is
+  tpose.py          neutral -> T-pose -> neutral (neutral -> arms out -> neutral)
 tests/              pytest; the sim test runs headless
 ```
 
