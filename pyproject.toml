@@ -14,14 +14,17 @@ dependencies = [
 [project.optional-dependencies]
 # MuJoCo viewer stage. unitree_sdk2py is not on PyPI; install it from
 # https://github.com/unitreerobotics/unitree_sdk2_python for --env robot.
-sim = ["mujoco>=3.1", "mujoco-menagerie"]
-dev = ["pytest"]
+sim = ["mujoco>=3.2", "mujoco-menagerie"]
+# Camera feed. unitree_webrtc_connect is not on PyPI either; install it from
+# https://github.com/legion1581/go2_webrtc_connect for --env robot with a camera policy.
+camera = ["aiortc", "av", "opencv-python"]
+dev = ["pytest", "opencv-python"]
 
 [project.scripts]
 g1 = "run:main"
 
 [tool.setuptools]
-py-modules = ["config", "policy", "run", "routines"]
+py-modules = ["camera", "config", "policy", "run", "routines", "vision"]
 packages = ["envs", "motions"]
 
 [tool.pytest.ini_options]

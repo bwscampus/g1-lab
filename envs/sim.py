@@ -10,6 +10,11 @@ viewed without the robot needing to balance. Pass ``--free-base`` to drop the
 weld (the stiff PD on the legs keeps it standing for a while, but it will not
 balance).
 
+Camera: the model gets a ``head`` camera on ``torso_link`` at the D435 mount.
+For policies that use the camera it is rendered offscreen every
+``--camera-every`` ticks and stamped with sim time. ``--sim-target x,y,z`` adds
+a red sphere for the example camera policies to look at.
+
 macOS: the viewer must run under ``mjpython``:
     mjpython run.py --env sim --policy tpose
 Pass ``--headless`` to run the physics without a window (e.g. in CI).
@@ -17,6 +22,7 @@ Pass ``--headless`` to run the physics without a window (e.g. in CI).
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import sys
 import time
@@ -24,29 +30,57 @@ from pathlib import Path
 
 import numpy as np
 
-from config import CONTROL_DT, NUM_JOINTS
+from camera import Camera
+from config import (CONTROL_DT, HEAD_CAMERA_FOVY, HEAD_CAMERA_PITCH, HEAD_CAMERA_POS,
+                    HEAD_CAMERA_SIZE, NUM_JOINTS)
 from policy import Action
 from envs.base import Env
 
 _LOCAL_MENAGERIE = Path.home() / "Robotics" / "mujoco_menagerie" / "unitree_g1" / "scene.xml"
+HEAD_CAMERA = "head"
 
 
-def load_model():
-    """Return an MjModel of the G1 scene. Priority: $G1_MJCF, pip menagerie, ~/Robotics clone."""
-    import mujoco
-
+def find_mjcf() -> Path:
+    """Path of the G1 scene. Priority: $G1_MJCF, pip menagerie, ~/Robotics clone."""
     env_path = os.environ.get("G1_MJCF")
     if env_path:
-        return mujoco.MjModel.from_xml_path(env_path)
+        return Path(env_path)
     try:
         import mujoco_menagerie
-        return mujoco_menagerie.load("unitree_g1")
-    except Exception:
+        p = Path(mujoco_menagerie.__file__).parent / "unitree_g1" / "scene.xml"
+        if p.exists():
+            return p
+    except ImportError:
         pass
     if _LOCAL_MENAGERIE.exists():
-        return mujoco.MjModel.from_xml_path(str(_LOCAL_MENAGERIE))
+        return _LOCAL_MENAGERIE
     raise FileNotFoundError(
         "No G1 MJCF found. Set G1_MJCF=/path/to/unitree_g1/scene.xml or pip install mujoco-menagerie")
+
+
+def load_model(target: tuple[float, float, float] | None = None):
+    """Compile the G1 scene with the head camera added on torso_link (pose from
+    the URDF's d435_joint; MuJoCo cameras look along -z with y up, hence the
+    xyaxes) and, optionally, a red sphere at ``target`` for camera policies."""
+    import mujoco
+
+    spec = mujoco.MjSpec.from_file(str(find_mjcf()))
+    p = HEAD_CAMERA_PITCH
+    spec.body("torso_link").add_camera(name=HEAD_CAMERA, pos=list(HEAD_CAMERA_POS),
+                                      xyaxes=[0, -1, 0, math.sin(p), 0, math.cos(p)],
+                                      fovy=HEAD_CAMERA_FOVY)
+    if target is not None:
+        body = spec.worldbody.add_body(name="target", pos=list(target))
+        body.add_geom(type=mujoco.mjtGeom.mjGEOM_SPHERE, size=[0.1, 0, 0], rgba=[1, 0, 0, 1],
+                      contype=0, conaffinity=0)
+    return spec.compile()
+
+
+def _xyz(text: str) -> tuple[float, float, float]:
+    parts = [float(v) for v in text.split(",")]
+    if len(parts) != 3:
+        raise argparse.ArgumentTypeError("expected x,y,z")
+    return parts[0], parts[1], parts[2]
 
 
 class SimEnv(Env):
@@ -62,13 +96,17 @@ class SimEnv(Env):
                        help="playback speed multiplier (default 1.0)")
         g.add_argument("--hold-end", type=float, default=2.0,
                        help="seconds to keep the viewer open after the policy finishes")
+        g.add_argument("--camera-every", type=int, default=3,
+                       help="render the head camera every N ticks (default 3, ~16 Hz)")
+        g.add_argument("--sim-target", type=_xyz, default=None, metavar="X,Y,Z",
+                       help="add a red 10 cm sphere at this world position, e.g. 1.0,0.5,0.6")
 
     def setup(self) -> None:
         import mujoco
         import mujoco.viewer
 
         self.mujoco = mujoco
-        self.model = load_model()
+        self.model = load_model(self.args.sim_target)
         self.data = mujoco.MjData(self.model)
         if self.model.nu != NUM_JOINTS:
             raise RuntimeError(f"expected {NUM_JOINTS} actuators, model has {self.model.nu}")
@@ -87,6 +125,11 @@ class SimEnv(Env):
                                  "    mjpython run.py --env sim ...\n"
                                  "or pass --headless.")
             self.viewer = mujoco.viewer.launch_passive(self.model, self.data)
+        self.camera = Camera()
+        self.renderer = None
+        self._tick = 0
+        if self.use_camera:
+            self.renderer = mujoco.Renderer(self.model, *HEAD_CAMERA_SIZE)
 
     def teardown(self) -> None:
         if self.viewer is not None:
@@ -96,6 +139,8 @@ class SimEnv(Env):
                 self.viewer.sync()
                 time.sleep(self.model.opt.timestep)
             self.viewer.close()
+        if self.renderer is not None:
+            self.renderer.close()
 
     def reset(self) -> np.ndarray:
         m, d = self.model, self.data
@@ -107,6 +152,7 @@ class SimEnv(Env):
         self.mujoco.mj_forward(m, d)
         if self.viewer is not None:
             self.viewer.sync()
+        self._render()
         self._wall = time.time()
         return self._q()
 
@@ -122,6 +168,18 @@ class SimEnv(Env):
             d.qvel[:6] = 0.0
         self.mujoco.mj_step(self.model, d)
 
+    def _render(self) -> None:
+        if self.renderer is None:
+            return
+        self.renderer.update_scene(self.data, camera=HEAD_CAMERA)
+        self.camera.publish(self.renderer.render(), self.data.time)
+
+    def frame(self):
+        return self.camera.latest()
+
+    def clock(self) -> float:
+        return float(self.data.time)
+
     def step(self, action: Action) -> np.ndarray:
         if self.viewer is not None and not self.viewer.is_running():
             raise KeyboardInterrupt("viewer closed")
@@ -131,6 +189,9 @@ class SimEnv(Env):
         self.data.ctrl[:] = ctrl
         for _ in range(self.substeps):
             self._physics_tick()
+        self._tick += 1
+        if self._tick % max(1, self.args.camera_every) == 0:
+            self._render()
         if self.viewer is not None:
             self.viewer.sync()
             # pace to wall-clock
@@ -143,5 +204,6 @@ class SimEnv(Env):
     def report(self) -> bool:
         q = self._q()
         print(f"sim: finished at sim time {self.data.time:.2f} s; "
-              f"pelvis z = {self.data.qpos[2]:.3f} m")
+              f"pelvis z = {self.data.qpos[2]:.3f} m"
+              + (f"; {self.camera.count} camera frames" if self.renderer is not None else ""))
         return bool(np.all(np.isfinite(q)))

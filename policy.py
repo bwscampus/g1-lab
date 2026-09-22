@@ -1,9 +1,10 @@
 """Policy interface.
 
-A policy is a stateful function of time and the current joint state that
-returns joint targets for the joints it controls. It knows nothing about
-where those targets go (check / sim / robot), so the same policy object runs
-unchanged through every stage.
+A policy is a stateful function of time and the current observation (joint
+state plus, optionally, the latest camera frame) that returns joint targets
+for the joints it controls. It knows nothing about where those targets go
+(check / sim / robot), so the same policy object runs unchanged through every
+stage.
 """
 from __future__ import annotations
 
@@ -13,7 +14,8 @@ from typing import Callable, Optional, Sequence
 
 import numpy as np
 
-from config import CONTROL_DT, NUM_JOINTS, UPPER_BODY
+from camera import Frame
+from config import CONTROL_DT, JOINT_HI, JOINT_LO, NUM_JOINTS, STAND_Q, UPPER_BODY
 
 
 @dataclass
@@ -40,6 +42,26 @@ class Action:
             raise ValueError(f"Action.q must have shape ({NUM_JOINTS},), got {self.q.shape}")
 
 
+@dataclass
+class Obs:
+    """What a policy sees each tick.
+
+    q:         current joint state (29,)
+    frame:     latest camera frame, or None when the env has no camera
+    frame_age: seconds since that frame was captured, on the env's clock
+               (inf when there is no frame). Frames are latest-only: the same
+               Frame (same ``seq``) is seen every tick until a newer one
+               arrives, so key per-frame work on ``frame.seq``.
+    """
+
+    q: np.ndarray
+    frame: Optional[Frame] = None
+    frame_age: float = math.inf
+
+    def __post_init__(self) -> None:
+        self.q = np.asarray(self.q, dtype=float)
+
+
 class Policy:
     """Base class. Subclass and implement ``reset`` and ``step``."""
 
@@ -48,12 +70,16 @@ class Policy:
     dt: float = CONTROL_DT
     kp: float = 60.0
     kd: float = 1.5
+    uses_camera: bool = False       # the runner only opens a camera for policies that ask
 
-    def reset(self, q0: np.ndarray) -> None:
-        """Called once with the robot's current joint state before the first step."""
+    def reset(self, obs: Obs) -> None:
+        """Called once with the robot's current observation before the first step."""
 
-    def step(self, t: float, q: np.ndarray) -> Optional[Action]:
-        """Return the Action for time ``t`` (seconds since reset), or None when finished."""
+    def step(self, t: float, obs: Obs) -> Optional[Action]:
+        """Return the Action for time ``t`` (seconds since reset), or None when finished.
+
+        Must not block: on the robot the whole tick is 20 ms. Do heavy per-frame
+        work on another thread and read its latest result here."""
         raise NotImplementedError
 
     def action(self, q: np.ndarray, weight: float = 1.0) -> Action:
@@ -104,7 +130,7 @@ class SegmentPolicy(Policy):
     def duration(self) -> float:
         return sum(seg.duration for seg in self.segments)
 
-    def reset(self, q0: np.ndarray) -> None:
+    def reset(self, obs: Obs) -> None:
         allowed = set(self.joints)
         for seg in self.segments:
             if isinstance(seg.goal, dict):
@@ -112,8 +138,8 @@ class SegmentPolicy(Policy):
                 if bad:
                     raise ValueError(f"[{self.name}] segment {seg.label!r} sets joints {bad} "
                                      f"outside this policy's joints")
-        self._q0 = np.array(q0, dtype=float)
-        self._start = {j: float(q0[j]) for j in self.joints}
+        self._q0 = np.array(obs.q, dtype=float)
+        self._start = {j: float(self._q0[j]) for j in self.joints}
         # Resolve each segment's start/goal into concrete poses.
         self._plan: list[tuple[float, float, Pose, Pose, Segment]] = []
         t = 0.0
@@ -126,7 +152,7 @@ class SegmentPolicy(Policy):
         self.total_time = t
         self._last_label: str | None = None
 
-    def step(self, t: float, q: np.ndarray) -> Optional[Action]:
+    def step(self, t: float, obs: Obs) -> Optional[Action]:
         for t0, t1, start, goal, seg in self._plan:
             if t < t1 - 1e-9:
                 a = ease((t - t0) / (t1 - t0))
@@ -162,3 +188,119 @@ class Motion:
     @property
     def duration(self) -> float:
         return sum(seg.duration for seg in self.segments())
+
+
+# --------------------------------------------------------------------------
+# Closed-loop helper: a policy driven by the camera, with the bookends and a
+# safety envelope built in.
+# --------------------------------------------------------------------------
+
+
+class ReactivePolicy(Policy):
+    """A closed-loop policy: implement ``track(t, obs) -> Pose``.
+
+    The check env can only validate the frames it is shown, so a reactive
+    policy never trusts ``track``: every target is clipped to the joint limits
+    minus ``margin`` and rate-limited to ``max_vel`` rad/s from the *last
+    commanded* pose. The defaults sit inside check's ``--margin`` / ``--max-vel``
+    so whatever ``track`` returns becomes a command check accepts.
+
+    ``track`` runs once per new frame (keyed on ``frame.seq``). Between frames,
+    and whenever the frame is older than ``stale_after``, the last pose is held.
+    Its result merges onto the current command, so it may set only some joints.
+
+    Phases mirror the Takeover/Handback bookends: hold the reset pose while
+    ramping weight 0->1 (``ramp``) -> STAND (``to_stand``) -> track for
+    ``duration`` -> STAND (``to_stand``) -> hold while ramping 1->0 (``ramp``).
+    """
+
+    name = "reactive"
+    joints = UPPER_BODY
+    uses_camera = True
+
+    def __init__(self, duration: float = 10.0, *, ramp: float = 2.0, to_stand: float = 3.0,
+                 margin: float = 0.05, max_vel: float = 3.0, stale_after: float = 0.5,
+                 name: str | None = None) -> None:
+        self.track_time = duration
+        self.ramp = ramp
+        self.to_stand = to_stand
+        self.margin = margin
+        self.max_vel = max_vel
+        self.stale_after = stale_after
+        if name is not None:
+            self.name = name
+
+    @property
+    def duration(self) -> float:
+        return 2 * (self.ramp + self.to_stand) + self.track_time
+
+    @property
+    def cmd(self) -> np.ndarray:
+        """The last commanded full q vector (read-only view for ``track``)."""
+        return self._cmd
+
+    def track(self, t: float, obs: Obs) -> Pose:
+        """Targets for a new frame; ``t`` is seconds since tracking began."""
+        raise NotImplementedError
+
+    def reset(self, obs: Obs) -> None:
+        self._q0 = np.array(obs.q, dtype=float)
+        self._cmd = self._q0.copy()
+        self._stand = self._q0.copy()
+        self._stand[self.joints] = STAND_Q[self.joints]
+        self._held: Pose = {}
+        self._last_seq: int | None = None
+        self._exit: np.ndarray | None = None
+        self._last_label: str | None = None
+
+    def _label(self, label: str) -> None:
+        if label != self._last_label:
+            print(f"[{self.name}] {label}")
+            self._last_label = label
+
+    def step(self, t: float, obs: Obs) -> Optional[Action]:
+        r, s, d = self.ramp, self.to_stand, self.track_time
+        if t < r:
+            self._label("taking over (hold)")
+            return self._emit(self._q0, weight=ease(t / r))
+        t -= r
+        if t < s:
+            self._label("moving to stand")
+            return self._emit(self._q0 + ease(t / s) * (self._stand - self._q0))
+        t -= s
+        if t < d:
+            self._label("tracking")
+            f = obs.frame
+            if f is not None and obs.frame_age <= self.stale_after and f.seq != self._last_seq:
+                self._last_seq = f.seq
+                pose = self.track(t, obs)
+                bad = sorted(set(pose) - set(self.joints))
+                if bad:
+                    raise ValueError(f"[{self.name}] track() set joints {bad} outside this "
+                                     f"policy's joints")
+                self._held = dict(pose)
+            target = self._cmd.copy()
+            for j, v in self._held.items():
+                target[j] = v
+            return self._emit(target)
+        t -= d
+        if t < s:
+            self._label("returning to stand")
+            if self._exit is None:
+                self._exit = self._cmd.copy()
+            return self._emit(self._exit + ease(t / s) * (self._stand - self._exit))
+        t -= s
+        if t < r:
+            self._label("handing back")
+            return self._emit(self._stand, weight=1.0 - ease(t / r))
+        return None
+
+    def _emit(self, target: np.ndarray, weight: float = 1.0) -> Action:
+        """Clip to the limits, rate-limit from the last command, and record it."""
+        j = self.joints
+        want = np.clip(target[j], JOINT_LO[j] + self.margin, JOINT_HI[j] - self.margin)
+        step = self.max_vel * self.dt
+        out = self._cmd.copy()
+        out[j] = self._cmd[j] + np.clip(want - self._cmd[j], -step, step)
+        self._cmd = out
+        return self.action(out.copy(), weight=weight)

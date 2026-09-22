@@ -4,9 +4,10 @@ import pytest
 from config import LEFT_ARM, STAND_Q, UPPER_BODY
 from envs import CheckEnv
 from motions import SixSeven, TPose
-from policy import Motion, Segment, SegmentPolicy
-from routines import ROUTINES, Routine, build_policy
+from policy import Motion, Obs, Segment, SegmentPolicy
+from routines import POLICIES, ROUTINES, Routine, Selector, build_policy
 from run import build_parser, main, run
+from vision import Look
 
 
 def make_check():
@@ -14,9 +15,9 @@ def make_check():
 
 
 def actions(policy):
-    policy.reset(STAND_Q)
+    policy.reset(Obs(STAND_Q))
     out, n = [], 0
-    while (a := policy.step(n * policy.dt, STAND_Q)) is not None:
+    while (a := policy.step(n * policy.dt, Obs(STAND_Q))) is not None:
         out.append(a)
         n += 1
     return out
@@ -80,7 +81,7 @@ def test_motion_start_goal_rejected():
 def test_goal_outside_joints_rejected():
     p = SegmentPolicy([Segment({25: 0.0}, 1.0)], joints=LEFT_ARM)
     with pytest.raises(ValueError):
-        p.reset(STAND_Q)
+        p.reset(Obs(STAND_Q))
 
 
 def test_build_policy():
@@ -89,6 +90,9 @@ def test_build_policy():
     r = build_policy("tpose,sixseven")
     assert len(r.motions) == 2 and r.name == "tpose+sixseven"
     assert build_policy("demo").name == "demo"
+    assert isinstance(build_policy("look"), Look)
+    assert isinstance(build_policy("wave_on_red"), Selector)
+    assert set(POLICIES) == {"look", "wave_on_red"}
     with pytest.raises(KeyError):
         build_policy("nope")
     with pytest.raises(KeyError):
@@ -107,7 +111,8 @@ def test_motion_params():
     assert Routine(TPose()).joints == sorted(UPPER_BODY)
 
 
-def test_cli_list_and_unknown():
+def test_cli_list_and_unknown(capsys):
     assert main(["--list"]) == 0
+    assert "policies: look, wave_on_red" in capsys.readouterr().out
     with pytest.raises(SystemExit):
         main(["--env", "check", "--policy", "nope"])

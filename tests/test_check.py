@@ -3,7 +3,7 @@ import numpy as np
 from config import LEFT_ARM, UPPER_BODY
 from envs import CheckEnv
 from motions import TPose
-from policy import Policy, Segment, SegmentPolicy
+from policy import Obs, Policy, Segment, SegmentPolicy
 from routines import Routine
 from run import build_parser, run
 
@@ -36,10 +36,10 @@ class Jump(Policy):
     name = "jump"
     joints = UPPER_BODY
 
-    def step(self, t, q):
+    def step(self, t, obs):
         if t > 0.1:
             return None
-        out = q.copy()
+        out = obs.q.copy()
         out[18] = 2.0 if t < 0.05 else -1.0   # 3 rad in one 20 ms tick
         return self.action(out)
 
@@ -54,8 +54,8 @@ class BadWeight(Policy):
     name = "badweight"
     joints = UPPER_BODY
 
-    def step(self, t, q):
-        return None if t > 0.05 else self.action(q.copy(), weight=1.5)
+    def step(self, t, obs):
+        return None if t > 0.05 else self.action(obs.q.copy(), weight=1.5)
 
 
 def test_weight_out_of_range():
@@ -71,10 +71,10 @@ def test_weight_zero_masks_out_of_bounds_motion_speed():
         name = "w0"
         joints = LEFT_ARM
 
-        def step(self, t, q):
+        def step(self, t, obs):
             if t > 0.05:
                 return None
-            out = q.copy()
+            out = obs.q.copy()
             out[18] = 5.0
             return self.action(out, weight=0.0)
 

@@ -10,8 +10,14 @@ Two modes, ``--mode`` (required, no default):
   gantry    full bring-up and shutdown, for a robot hanging in a gantry:
             Damp -> FSM 4 (locked stand) -> FSM 200 (main operation) -> run
             -> release arms -> Damp
-  standing  robot must already be in FSM 4 (locked stand) or the run aborts:
-            FSM 200 -> run -> release arms -> FSM 4. Never damps.
+  standing  robot already standing under its own controller (any FSM):
+            remember the current FSM -> FSM 200 -> run -> release arms
+            -> back to the remembered FSM. Never damps.
+
+Camera: for policies that use it, the head camera is streamed over WebRTC
+(``--camera-ip``, ``$UNITREE_AES_128_KEY``) and connected *before* any FSM
+transition, so a bad camera link fails before the robot is touched. The robot
+accepts one WebRTC client: disconnect the Unitree app first.
 
 Pre-flight:
   * robot NOT in debug mode
@@ -23,10 +29,12 @@ Pre-flight:
 from __future__ import annotations
 
 import argparse
+import os
 import time
 
 import numpy as np
 
+from camera import WebRTCCamera
 from config import ARM_SDK_WEIGHT_IDX, CONTROL_DT, NUM_JOINTS, UPPER_BODY
 from policy import Action
 from envs.base import Env
@@ -104,9 +112,13 @@ class RobotEnv(Env):
                        help="network interface or IP of the robot (required for --env robot)")
         g.add_argument("--mode", choices=sorted(MODES), default=None,
                        help="required for --env robot. gantry: Damp->FSM4->FSM200, run, release, Damp. "
-                            "standing: require FSM 4, ->FSM200, run, release, ->FSM4, no Damp")
+                            "standing: remember FSM, ->FSM200, run, release, ->remembered FSM, no Damp")
         g.add_argument("--countdown", type=int, default=3,
                        help="seconds to count down before taking over the arms")
+        g.add_argument("--camera-ip", default=os.environ.get("UNITREE_ROBOT_IP"),
+                       help="robot IP for the head camera stream (default: $UNITREE_ROBOT_IP)")
+        g.add_argument("--camera-timeout", type=float, default=15.0,
+                       help="seconds to wait for the first camera frame (default 15)")
 
     def setup(self) -> None:
         if not self.args.iface:
@@ -117,6 +129,20 @@ class RobotEnv(Env):
         from unitree_sdk2py.core.channel import ChannelFactoryInitialize
         from unitree_sdk2py.g1.loco.g1_loco_client import LocoClient
 
+        self.camera = None
+        if self.use_camera:
+            if not self.args.camera_ip:
+                raise SystemExit("this policy uses the camera: pass --camera-ip or set "
+                                 "$UNITREE_ROBOT_IP")
+            key = os.environ.get("UNITREE_AES_128_KEY")
+            if not key:
+                print("warning: $UNITREE_AES_128_KEY not set; firmware >= 1.5.1 needs it "
+                      "(see unitree-fetch-aes-key)")
+            print(f"Connecting to the head camera at {self.args.camera_ip}")
+            self.camera = WebRTCCamera(self.args.camera_ip, key, timeout=self.args.camera_timeout)
+            self.camera.start()          # before any FSM change
+            print(f"camera: first frame {self.camera.latest().image.shape}")
+
         ChannelFactoryInitialize(0, self.args.iface)
         self.loco = LocoClient()
         self.loco.SetTimeout(10.0)
@@ -124,12 +150,10 @@ class RobotEnv(Env):
 
         if self.args.mode == "gantry":
             print("Damp");                     self.loco.Damp();        time.sleep(1.0)
-            print("FSM 4 (locked stand)");     self.loco.SetFsmId(4);   time.sleep(7.0)
+            print("FSM 4 (locked stand)");     self.loco.SetFsmId(FSM_LOCKED_STAND); time.sleep(7.0)
         else:  # standing
-            fsm = self._fsm()
-            if fsm != FSM_LOCKED_STAND:
-                raise SystemExit(f"--mode standing requires the robot in FSM {FSM_LOCKED_STAND} "
-                                 f"(locked stand); it reports FSM {fsm}")
+            self.initial_fsm = self._fsm()
+            print(f"fsm: {self.initial_fsm} (will return here after the run)")
         print("FSM 200 (main operation)");     self.loco.SetFsmId(FSM_MAIN); time.sleep(3.0)
         print("fsm:", self._fsm(), "(robot should be balancing on its own now)")
         for s in range(self.args.countdown, 0, -1):
@@ -145,7 +169,16 @@ class RobotEnv(Env):
 
     def teardown(self) -> None:
         # Whatever happened (normal end, Ctrl-C, exception): release the arms,
-        # then Damp (gantry) or return to FSM 4 locked stand (standing).
+        # then Damp (gantry) or return to the FSM the robot was in (standing).
+        # The camera is closed last; it never gates the arm release.
+        try:
+            self._teardown_robot()
+        finally:
+            camera = getattr(self, "camera", None)
+            if camera is not None:
+                camera.stop()
+
+    def _teardown_robot(self) -> None:
         arm = getattr(self, "arm", None)
         if arm is not None:
             print("Releasing arms")
@@ -158,9 +191,11 @@ class RobotEnv(Env):
             loco.Damp()
             time.sleep(1.0)
         else:  # standing
-            print("FSM 4 (locked stand)")
-            loco.SetFsmId(FSM_LOCKED_STAND)
-            time.sleep(3.0)
+            initial = getattr(self, "initial_fsm", None)
+            if initial is not None and initial != FSM_MAIN:
+                print(f"FSM {initial} (restoring initial state)")
+                loco.SetFsmId(initial)
+                time.sleep(3.0)
         print("fsm:", self._fsm(), " Done.")
 
     def reset(self) -> np.ndarray:
@@ -168,8 +203,12 @@ class RobotEnv(Env):
         self.arm.release(1.0)
         q0 = self.arm.fresh_state()
         print("Got fresh LowState. Taking over arms.")
+        self.overruns = 0
         self._wall = time.time()
         return q0
+
+    def frame(self):
+        return None if self.camera is None else self.camera.latest()
 
     def step(self, action: Action) -> np.ndarray:
         bad = [j for j in action.joints if j not in UPPER_BODY]
@@ -180,4 +219,15 @@ class RobotEnv(Env):
         lag = self._wall - time.time()
         if lag > 0:
             time.sleep(lag)
+        elif lag < -CONTROL_DT:
+            self.overruns += 1          # the policy step took longer than a tick
         return np.array([m.q for m in self.arm.state.motor_state[:NUM_JOINTS]])
+
+    def report(self) -> bool:
+        overruns = getattr(self, "overruns", 0)
+        if overruns:
+            print(f"robot: {overruns} tick overrun(s) > {CONTROL_DT * 1e3:.0f} ms; "
+                  f"the policy step is too slow for 50 Hz")
+        else:
+            print("robot: no tick overruns")
+        return True

@@ -8,15 +8,21 @@ Runs the policy open-loop from the stand pose and verifies, per tick:
   * the *effective* command (blend of hold pose and target by weight) never
     moves faster than ``--max-vel`` rad/s between ticks
 
+There is no camera unless asked for: ``--camera-dir`` replays recorded frames
+and ``--camera-noise`` feeds random ones, both on the check clock, so a camera
+policy can be run against known input or fuzzed.
+
 Exits non-zero on any violation.
 """
 from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 
+from camera import DirCamera, NoiseCamera
 from config import CONTROL_DT, JOINT_HI, JOINT_LO, JOINT_NAMES, NUM_JOINTS, STAND_Q
 from policy import Action
 from envs.base import Env, EnvAbort
@@ -47,6 +53,12 @@ class CheckEnv(Env):
                        help="max allowed joint speed of the effective command, rad/s (default 4.0)")
         g.add_argument("--max-violations", type=int, default=20,
                        help="stop after this many violations (default 20)")
+        g.add_argument("--camera-dir", type=Path, default=None, metavar="DIR",
+                       help="replay the image files in DIR (sorted by name) as the camera feed")
+        g.add_argument("--camera-noise", action="store_true",
+                       help="feed random frames, to fuzz a camera policy")
+        g.add_argument("--camera-fps", type=float, default=15.0,
+                       help="frame rate of --camera-dir / --camera-noise (default 15)")
 
     def setup(self) -> None:
         self.violations: list[Violation] = []
@@ -55,6 +67,19 @@ class CheckEnv(Env):
         self.peak_vel = np.zeros(NUM_JOINTS)
         self.q_min = np.full(NUM_JOINTS, np.inf)
         self.q_max = np.full(NUM_JOINTS, -np.inf)
+        self.camera = None
+        if self.args.camera_dir is not None:
+            self.camera = DirCamera(self.args.camera_dir, fps=self.args.camera_fps)
+        elif self.args.camera_noise:
+            self.camera = NoiseCamera(fps=self.args.camera_fps)
+        if self.camera is not None:
+            self.camera.start()
+
+    def clock(self) -> float:
+        return self.t
+
+    def frame(self):
+        return None if self.camera is None else self.camera.poll(self.t)
 
     def reset(self) -> np.ndarray:
         self.hold = STAND_Q.copy()

@@ -82,3 +82,11 @@ STAND_Q[[22, 23, 25]] = [0.2, -0.2, 1.28]
 
 def joint_index(name: str) -> int:
     return JOINT_NAMES.index(name)
+
+
+# Head camera (Intel RealSense D435 colour stream). Mount pose is the URDF's
+# d435_joint origin in the torso_link frame: forward/up offset, pitched down.
+HEAD_CAMERA_POS = (0.0576235, 0.01753, 0.42987)   # m, in torso_link
+HEAD_CAMERA_PITCH = 0.8307767                     # rad, looking down
+HEAD_CAMERA_FOVY = 58.0                           # degrees, vertical
+HEAD_CAMERA_SIZE = (480, 640)                     # sim render height, width

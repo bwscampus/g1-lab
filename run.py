@@ -6,7 +6,10 @@
     mjpython run.py --env sim --policy demo             # macOS viewer
     python run.py --env robot --policy demo --iface eth0 --mode standing
 
-``--policy`` is a registered routine name or a comma-separated list of motions.
+``--policy`` is a registered routine or policy name, or a comma-separated list
+of motions. Policies that use the camera (``look``, ``wave_on_red``) get frames
+from the env: rendered in sim, replayed or random in check (``--camera-dir``,
+``--camera-noise``), the head camera on the robot (``--camera-ip``).
 ``--env`` defaults to $G1_ENV, then "check", so ``G1_ENV=sim`` also works.
 """
 from __future__ import annotations
@@ -18,7 +21,7 @@ import sys
 from envs import ENVS, Env, EnvAbort
 from motions import MOTIONS
 from policy import Policy
-from routines import ROUTINES, build_policy
+from routines import POLICIES, ROUTINES, build_policy
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -31,7 +34,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "(default: $G1_POLICY)")
     p.add_argument("--pause", type=float, default=1.0,
                    help="seconds to hold between chained motions (default 1.0)")
-    p.add_argument("--list", action="store_true", help="list envs, routines and motions, then exit")
+    p.add_argument("--list", action="store_true",
+                   help="list envs, routines, policies and motions, then exit")
+    p.add_argument("--camera", choices=("auto", "on", "off"), default="auto",
+                   help="open the env's camera: auto = only if the policy uses it (default)")
     p.add_argument("--max-time", type=float, default=120.0,
                    help="abort if the policy runs longer than this many seconds (default 120)")
     for env_cls in ENVS.values():
@@ -45,9 +51,11 @@ def run(policy: Policy, env: Env, max_time: float = 120.0) -> bool:
     if duration is not None and duration > max_time:
         print(f"warning: {policy.name} lasts {duration:.1f}s but --max-time is {max_time:.0f}s; "
               f"it will be cut short")
+    mode = getattr(env.args, "camera", "auto")
+    env.use_camera = policy.uses_camera if mode == "auto" else mode == "on"
     with env:
-        q = env.reset()
-        policy.reset(q)
+        obs = env.observe(env.reset())
+        policy.reset(obs)
         n = 0
         try:
             while True:
@@ -55,10 +63,10 @@ def run(policy: Policy, env: Env, max_time: float = 120.0) -> bool:
                 if t > max_time:
                     print(f"aborted: policy exceeded --max-time {max_time}s")
                     return False
-                action = policy.step(t, q)
+                action = policy.step(t, obs)
                 if action is None:
                     break
-                q = env.step(action)
+                obs = env.observe(env.step(action))
                 n += 1
         except EnvAbort as e:
             print(f"\n{env.name}: {e}")
@@ -75,6 +83,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.list:
         print("envs:     " + ", ".join(sorted(ENVS)))
         print("routines: " + ", ".join(sorted(ROUTINES)))
+        print("policies: " + ", ".join(sorted(POLICIES)))
         print("motions:  " + ", ".join(sorted(MOTIONS)))
         return 0
     if args.policy is None:
@@ -84,6 +93,7 @@ def main(argv: list[str] | None = None) -> int:
         policy = build_policy(args.policy, pause=args.pause)
     except KeyError as e:
         parser.error(f"unknown policy {e}; routines: {', '.join(sorted(ROUTINES))}; "
+                     f"policies: {', '.join(sorted(POLICIES))}; "
                      f"motions: {', '.join(sorted(MOTIONS))}")
     env = ENVS[args.env](args)
     print(f"== {policy.name} @ {env.name} ==")
