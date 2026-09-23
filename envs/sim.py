@@ -19,6 +19,11 @@ For policies that use the camera it is rendered offscreen every
 ``--camera-every`` ticks and stamped with sim time. ``--sim-target x,y,z`` adds
 a red sphere for the example camera policies to look at.
 
+Scene: ``--scene room`` builds a textured room with furniture (``scene.py``)
+and ``--sim-objects mug@1.5,1.2 pencil@1.0,0.3`` places real objects in it, so
+the real vision model has something real to look at. ``--camera-size 720x1280``
+renders at the robot's resolution.
+
 macOS: the viewer must run under ``mjpython``:
     mjpython run.py --env sim --policy tpose
 Pass ``--headless`` to run the physics without a window (e.g. in CI).
@@ -62,8 +67,17 @@ def find_mjcf() -> Path:
         "No G1 MJCF found. Set G1_MJCF=/path/to/unitree_g1/scene.xml or pip install mujoco-menagerie")
 
 
+def _size(text: str) -> tuple[int, int]:
+    try:
+        h, w = (int(v) for v in text.lower().split("x"))
+    except ValueError:
+        raise argparse.ArgumentTypeError("expected HxW, e.g. 720x1280") from None
+    return h, w
+
+
 def load_model(target: tuple[float, float, float] | None = None,
-               obstacle: tuple[float, float, float] | None = None):
+               obstacle: tuple[float, float, float] | None = None, *,
+               scene: str = "none", objects=(), camera_size: tuple[int, int] | None = None):
     """Compile the G1 scene with the head camera added on torso_link (pose from
     the URDF's d435_joint; MuJoCo cameras look along -z with y up, hence the
     xyaxes) and, optionally, a red sphere at ``target`` for camera policies and
@@ -83,6 +97,14 @@ def load_model(target: tuple[float, float, float] | None = None,
         body = spec.worldbody.add_body(name="obstacle", pos=list(obstacle))
         body.add_geom(type=mujoco.mjtGeom.mjGEOM_BOX, size=[0.2, 0.2, 0.225],
                       rgba=[0.5, 0.5, 0.5, 1])           # neutral grey (no red bias); collides
+    if camera_size is not None:
+        spec.visual.global_.offheight = max(spec.visual.global_.offheight, camera_size[0])
+        spec.visual.global_.offwidth = max(spec.visual.global_.offwidth, camera_size[1])
+    if scene == "room":
+        from scene import build_room
+        build_room(spec, objects, camera_size)
+    elif objects:
+        raise SystemExit("--sim-objects needs --scene room")
     return spec.compile()
 
 
@@ -114,13 +136,22 @@ class SimEnv(Env):
         g.add_argument("--sim-obstacle", type=_xyz, default=None, metavar="X,Y,Z",
                        help="add a chair-sized box (0.4x0.4x0.45 m, centre) for a vision model to "
                             "describe, e.g. 1.2,0,0.225")
+        g.add_argument("--scene", choices=("none", "room"), default="none",
+                       help="room: textured walls/floor, table and chairs (assets via python -m scene fetch)")
+        from scene import parse_object
+        g.add_argument("--sim-objects", type=parse_object, nargs="*", default=[], metavar="NAME@X,Y[,Z]",
+                       help="objects to place in the room, e.g. mug@1.5,1.2 pencil@1.0,0.3 (z: on the floor)")
+        g.add_argument("--camera-size", type=_size, default=None, metavar="HxW",
+                       help="head camera render size (default 480x640; the robot streams 720x1280)")
 
     def setup(self) -> None:
         import mujoco
         import mujoco.viewer
 
         self.mujoco = mujoco
-        self.model = load_model(self.args.sim_target, self.args.sim_obstacle)
+        self.camera_size = self.args.camera_size or HEAD_CAMERA_SIZE
+        self.model = load_model(self.args.sim_target, self.args.sim_obstacle, scene=self.args.scene,
+                                objects=self.args.sim_objects, camera_size=self.args.camera_size)
         self.data = mujoco.MjData(self.model)
         if self.model.nu != NUM_JOINTS:
             raise RuntimeError(f"expected {NUM_JOINTS} actuators, model has {self.model.nu}")
@@ -143,7 +174,7 @@ class SimEnv(Env):
         self.renderer = None
         self._tick = 0
         if self.use_camera:
-            self.renderer = mujoco.Renderer(self.model, *HEAD_CAMERA_SIZE)
+            self.renderer = mujoco.Renderer(self.model, *self.camera_size)
 
     def teardown(self) -> None:
         if self.viewer is not None:
