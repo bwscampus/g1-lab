@@ -27,6 +27,7 @@ from motions import MOTIONS, Handback, Hold, SixSeven, Takeover, TPose
 from policy import Action, Motion, Obs, Policy, Segment, SegmentPolicy
 from behaviors import Describe, Face, GoTo, Look
 from perception import VisionQuery
+from skills import SKILLS, parse_skill
 from targets import Doorway, Labeled, RedDot, seen
 
 
@@ -167,17 +168,29 @@ POLICIES: dict[str, Callable[[], Policy]] = {
 
 
 def build_policy(spec: str, pause: float = 1.0) -> Policy:
-    """A registered routine or policy by name, or a comma-separated list of motion names."""
+    """A registered routine or policy by name, or a comma-separated chain of
+    motions and skills (``walk_forward:0.5,turn:45,arms_up``), run as one
+    Routine from the start pose with the bookends once."""
     if spec in ROUTINES:
         return ROUTINES[spec]()
     if spec in POLICIES:
         return POLICIES[spec]()
-    names = [n.strip() for n in spec.split(",") if n.strip()]
-    if not names:
+    items = [n.strip() for n in spec.split(",") if n.strip()]
+    if not items:
         raise KeyError(spec)
     motions = []
-    for n in names:
-        if n not in MOTIONS:
-            raise KeyError(n)
-        motions.append(MOTIONS[n]())
+    for item in items:
+        name = item.split(":")[0]
+        if name in MOTIONS and ":" not in item:
+            motions.append(MOTIONS[name]())
+        elif name in SKILLS:
+            skill, args = parse_skill(item)
+            if skill.terminal:
+                raise ValueError(f"{name} is not a motion; it only ends an agent run")
+            built = skill.build(**args)
+            if not isinstance(built, Motion):
+                raise ValueError(f"{name} is a closed-loop skill and cannot be chained")
+            motions.append(built)
+        else:
+            raise KeyError(name)
     return Routine(*motions, pause=pause)

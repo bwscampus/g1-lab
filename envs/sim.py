@@ -217,7 +217,7 @@ class SimEnv(Env):
 
     @property
     def can_walk(self) -> bool:
-        return self._pin_base
+        return not self.args.free_base      # known before setup(): the runner gates on it early
 
     def base_pose(self):
         return tuple(float(v) for v in self._base_pose)

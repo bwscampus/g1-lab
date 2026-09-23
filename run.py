@@ -27,6 +27,7 @@ from motions import MOTIONS
 from perception import VISION_MODES, build_perceiver
 from policy import Policy
 from routines import POLICIES, ROUTINES, build_policy
+from skills import SKILLS, describe_menu
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -117,6 +118,8 @@ def main(argv: list[str] | None = None) -> int:
         print("routines: " + ", ".join(sorted(ROUTINES)))
         print("policies: " + ", ".join(sorted(POLICIES)))
         print("motions:  " + ", ".join(sorted(MOTIONS)))
+        print("skills:   (chain them like motions, e.g. --policy walk_forward:0.5,turn:45,arms_up)")
+        print(describe_menu(list(SKILLS.values())))
         return 0
     if args.policy is None:
         parser.error("--policy is required (or set $G1_POLICY)")
@@ -126,7 +129,9 @@ def main(argv: list[str] | None = None) -> int:
     except KeyError as e:
         parser.error(f"unknown policy {e}; routines: {', '.join(sorted(ROUTINES))}; "
                      f"policies: {', '.join(sorted(POLICIES))}; "
-                     f"motions: {', '.join(sorted(MOTIONS))}")
+                     f"motions: {', '.join(sorted(MOTIONS))}; skills: {', '.join(SKILLS)}")
+    except ValueError as e:
+        parser.error(str(e))
     try:
         perceiver = build_perceiver(args, policy)
     except RuntimeError as e:
@@ -136,6 +141,11 @@ def main(argv: list[str] | None = None) -> int:
         print("warning: this run is not paced to realtime, so vision-model results will describe "
               "frames from well before they arrive; use --vision fake here, or --realtime 1 in sim")
     env = ENVS[args.env](args)
+    segments = getattr(policy, "segments", ())
+    if any(getattr(s, "base", None) for s in segments) and not env.can_walk:
+        parser.error(f"{policy.name} drives the base; {env.name} cannot walk here"
+                     + (" (pass --walk after reading its pre-flight)" if args.env == "robot"
+                        else " (drop --free-base)" if args.env == "sim" else ""))
     print(f"== {policy.name} @ {env.name} ==")
     ok = run(policy, env, max_time=args.max_time, perceiver=perceiver)
     return 0 if ok else 1
