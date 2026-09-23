@@ -95,7 +95,13 @@ camera.py           Frame sources: WebRTCCamera (robot), DirCamera / NoiseCamera
 vision.py           pure detectors and image geometry: red_blob, bearing, elevation
 targets.py          Target / Sighting: what a policy looks for (RedDot, Labeled, Salient, Doorway stub)
 behaviors.py        Face(target) turns the waist toward it; GoTo(target) walks to it
-perception.py       Percept / Perceiver: Hugging Face vision model on a background thread, offline fake
+skills.py           Skill: the decision-level unit (walk_forward, turn, look, hold, arms_up, wave, done)
+agent.py            the decision step as a Policy: search (ask the model) and replay (a saved run)
+decider.py          Context -> Decision via the vision model; python -m decider tries one frame
+episode.py          per-step records (JSON + lossless PNG) under runs/; python -m episode inspects them
+scene.py            the sim room: textures, furniture, real object meshes; python -m scene fetch
+perception.py       Percept / Perceiver: describe a frame with the vision model, on request only
+hf.py, worker.py    Hugging Face client (urllib, SSE); background worker with a latest-only result
 run.py              CLI and the single run loop shared by all envs
 envs/
   base.py           Env interface: setup / reset / step / teardown / report
@@ -245,6 +251,54 @@ mjpython run.py --env sim   --policy goto_red --sim-target 1.5,0.3,0.6     # sli
 python   run.py --env robot --policy goto_red --iface <iface> --mode standing --camera-ip <ip>          # refuses: needs --walk
 python   run.py --env robot --policy goto_red --iface <iface> --mode standing --camera-ip <ip> --walk   # walks to a red object
 ```
+
+### Search: a decision loop over skills
+
+`search` is the top-level behaviour: a **step** reads the joint angles and a fresh
+camera frame, asks the vision model what to do next (scene, is the path clear,
+which skill), runs that skill to its end, and records everything. The robot
+stands still while the model thinks; the 50 Hz loop never waits.
+
+**Skills** are the one format for "walk forward" and "lift the arm": a name, a
+parameter menu the model chooses from, a 3 s bound, and a build that returns
+pose segments (a walk is a segment holding a base velocity). `--list` shows them.
+Chain them from the CLI exactly like motions, no model needed:
+
+```
+python   run.py --env check --policy walk_forward:0.5,turn:45,arms_up,wave
+mjpython run.py --env sim   --policy turn:-30,walk_forward:0.6,look:20,hold:1
+```
+
+**With the model**, in a real-looking room (real textures, real object meshes;
+fetch once, ~35 MB, git-ignored):
+
+```
+python -m scene fetch
+export HF_TOKEN=hf_...
+mjpython run.py --env sim --scene room --policy search --goal "find the mug" \
+        --sim-objects mug@1.5,1.2 pencil@0.9,-0.4 --camera-size 720x1280 --realtime 1 --max-time 600
+```
+
+Objects: `mug`, `marker`, `cracker_box`, `mustard` (YCB scans) and `pencil`
+(primitives), placed with `name@x,y` on the floor (the robot starts at the origin
+facing +x; the room spans x −2..4, y −3..3, doorway in the +x wall).
+
+**Every step is recorded** under `runs/<timestamp>_<env>_<goal>/`: `step_NNNN.json`
+(times, joint angles at start and end, the decision with the model's raw reply,
+the skill, the outcome, base pose) and `step_NNNN.png` — the camera frame stored
+losslessly, so `load_episode()` gives back the exact RGB matrix. That is the
+dataset a learned policy trains on later.
+
+**Replay a saved run** — no camera, no model, from the start pose:
+
+```
+python -m episode runs/<dir>                                    # step table + the equivalent chain
+python run.py --env sim --policy replay --episode runs/<dir>   # or --env check / --env robot --walk
+```
+
+On the robot: `--policy search --goal "find a pencil" --camera-ip <ip> --walk`
+(without `--walk` the walking skills are simply not offered to the model).
+Try one decision on a saved frame first: `python -m decider runs/<dir>/step_0003.png --goal "..."`.
 
 ### Vision-model cost and pacing
 

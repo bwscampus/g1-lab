@@ -34,6 +34,14 @@ HF_TOKEN=hf_... mjpython run.py --env sim --policy describe --sim-obstacle 1.2,0
 mjpython run.py --env sim   --policy goto_red --sim-target 1.5,0.3,0.6   # walk-to-target loop: base slides to the ball
 python   run.py --env robot --policy goto_red --iface <iface> --mode standing --camera-ip <ip> --walk  # real walking
 
+python   run.py --env check --policy walk_forward:0.5,turn:45,arms_up,wave   # a preset: skills chain like motions
+python -m scene fetch                                                        # room assets (once, ~35 MB, git-ignored)
+HF_TOKEN=hf_... mjpython run.py --env sim --scene room --policy search --goal "find the mug" \
+        --sim-objects mug@1.5,1.2 --camera-size 720x1280 --realtime 1 --max-time 600   # ask the model each step
+python   run.py --env sim --policy replay --episode runs/<dir> --headless    # a saved run, no camera or model
+python -m episode runs/<dir>            # step table + the --policy chain that replays it
+HF_TOKEN=hf_... python -m decider runs/<dir>/step_0003.png --goal "find the mug"   # one real decision from a frame
+
 g1 --list                            # `g1` == `python run.py`; --env/--policy fall back to $G1_ENV/$G1_POLICY
 g1 --help                            # shows every env's flags (--margin, --max-vel, --free-base, --mode, ...)
 
@@ -77,7 +85,10 @@ env.report()
   `seq` because the same frame is seen every tick until a newer one lands. Sources: `WebRTCCamera`
   (robot, `unitree_webrtc_connect` on a daemon asyncio thread, stamped `time.monotonic()`),
   `DirCamera` / `NoiseCamera` (check, driven by `poll(now)` on the check clock), and the sim's
-  own offscreen render of a `head` camera (stamped with sim time). Measured on the G1: the
+  own offscreen render of a `head` camera (stamped with sim time). The vision model runs **only
+  on request**: `Perceiver` is a `worker.Worker` (latest-only result, `request()` ignored while
+  one is in flight or within `--vision-interval`); `ReactivePolicy`/`Selector` ask through
+  `VisionQuery` at `vision_refresh` (2 s); `--vision auto|off|api`. Measured on the G1: the
   WebRTC stream is 1280x720 H.264 at ~15 fps (`(720, 1280, 3)` uint8, ~67 ms between
   frames); the three `aiortc ... failed to decode, skipping package` warnings at stream start
   are the packets before the first keyframe and are silenced in `WebRTCCamera.start`. `Env.frame()` / `Env.clock()`
@@ -93,6 +104,46 @@ env.report()
   percept. Examples in `vision.py` (`look`, red-blob waist tracking; `describe`, vision-model
   narration) and `routines.POLICIES` (`wave_on_red`, `wave_on_person`). `build_policy` resolves
   routine, then policy, then motions.
+- **Motion vs Policy vs Skill.** *Policy* is the executor contract (`reset/step` at 50 Hz; the
+  only thing an env runs). *Motion* is a scripted building block: pose segments, no sensing, no
+  bookends. *Skill* (`skills.py`) is the decision-level unit: a name, a JSON-schema parameter
+  menu, a duration bound (`STEP_MAX` 3 s) and `build() -> Motion` (or a bounded Policy).
+  `Skill -> builds -> Motion -> runs as -> SegmentPolicy`. "Walk forward" and "lift the arm" are
+  the same format because a `Segment` may hold a `base` velocity for its duration; locomotion
+  durations round up to whole ticks so `distance = v*t` is exact in check and sim. Every skill
+  except `hold`/`look` ends at STAND (boundaries continuous by construction; a test chains every
+  pair). Skills chain from the CLI like motions (`walk_forward:0.5,turn:45`); `menu(allow_base)`
+  hides base skills where the env cannot walk and the runner refuses such chains up front.
+- **Two ways to drive the executor.** Either ask the vision model what to do next (`--policy
+  search --goal …`) or run a preset: a skill chain, a registered routine, or `--policy replay
+  --episode runs/<dir>` (rebuilds a saved run as a Routine; no camera, no model). Learning is
+  deferred; its seam is the `Decider` interface and the step records.
+- **The decision step** (`agent.py`, `Agent(Policy)`): *observe* (a fresh frame, the joint
+  angles, standing still after a 0.5 s settle so `StopMove` has landed) -> *decide* (a background
+  `Decider.request`; the loop never waits) -> *act* (the skill to its end or its cap) ->
+  *record*. Sub-policies are seeded from the agent's last commanded q. Rejected replies are
+  re-asked with a note (`max_retries`), a wall-clock `step_timeout` and `max_failures` end the
+  run cleanly, `close()` stops the decider and flushes the recorder on Ctrl-C. No pipelining:
+  a request issued before the skill ends would decide on a stale image.
+- **Decider** (`decider.py`): `Context` (goal, step, frame, q, waist yaw, base delta, history,
+  skill menu) -> `Decision` (scene, path_clear, found, action, args, reason). Obstacles are
+  judged in the same call. `HFDecider` shares `hf.HFClient` with the perceiver; the action must
+  be in the menu and the args validate against its schema. **Fakes are test doubles only**
+  (`tests/doubles.py`): `search` always uses the real model; no `--decider fake`.
+- **Records** (`episode.py`): `runs/<ts>_<env>_<goal>/episode.json` + `step_NNNN.json` +
+  `step_NNNN.png`. The frame is stored losslessly (PNG; `load_episode` returns the exact RGB
+  array, tested with `np.array_equal`), never JPEG. Fields: times (policy/wall/env clock),
+  q/cmd at start and end, the frame, the decision (raw + parsed + latency), the skill, the
+  outcome, base pose (commanded dead-reckoning; env estimate where one exists). PNG encoding
+  runs on a writer thread. `runs/` is git-ignored.
+- **Room scene** (`scene.py`): `--scene room` adds a textured floor and walls (Poly Haven, CC0),
+  a table and chairs, a doorway, lights, and `--sim-objects name@x,y[,z]` places real YCB
+  meshes (CC-BY 4.0) or a primitives pencil, so the real model sees a real-looking scene.
+  `python -m scene fetch` downloads into the git-ignored `assets/` with `ATTRIBUTION.md`.
+  MuJoCo reads PNG textures only (JPGs are converted). The floor slab's top is z = 0 (the
+  Menagerie plane is dropped 2 cm) so objects authored base-down at z = 0 rest on it. Furniture is
+  deliberately un-red so the pixel red-blob path is not fooled. `--camera-size 720x1280` renders
+  at the robot's resolution (raises the offscreen framebuffer).
 - **Targets** (`targets.py`): a policy names what it is looking for. `Target.locate(obs)` is
   pure and returns a `Sighting` — location relative to the camera (`bearing` +right,
   `elevation` +up, in rad) plus the normalised image box (`x, y, width, height`, `area`),

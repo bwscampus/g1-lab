@@ -175,8 +175,12 @@ def build_room(spec, objects: Sequence[tuple[str, float, float, Optional[float]]
     w = spec.worldbody
     cx, cy = (ROOM_X[0] + ROOM_X[1]) / 2, (ROOM_Y[0] + ROOM_Y[1]) / 2
     hx, hy = (ROOM_X[1] - ROOM_X[0]) / 2, (ROOM_Y[1] - ROOM_Y[0]) / 2
-    w.add_geom(name="room_floor", type=B, size=[hx, hy, 0.005], pos=[cx, cy, 0.005], material=floor,
-               contype=0, conaffinity=0)
+    # The slab's top is exactly z = 0 so objects placed at z = 0 rest on it; the Menagerie
+    # ground plane goes 2 cm below so nothing z-fights. The slab collides, so a free base stands on it.
+    for g in spec.geoms:
+        if g.name == "floor":
+            g.pos = [0.0, 0.0, -0.02]
+    w.add_geom(name="room_floor", type=B, size=[hx, hy, 0.005], pos=[cx, cy, -0.005], material=floor)
     t, hz = 0.05, ROOM_H / 2
     w.add_geom(name="wall_-x", type=B, size=[t, hy, hz], pos=[ROOM_X[0], cy, hz], material=wall)
     w.add_geom(name="wall_-y", type=B, size=[hx, t, hz], pos=[cx, ROOM_Y[0], hz], material=wall)
