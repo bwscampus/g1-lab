@@ -10,8 +10,9 @@ the env's *measured* state, which on the robot lags the command by gravity sag
 and would produce a target jump at each boundary that the check stage cannot see.
 
 A Selector is the camera-triggered counterpart: it idles at STAND until a
-predicate on the latest frame fires, then runs one registered motion. It does
-chain sub-policies, so it seeds each one from its own last *commanded* q.
+predicate on the observation (latest frame and/or vision-model percept) fires,
+then runs one registered motion. It does chain sub-policies, so it seeds each
+one from its own last *commanded* q.
 
 Named routines live in ROUTINES, other named policies (camera examples) in
 POLICIES; ad hoc routines come from ``--policy tpose,sixseven``.
@@ -24,7 +25,8 @@ from typing import Callable, Optional, Sequence
 from camera import Frame
 from motions import MOTIONS, Handback, Hold, SixSeven, Takeover, TPose
 from policy import Action, Motion, Obs, Policy, Segment, SegmentPolicy
-from vision import Look, red_blob
+from behaviors import Describe, Face, GoTo, Look
+from targets import Doorway, Labeled, RedDot, seen
 
 
 def motion_segments(part: Motion) -> list[Segment]:
@@ -60,15 +62,17 @@ class Routine(SegmentPolicy):
                          name=name or "+".join(m.name for m in motions))
 
 
-Rule = tuple[Callable[[Frame], bool], "str | Motion"]
+Rule = tuple[Callable[[Obs], bool], "str | Motion"]
 
 
 class Selector(Policy):
     """Run a registered motion when a frame predicate fires.
 
     States: takeover (bookend) -> idle at STAND, evaluating ``rules`` on every
-    new frame -> the first matching motion -> handback (``once``) or back to
-    idle after ``cooldown`` seconds. Idle for ``timeout`` seconds ends the run.
+    new frame or new percept -> the first matching motion -> handback
+    (``once``) or back to idle after ``cooldown`` seconds. Idle for ``timeout``
+    seconds ends the run. Rules see the whole ``Obs``; ``uses_vision`` asks the
+    runner for a vision model.
     Every motion it can pick is an ordinary registered motion the check stage
     already validates; the only new boundaries are idle -> motion, and those
     start from STAND, which every motion enters from anyway.
@@ -78,11 +82,12 @@ class Selector(Policy):
     uses_camera = True
 
     def __init__(self, rules: Sequence[Rule], *, timeout: float = 30.0, once: bool = True,
-                 cooldown: float = 1.0, name: str | None = None) -> None:
+                 cooldown: float = 1.0, uses_vision: bool = False, name: str | None = None) -> None:
         self.rules = [(pred, MOTIONS[m]() if isinstance(m, str) else m) for pred, m in rules]
         self.timeout = timeout
         self.once = once
         self.cooldown = cooldown
+        self.uses_vision = uses_vision
         joints: set[int] = set(Takeover().joints)
         for _, m in self.rules:
             joints.update(m.joints)
@@ -93,6 +98,7 @@ class Selector(Policy):
     def reset(self, obs: Obs) -> None:
         self._cmd = obs.q.copy()
         self._last_seq: int | None = None
+        self._last_pseq: int | None = None
         self._sub: SegmentPolicy | None = None
         self._enter("takeover", 0.0, Takeover())
 
@@ -124,11 +130,15 @@ class Selector(Policy):
             print(f"[{self.name}] idle for {self.timeout:.0f}s, handing back")
             self._enter("handback", t, Handback())
             return self.step(t, obs)
-        f = obs.frame
+        f, p = obs.frame, obs.percept
+        new = False
         if f is not None and f.seq != self._last_seq:
-            self._last_seq = f.seq
+            self._last_seq, new = f.seq, True
+        if p is not None and p.seq != self._last_pseq:
+            self._last_pseq, new = p.seq, True
+        if new:
             for pred, motion in self.rules:
-                if pred(f):
+                if pred(obs):
                     print(f"[{self.name}] trigger -> {motion.name}")
                     self._enter("motion", t, motion)
                     return self.step(t, obs)
@@ -141,8 +151,12 @@ ROUTINES: dict[str, Callable[[], Routine]] = {
 
 POLICIES: dict[str, Callable[[], Policy]] = {
     "look": lambda: Look(),
-    "wave_on_red": lambda: Selector([(lambda f: red_blob(f.image) is not None, "sixseven")],
-                                    name="wave_on_red"),
+    "describe": lambda: Describe(),
+    "goto_red": lambda: GoTo(RedDot(), name="goto_red"),
+    "face_door": lambda: Face(Doorway(), name="face_door"),   # Doorway is a stub: Face only
+    "wave_on_red": lambda: Selector([(seen(RedDot()), "sixseven")], name="wave_on_red"),
+    "wave_on_person": lambda: Selector([(seen(Labeled(("person",))), "sixseven")],
+                                       uses_vision=True, name="wave_on_person"),
 }
 
 

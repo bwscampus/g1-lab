@@ -7,6 +7,8 @@ Runs the policy open-loop from the stand pose and verifies, per tick:
   * every commanded target is inside the joint limits minus ``--margin``
   * the *effective* command (blend of hold pose and target by weight) never
     moves faster than ``--max-vel`` rad/s between ticks
+  * a base velocity command stays within ``config.BASE_VEL_MAX``; the base
+    pose is integrated kinematically and reported
 
 There is no camera unless asked for: ``--camera-dir`` replays recorded frames
 and ``--camera-noise`` feeds random ones, both on the check clock, so a camera
@@ -17,13 +19,15 @@ Exits non-zero on any violation.
 from __future__ import annotations
 
 import argparse
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
 from camera import DirCamera, NoiseCamera
-from config import CONTROL_DT, JOINT_HI, JOINT_LO, JOINT_NAMES, NUM_JOINTS, STAND_Q
+from config import (BASE_VEL_MAX, CONTROL_DT, JOINT_HI, JOINT_LO, JOINT_NAMES, NUM_JOINTS,
+                    STAND_Q)
 from policy import Action
 from envs.base import Env, EnvAbort
 
@@ -37,7 +41,8 @@ class Violation:
     limit: float
 
     def __str__(self) -> str:
-        return (f"t={self.t:6.2f}s  {JOINT_NAMES[self.joint]:<22} {self.kind:<8} "
+        name = JOINT_NAMES[self.joint] if self.joint >= 0 else "-"
+        return (f"t={self.t:6.2f}s  {name:<22} {self.kind:<9} "
                 f"{self.value:+.3f}  (limit {self.limit:+.3f})")
 
 
@@ -67,6 +72,10 @@ class CheckEnv(Env):
         self.peak_vel = np.zeros(NUM_JOINTS)
         self.q_min = np.full(NUM_JOINTS, np.inf)
         self.q_max = np.full(NUM_JOINTS, -np.inf)
+        self.base_pose = np.zeros(3)      # x, y, yaw from integrating Action.base
+        self.base_path = 0.0
+        self.base_ticks = 0
+        self.base_peak = np.zeros(3)
         self.camera = None
         if self.args.camera_dir is not None:
             self.camera = DirCamera(self.args.camera_dir, fps=self.args.camera_fps)
@@ -96,6 +105,19 @@ class CheckEnv(Env):
             raise ValueError(f"policy commands invalid joint index: {joints}")
         if not (0.0 <= action.weight <= 1.0):
             self.violations.append(Violation(self.t, -1, "weight", action.weight, 1.0))
+        if action.base is not None:
+            v = np.asarray(action.base, dtype=float)
+            for i, kind in enumerate(("base_vx", "base_vy", "base_vyaw")):
+                if abs(v[i]) > BASE_VEL_MAX[i]:
+                    self.violations.append(Violation(self.t, -1, kind, v[i], BASE_VEL_MAX[i]))
+            self.base_peak = np.maximum(self.base_peak, np.abs(v))
+            x, y, yaw = self.base_pose
+            yaw += v[2] * dt
+            x += (math.cos(yaw) * v[0] - math.sin(yaw) * v[1]) * dt
+            y += (math.sin(yaw) * v[0] + math.cos(yaw) * v[1]) * dt
+            self.base_pose = np.array([x, y, yaw])
+            self.base_path += math.hypot(v[0], v[1]) * dt
+            self.base_ticks += 1
 
         tgt = action.q
         if not np.all(np.isfinite(tgt[joints])):
@@ -136,6 +158,11 @@ class CheckEnv(Env):
         for j in used:
             print(f"{JOINT_NAMES[j]:<22} {self.q_min[j]:8.3f} {self.q_max[j]:8.3f} "
                   f"{self.peak_vel[j]:9.2f}   [{JOINT_LO[j]:+.3f}, {JOINT_HI[j]:+.3f}]")
+        if self.base_ticks:
+            x, y, yaw = self.base_pose
+            print(f"base: {self.base_ticks} ticks commanded, path {self.base_path:.2f} m, ended at "
+                  f"({x:+.2f}, {y:+.2f}) m yaw {math.degrees(yaw):+.0f} deg; peak "
+                  f"vx {self.base_peak[0]:.2f} vy {self.base_peak[1]:.2f} vyaw {self.base_peak[2]:.2f}")
         if self.violations:
             print(f"\nFAIL: {len(self.violations)} violation(s)")
             for v in self.violations:

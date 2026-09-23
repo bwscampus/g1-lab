@@ -24,7 +24,7 @@ dev = ["pytest", "opencv-python"]
 g1 = "run:main"
 
 [tool.setuptools]
-py-modules = ["camera", "config", "policy", "run", "routines", "vision"]
+py-modules = ["behaviors", "camera", "config", "perception", "policy", "run", "routines", "targets", "vision"]
 packages = ["envs", "motions"]
 
 [tool.pytest.ini_options]

@@ -1,9 +1,10 @@
-"""Pure-numpy vision helpers and the example camera policies.
+"""Pure-numpy detectors and image geometry. No policy code lives here: targets
+(``targets.py``) turn these into Sightings and behaviours (``behaviors.py``)
+act on them.
 
-Detection is a red-pixel threshold so the examples behave identically in check
-(replayed or random frames), sim (a red sphere from ``--sim-target``) and on the
-robot (hold up something red). Swap ``red_blob`` for a real detector and the
-policies stay the same.
+Detection is a red-pixel threshold so everything runs identically in check
+(replayed or random frames), sim (a red sphere from ``--sim-target``) and on
+the robot (hold up something red).
 """
 from __future__ import annotations
 
@@ -11,10 +12,7 @@ import math
 
 import numpy as np
 
-from config import HEAD_CAMERA_FOVY, joint_index
-from policy import Obs, Pose, ReactivePolicy
-
-WAIST_YAW = joint_index("waist_yaw")
+from config import HEAD_CAMERA_FOVY
 
 
 def red_blob(image: np.ndarray, min_fraction: float = 0.002):
@@ -41,24 +39,8 @@ def bearing(u: float, image_shape, fovy_deg: float = HEAD_CAMERA_FOVY) -> float:
     return math.atan(u * half_w)
 
 
-class Look(ReactivePolicy):
-    """Turn the waist to keep the red blob centred; the arms stay at STAND.
-    Each new frame moves the yaw target by ``gain`` times the blob's bearing,
-    so it converges over a few frames without overshooting on noisy detections."""
-
-    name = "look"
-
-    def __init__(self, duration: float = 15.0, *, gain: float = 0.6, yaw_max: float = 0.8,
-                 **kw) -> None:
-        super().__init__(duration, **kw)
-        self.gain = gain
-        self.yaw_max = yaw_max
-
-    def track(self, t: float, obs: Obs) -> Pose:
-        blob = red_blob(obs.frame.image)
-        if blob is None:
-            return {}                       # nothing red: hold
-        u, _, _ = blob
-        # u > 0 is to the robot's right; positive waist yaw turns it left.
-        yaw = self.cmd[WAIST_YAW] - self.gain * bearing(u, obs.frame.image.shape)
-        return {WAIST_YAW: float(np.clip(yaw, -self.yaw_max, self.yaw_max))}
+def elevation(v: float, image_shape, fovy_deg: float = HEAD_CAMERA_FOVY) -> float:
+    """Vertical angle in rad (positive up) of normalised image row ``v`` (v is
+    +1 at the bottom), relative to the optical axis. The head camera's axis
+    itself points ``config.HEAD_CAMERA_PITCH`` below horizontal."""
+    return -math.atan(v * math.tan(math.radians(fovy_deg) / 2))

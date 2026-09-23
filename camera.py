@@ -154,8 +154,13 @@ class WebRTCCamera(Camera):
         self.error: BaseException | None = None
 
     def start(self) -> None:
+        import logging
         from unitree_webrtc_connect.webrtc_driver import (UnitreeWebRTCConnection,
                                                           WebRTCConnectionMethod)
+        # The packets that arrive before the first keyframe cannot be decoded; aiortc
+        # logs each as "H264Decoder() failed to decode, skipping package". That is
+        # normal at stream start (the G1 sends 1280x720 H.264 at ~15 fps), not a fault.
+        logging.getLogger("aiortc.codecs.h264").setLevel(logging.ERROR)
         self.conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip=self.ip,
                                             aes_128_key=self.aes_key)
         self.loop = asyncio.new_event_loop()

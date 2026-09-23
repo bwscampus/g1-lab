@@ -11,7 +11,8 @@ from motions import SixSeven
 from policy import Obs, ReactivePolicy
 from routines import Selector
 from run import build_parser, run
-from vision import Look, red_blob
+from behaviors import Look
+from vision import red_blob
 
 WAIST_YAW = joint_index("waist_yaw")
 
@@ -146,7 +147,7 @@ def test_look_holds_without_frames():
 def test_selector_triggers_motion_then_hands_back(tmp_path):
     write_frames(tmp_path, [(0, 0, 0)] * 30 + [(230, 10, 10)] * 5)   # red appears at 3 s
     env = check_env("--camera-dir", str(tmp_path), "--camera-fps", "10")
-    p = Selector([(lambda f: red_blob(f.image) is not None, "sixseven")])
+    p = Selector([(lambda o: red_blob(o.frame.image) is not None, "sixseven")])
     assert run(p, env) is True
     assert env.violations == []
     # takeover 5 s -> triggers as soon as idle begins -> sixseven -> handback 5 s
@@ -156,7 +157,7 @@ def test_selector_triggers_motion_then_hands_back(tmp_path):
 
 def test_selector_times_out_without_trigger():
     env = check_env()
-    p = Selector([(lambda f: True, "tpose")], timeout=1.0)
+    p = Selector([(lambda o: True, "tpose")], timeout=1.0)
     assert run(p, env) is True
     assert env.ticks == round(11.0 / CONTROL_DT)
     assert env.q_max[16] == pytest.approx(0.2)        # never left STAND

@@ -90,3 +90,7 @@ HEAD_CAMERA_POS = (0.0576235, 0.01753, 0.42987)   # m, in torso_link
 HEAD_CAMERA_PITCH = 0.8307767                     # rad, looking down
 HEAD_CAMERA_FOVY = 58.0                           # degrees, vertical
 HEAD_CAMERA_SIZE = (480, 640)                     # sim render height, width
+
+# Base velocity limits for Action.base: |vx| m/s forward, |vy| m/s left, |vyaw| rad/s.
+# The SDK's high-level examples cap forward speed at 0.3 m/s.
+BASE_VEL_MAX = np.array([0.3, 0.2, 0.5])

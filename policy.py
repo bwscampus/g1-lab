@@ -10,12 +10,15 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Callable, Optional, Sequence
+from typing import TYPE_CHECKING, Callable, Optional, Sequence
 
 import numpy as np
 
 from camera import Frame
 from config import CONTROL_DT, JOINT_HI, JOINT_LO, NUM_JOINTS, STAND_Q, UPPER_BODY
+
+if TYPE_CHECKING:
+    from perception import Percept
 
 
 @dataclass
@@ -28,6 +31,10 @@ class Action:
     weight: arm_sdk blend in [0, 1]. 1.0 = policy owns the joints, 0.0 = the
             onboard controller owns them. sim/check emulate the same blend.
     kp/kd:  PD gains sent to the robot (sim uses the model's own actuators).
+    base:   optional (vx, vy, vyaw) base velocity in m/s, m/s, rad/s (forward,
+            left, counter-clockwise), or None for no base command. The robot
+            walks it via LocoClient.Move (needs --walk), sim slides the pinned
+            base, check enforces config.BASE_VEL_MAX.
     """
 
     q: np.ndarray
@@ -35,11 +42,17 @@ class Action:
     weight: float = 1.0
     kp: float = 60.0
     kd: float = 1.5
+    base: Optional[tuple[float, float, float]] = None
 
     def __post_init__(self) -> None:
         self.q = np.asarray(self.q, dtype=float)
         if self.q.shape != (NUM_JOINTS,):
             raise ValueError(f"Action.q must have shape ({NUM_JOINTS},), got {self.q.shape}")
+        if self.base is not None:
+            b = tuple(float(v) for v in self.base)
+            if len(b) != 3 or not all(math.isfinite(v) for v in b):
+                raise ValueError(f"Action.base must be 3 finite floats, got {self.base!r}")
+            self.base = b
 
 
 @dataclass
@@ -52,11 +65,17 @@ class Obs:
                (inf when there is no frame). Frames are latest-only: the same
                Frame (same ``seq``) is seen every tick until a newer one
                arrives, so key per-frame work on ``frame.seq``.
+    percept:   latest ``perception.Percept`` (what a vision model said about a
+               recent frame), or None. Latest-only too: key on ``percept.seq``.
+    percept_age: env-clock age of the frame that percept describes, so it
+               includes the model's latency (inf when there is no percept).
     """
 
     q: np.ndarray
     frame: Optional[Frame] = None
     frame_age: float = math.inf
+    percept: Optional["Percept"] = None     # latest vision-model description, if any
+    percept_age: float = math.inf           # age of the frame it describes (latency included)
 
     def __post_init__(self) -> None:
         self.q = np.asarray(self.q, dtype=float)
@@ -71,6 +90,7 @@ class Policy:
     kp: float = 60.0
     kd: float = 1.5
     uses_camera: bool = False       # the runner only opens a camera for policies that ask
+    uses_vision: bool = False       # ... and only runs a vision model for policies that ask
 
     def reset(self, obs: Obs) -> None:
         """Called once with the robot's current observation before the first step."""
@@ -82,8 +102,10 @@ class Policy:
         work on another thread and read its latest result here."""
         raise NotImplementedError
 
-    def action(self, q: np.ndarray, weight: float = 1.0) -> Action:
-        return Action(q=q, joints=list(self.joints), weight=weight, kp=self.kp, kd=self.kd)
+    def action(self, q: np.ndarray, weight: float = 1.0,
+               base: Optional[tuple[float, float, float]] = None) -> Action:
+        return Action(q=q, joints=list(self.joints), weight=weight, kp=self.kp, kd=self.kd,
+                      base=base)
 
 
 # --------------------------------------------------------------------------
@@ -93,6 +115,7 @@ class Policy:
 
 Pose = dict[int, float]
 WeightFn = Callable[[float], float]
+EPS = 1e-9          # phase-boundary tolerance against float drift in t = n * dt
 
 
 def ease(a: float) -> float:
@@ -205,13 +228,19 @@ class ReactivePolicy(Policy):
     commanded* pose. The defaults sit inside check's ``--margin`` / ``--max-vel``
     so whatever ``track`` returns becomes a command check accepts.
 
-    ``track`` runs once per new frame (keyed on ``frame.seq``). Between frames,
-    and whenever the frame is older than ``stale_after``, the last pose is held.
-    Its result merges onto the current command, so it may set only some joints.
+    ``track`` runs once per new input, keyed on ``fresh(obs)``: by default the
+    frame's seq while the frame is younger than ``stale_after`` (override
+    ``fresh`` to key on ``obs.percept.seq`` instead). Between inputs, and
+    whenever there is no fresh input, the last pose is held. Its result merges
+    onto the current command, so it may set only some joints.
 
     Phases mirror the Takeover/Handback bookends: hold the reset pose while
     ramping weight 0->1 (``ramp``) -> STAND (``to_stand``) -> track for
     ``duration`` -> STAND (``to_stand``) -> hold while ramping 1->0 (``ramp``).
+    ``finish()`` ends the tracking phase early. ``drive(t, obs)`` runs every
+    tracking tick and its result is the action's base velocity (None outside
+    tracking, so the base always stops before the return-to-stand phase).
+    ``phase`` names the current phase.
     """
 
     name = "reactive"
@@ -240,8 +269,24 @@ class ReactivePolicy(Policy):
         return self._cmd
 
     def track(self, t: float, obs: Obs) -> Pose:
-        """Targets for a new frame; ``t`` is seconds since tracking began."""
+        """Targets for a new input; ``t`` is seconds since tracking began."""
         raise NotImplementedError
+
+    def fresh(self, obs: Obs) -> Optional[int]:
+        """Key of the input ``track`` should see; ``track`` runs once per distinct
+        non-None key. Default: the frame seq while the frame is fresh."""
+        f = obs.frame
+        if f is None or obs.frame_age > self.stale_after:
+            return None
+        return f.seq
+
+    def drive(self, t: float, obs: Obs) -> Optional[tuple[float, float, float]]:
+        """Base velocity for this tracking tick, or None. Called every tick."""
+        return None
+
+    def finish(self) -> None:
+        """End the tracking phase; the return-to-stand phase starts next tick."""
+        self._finished = True
 
     def reset(self, obs: Obs) -> None:
         self._q0 = np.array(obs.q, dtype=float)
@@ -249,9 +294,12 @@ class ReactivePolicy(Policy):
         self._stand = self._q0.copy()
         self._stand[self.joints] = STAND_Q[self.joints]
         self._held: Pose = {}
-        self._last_seq: int | None = None
+        self._last_key: int | None = None
         self._exit: np.ndarray | None = None
         self._last_label: str | None = None
+        self._finished = False
+        self._track_end: float | None = None
+        self.phase = "takeover"
 
     def _label(self, label: str) -> None:
         if label != self._last_label:
@@ -260,42 +308,51 @@ class ReactivePolicy(Policy):
 
     def step(self, t: float, obs: Obs) -> Optional[Action]:
         r, s, d = self.ramp, self.to_stand, self.track_time
-        if t < r:
+        if t < r - EPS:
+            self.phase = "takeover"
             self._label("taking over (hold)")
             return self._emit(self._q0, weight=ease(t / r))
         t -= r
-        if t < s:
+        if t < s - EPS:
+            self.phase = "to_stand"
             self._label("moving to stand")
             return self._emit(self._q0 + ease(t / s) * (self._stand - self._q0))
         t -= s
-        if t < d:
-            self._label("tracking")
-            f = obs.frame
-            if f is not None and obs.frame_age <= self.stale_after and f.seq != self._last_seq:
-                self._last_seq = f.seq
-                pose = self.track(t, obs)
-                bad = sorted(set(pose) - set(self.joints))
-                if bad:
-                    raise ValueError(f"[{self.name}] track() set joints {bad} outside this "
-                                     f"policy's joints")
-                self._held = dict(pose)
-            target = self._cmd.copy()
-            for j, v in self._held.items():
-                target[j] = v
-            return self._emit(target)
-        t -= d
-        if t < s:
+        if self._track_end is None:
+            if t < d - EPS and not self._finished:
+                self.phase = "track"
+                self._label("tracking")
+                key = self.fresh(obs)
+                if key is not None and key != self._last_key:
+                    self._last_key = key
+                    pose = self.track(t, obs)
+                    bad = sorted(set(pose) - set(self.joints))
+                    if bad:
+                        raise ValueError(f"[{self.name}] track() set joints {bad} outside this "
+                                         f"policy's joints")
+                    self._held = dict(pose)
+                target = self._cmd.copy()
+                for j, v in self._held.items():
+                    target[j] = v
+                base = self.drive(t, obs)
+                return self._emit(target, base=None if self._finished else base)
+            self._track_end = t
+        t -= self._track_end
+        if t < s - EPS:
+            self.phase = "return"
             self._label("returning to stand")
             if self._exit is None:
                 self._exit = self._cmd.copy()
             return self._emit(self._exit + ease(t / s) * (self._stand - self._exit))
         t -= s
-        if t < r:
+        if t < r - EPS:
+            self.phase = "handback"
             self._label("handing back")
             return self._emit(self._stand, weight=1.0 - ease(t / r))
         return None
 
-    def _emit(self, target: np.ndarray, weight: float = 1.0) -> Action:
+    def _emit(self, target: np.ndarray, weight: float = 1.0,
+              base: Optional[tuple[float, float, float]] = None) -> Action:
         """Clip to the limits, rate-limit from the last command, and record it."""
         j = self.joints
         want = np.clip(target[j], JOINT_LO[j] + self.margin, JOINT_HI[j] - self.margin)
@@ -303,4 +360,4 @@ class ReactivePolicy(Policy):
         out = self._cmd.copy()
         out[j] = self._cmd[j] + np.clip(want - self._cmd[j], -step, step)
         self._cmd = out
-        return self.action(out.copy(), weight=weight)
+        return self.action(out.copy(), weight=weight, base=base)

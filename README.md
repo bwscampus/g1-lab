@@ -92,7 +92,10 @@ neither is on PyPI and neither is needed for `check` or `sim`.
 config.py           29-DoF joint table (DDS order), limits, groups, stand pose
 policy.py           Policy / Action / Obs interface, SegmentPolicy (scripted), ReactivePolicy (camera)
 camera.py           Frame sources: WebRTCCamera (robot), DirCamera / NoiseCamera (check); `python -m camera`
-vision.py           red-blob detector and the `look` example policy
+vision.py           pure detectors and image geometry: red_blob, bearing, elevation
+targets.py          Target / Sighting: what a policy looks for (RedDot, Labeled, Salient, Doorway stub)
+behaviors.py        Face(target) turns the waist toward it; GoTo(target) walks to it
+perception.py       Percept / Perceiver: Hugging Face vision model on a background thread, offline fake
 run.py              CLI and the single run loop shared by all envs
 envs/
   base.py           Env interface: setup / reset / step / teardown / report
@@ -181,9 +184,79 @@ Two ways to use them:
 ```
 python   run.py --env check --policy look --camera-noise
 mjpython run.py --env sim   --policy look --sim-target 1.0,0.5,0.6
-python -m camera --ip <robot-ip>                       # stream smoke test, no control
+python -m camera --ip <robot-ip>                       # stream smoke test, no control: prints 1280x720, ~15 fps
 python   run.py --env robot --policy look --iface <iface> --mode standing --camera-ip <robot-ip>
 ```
+
+### Describing the scene with a vision model
+
+The red-blob detector is a stand-in. For real understanding, a `Perceiver`
+(`perception.py`) sends frames to a vision-language model on a background
+thread and publishes the latest `Percept`: a one-sentence `summary` ("There is
+a chair in front of you"), the `objects` in view with a normalised box, a rough
+`distance_m` and a `bearing` (rad, computed locally from the box and the camera
+FOV), and `path_clear`. Policies read it as `obs.percept`; `obs.percept_age` is
+the age of the frame it describes, so it includes the model's latency, and a
+policy holds when it grows stale. The control loop never waits on the model.
+
+Backend: **Hugging Face Inference Providers** only. Get a fine-grained token with
+the "Make calls to Inference Providers" permission and export it as `HF_TOKEN`.
+The default model is `perception.DEFAULT_MODEL` (a Qwen3-VL instruct model,
+verified live on the router); override with `--vision-model` or
+`$G1_VISION_MODEL`, and pin a provider with a suffix such as
+`Qwen/Qwen3-VL-30B-A3B-Instruct:deepinfra` when you need structured output.
+
+```
+python   run.py --env check --policy describe --camera-noise        # offline: fake perceiver
+export HF_TOKEN=hf_...
+python -m perception head.png                                       # one real request, prints the Percept + latency
+mjpython run.py --env sim --policy describe --sim-obstacle 1.2,0,0.225 --vision api --vision-echo
+python   run.py --env sim --policy describe --headless --realtime 1 --sim-target 1.0,0.5,0.6 --vision api
+```
+
+### Targets and walking
+
+A policy says what it is looking for by naming a `Target` (`targets.py`).
+A target finds itself in an observation (`locate`) and returns a `Sighting`:
+where it is relative to the camera (`bearing`, `elevation`), its image box and
+apparent size, and a `distance_m` only if a detector reported one. Targets never
+estimate distance; instead each defines `reached(sighting)` in its own terms.
+`RedDot` (pixels) counts as reached when it looms large or drops to the bottom
+of the frame; `Labeled` / `Salient` come from the vision model; `Doorway` is a
+stub that can be faced but not walked to.
+
+`Face(target)` turns the waist toward the target (`look`, `describe`, `face_door`).
+`GoTo(target)` is the walk-to-it loop: turn to face, step forward, hold when the
+target is lost, stop when `reached` says so. It drives the base through
+`Action.base = (vx, vy, vyaw)`:
+
+* **check** enforces `BASE_VEL_MAX` (0.3 m/s forward) and reports the path.
+* **sim** slides the pinned pelvis kinematically — the legs hold the stand
+  pose, so this rehearses the loop and the limits, not the gait.
+* **robot** walks for real with `LocoClient.Move`, only with `--walk`. Move is
+  a 1 s dead-man command re-sent from a 10 Hz thread and stopped before the arms
+  release; it works in FSM 200, so both `--mode`s apply. Pre-flight: on the
+  floor or hoisted with feet touching, ~2 m clear all round, no tether to snag,
+  spotter on the remote with L2+B.
+
+```
+python   run.py --env check --policy goto_red --camera-noise
+mjpython run.py --env sim   --policy goto_red --sim-target 1.5,0.3,0.6     # slides ~1 m to the ball, "reached"
+python   run.py --env robot --policy goto_red --iface <iface> --mode standing --camera-ip <ip>          # refuses: needs --walk
+python   run.py --env robot --policy goto_red --iface <iface> --mode standing --camera-ip <ip> --walk   # walks to a red object
+```
+
+### Vision-model cost and pacing
+
+`--vision auto` (default) uses the offline fake for policies that need vision;
+`--vision api` is always explicit because it costs money: roughly 0.5–1.5k
+tokens per image, so at the default `--vision-interval 2` a run can make up to
+1800 requests an hour. `--vision-interval` and `--max-time` are the knobs.
+`describe` turns the waist toward the most salient object and prints each new
+summary; `wave_on_person` runs `sixseven` when the model reports a person.
+Check and headless sim run faster than realtime, so a real model there
+describes frames from well before its answer lands; use the fake, or pace sim
+with `--realtime 1`.
 
 ### Robot modes
 

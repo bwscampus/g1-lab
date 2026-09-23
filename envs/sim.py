@@ -10,6 +10,10 @@ viewed without the robot needing to balance. Pass ``--free-base`` to drop the
 weld (the stiff PD on the legs keeps it standing for a while, but it will not
 balance).
 
+Walking: an ``Action.base`` velocity slides the pinned pelvis kinematically
+(legs stay in the stand pose, feet drag). That rehearses a behaviour's loop and
+its limits, not gait physics. With ``--free-base`` a base command aborts.
+
 Camera: the model gets a ``head`` camera on ``torso_link`` at the D435 mount.
 For policies that use the camera it is rendered offscreen every
 ``--camera-every`` ticks and stamped with sim time. ``--sim-target x,y,z`` adds
@@ -34,7 +38,7 @@ from camera import Camera
 from config import (CONTROL_DT, HEAD_CAMERA_FOVY, HEAD_CAMERA_PITCH, HEAD_CAMERA_POS,
                     HEAD_CAMERA_SIZE, NUM_JOINTS)
 from policy import Action
-from envs.base import Env
+from envs.base import Env, EnvAbort
 
 _LOCAL_MENAGERIE = Path.home() / "Robotics" / "mujoco_menagerie" / "unitree_g1" / "scene.xml"
 HEAD_CAMERA = "head"
@@ -58,10 +62,12 @@ def find_mjcf() -> Path:
         "No G1 MJCF found. Set G1_MJCF=/path/to/unitree_g1/scene.xml or pip install mujoco-menagerie")
 
 
-def load_model(target: tuple[float, float, float] | None = None):
+def load_model(target: tuple[float, float, float] | None = None,
+               obstacle: tuple[float, float, float] | None = None):
     """Compile the G1 scene with the head camera added on torso_link (pose from
     the URDF's d435_joint; MuJoCo cameras look along -z with y up, hence the
-    xyaxes) and, optionally, a red sphere at ``target`` for camera policies."""
+    xyaxes) and, optionally, a red sphere at ``target`` for camera policies and
+    a chair-sized box at ``obstacle`` for a vision model to describe."""
     import mujoco
 
     spec = mujoco.MjSpec.from_file(str(find_mjcf()))
@@ -73,6 +79,10 @@ def load_model(target: tuple[float, float, float] | None = None):
         body = spec.worldbody.add_body(name="target", pos=list(target))
         body.add_geom(type=mujoco.mjtGeom.mjGEOM_SPHERE, size=[0.1, 0, 0], rgba=[1, 0, 0, 1],
                       contype=0, conaffinity=0)
+    if obstacle is not None:
+        body = spec.worldbody.add_body(name="obstacle", pos=list(obstacle))
+        body.add_geom(type=mujoco.mjtGeom.mjGEOM_BOX, size=[0.2, 0.2, 0.225],
+                      rgba=[0.5, 0.5, 0.5, 1])           # neutral grey (no red bias); collides
     return spec.compile()
 
 
@@ -92,21 +102,25 @@ class SimEnv(Env):
         g.add_argument("--headless", action="store_true", help="run physics without the viewer")
         g.add_argument("--free-base", action="store_true",
                        help="do not weld the pelvis to the world")
-        g.add_argument("--realtime", type=float, default=1.0,
-                       help="playback speed multiplier (default 1.0)")
+        g.add_argument("--realtime", type=float, default=None,
+                       help="playback speed multiplier; default 1.0 with the viewer, unpaced when "
+                            "--headless (give it explicitly to pace a headless run, e.g. for --vision api)")
         g.add_argument("--hold-end", type=float, default=2.0,
                        help="seconds to keep the viewer open after the policy finishes")
         g.add_argument("--camera-every", type=int, default=3,
                        help="render the head camera every N ticks (default 3, ~16 Hz)")
         g.add_argument("--sim-target", type=_xyz, default=None, metavar="X,Y,Z",
                        help="add a red 10 cm sphere at this world position, e.g. 1.0,0.5,0.6")
+        g.add_argument("--sim-obstacle", type=_xyz, default=None, metavar="X,Y,Z",
+                       help="add a chair-sized box (0.4x0.4x0.45 m, centre) for a vision model to "
+                            "describe, e.g. 1.2,0,0.225")
 
     def setup(self) -> None:
         import mujoco
         import mujoco.viewer
 
         self.mujoco = mujoco
-        self.model = load_model(self.args.sim_target)
+        self.model = load_model(self.args.sim_target, self.args.sim_obstacle)
         self.data = mujoco.MjData(self.model)
         if self.model.nu != NUM_JOINTS:
             raise RuntimeError(f"expected {NUM_JOINTS} actuators, model has {self.model.nu}")
@@ -147,6 +161,9 @@ class SimEnv(Env):
         key = self.mujoco.mj_name2id(m, self.mujoco.mjtObj.mjOBJ_KEY, "stand")
         self.mujoco.mj_resetDataKeyframe(m, d, key)
         self._base_qpos = d.qpos[:7].copy()
+        self._base_qpos0 = self._base_qpos.copy()
+        self._base_pose = np.zeros(3)      # x, y, yaw of the slid base
+        self._base_moved = False
         self.hold = d.qpos[self.qpos_idx].copy()
         d.ctrl[:] = self.hold
         self.mujoco.mj_forward(m, d)
@@ -168,6 +185,24 @@ class SimEnv(Env):
             d.qvel[:6] = 0.0
         self.mujoco.mj_step(self.model, d)
 
+    def _slide_base(self, base) -> None:
+        """Integrate a base velocity into the pinned pelvis pose."""
+        vx, vy, vyaw = base
+        x, y, yaw = self._base_pose
+        yaw += vyaw * CONTROL_DT
+        x += (math.cos(yaw) * vx - math.sin(yaw) * vy) * CONTROL_DT
+        y += (math.sin(yaw) * vx + math.cos(yaw) * vy) * CONTROL_DT
+        self._base_pose = np.array([x, y, yaw])
+        q0 = self._base_qpos0
+        self._base_qpos[0] = q0[0] + x
+        self._base_qpos[1] = q0[1] + y
+        rot = np.zeros(4)
+        self.mujoco.mju_axisAngle2Quat(rot, np.array([0.0, 0.0, 1.0]), yaw)
+        quat = np.zeros(4)
+        self.mujoco.mju_mulQuat(quat, rot, q0[3:7])
+        self._base_qpos[3:7] = quat
+        self._base_moved = True
+
     def _render(self) -> None:
         if self.renderer is None:
             return
@@ -187,6 +222,10 @@ class SimEnv(Env):
         ctrl = self.hold.copy()
         ctrl[j] = (1.0 - action.weight) * self.hold[j] + action.weight * action.q[j]
         self.data.ctrl[:] = ctrl
+        if action.base is not None:
+            if not self._pin_base:
+                raise EnvAbort("sim cannot walk: base commands need the pinned base (drop --free-base)")
+            self._slide_base(action.base)
         for _ in range(self.substeps):
             self._physics_tick()
         self._tick += 1
@@ -194,8 +233,12 @@ class SimEnv(Env):
             self._render()
         if self.viewer is not None:
             self.viewer.sync()
+        realtime = self.args.realtime
+        if realtime is None and self.viewer is not None:
+            realtime = 1.0
+        if realtime is not None:
             # pace to wall-clock
-            self._wall += CONTROL_DT / max(self.args.realtime, 1e-6)
+            self._wall += CONTROL_DT / max(realtime, 1e-6)
             lag = self._wall - time.time()
             if lag > 0:
                 time.sleep(lag)
@@ -203,7 +246,10 @@ class SimEnv(Env):
 
     def report(self) -> bool:
         q = self._q()
+        x, y, yaw = self._base_pose
         print(f"sim: finished at sim time {self.data.time:.2f} s; "
               f"pelvis z = {self.data.qpos[2]:.3f} m"
-              + (f"; {self.camera.count} camera frames" if self.renderer is not None else ""))
+              + (f"; {self.camera.count} camera frames" if self.renderer is not None else "")
+              + (f"; base slid to ({x:+.2f}, {y:+.2f}) m yaw {math.degrees(yaw):+.0f} deg"
+                 if self._base_moved else ""))
         return bool(np.all(np.isfinite(q)))

@@ -7,7 +7,7 @@ from motions import SixSeven, TPose
 from policy import Motion, Obs, Segment, SegmentPolicy
 from routines import POLICIES, ROUTINES, Routine, Selector, build_policy
 from run import build_parser, main, run
-from vision import Look
+from behaviors import Look
 
 
 def make_check():
@@ -92,7 +92,7 @@ def test_build_policy():
     assert build_policy("demo").name == "demo"
     assert isinstance(build_policy("look"), Look)
     assert isinstance(build_policy("wave_on_red"), Selector)
-    assert set(POLICIES) == {"look", "wave_on_red"}
+    assert set(POLICIES) == {"look", "describe", "goto_red", "face_door", "wave_on_red", "wave_on_person"}
     with pytest.raises(KeyError):
         build_policy("nope")
     with pytest.raises(KeyError):
@@ -113,6 +113,6 @@ def test_motion_params():
 
 def test_cli_list_and_unknown(capsys):
     assert main(["--list"]) == 0
-    assert "policies: look, wave_on_red" in capsys.readouterr().out
+    assert "policies: describe, face_door, goto_red, look, wave_on_person, wave_on_red" in capsys.readouterr().out
     with pytest.raises(SystemExit):
         main(["--env", "check", "--policy", "nope"])

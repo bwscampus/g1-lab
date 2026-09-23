@@ -14,6 +14,15 @@ Two modes, ``--mode`` (required, no default):
             remember the current FSM -> FSM 200 -> run -> release arms
             -> back to the remembered FSM. Never damps.
 
+Walking (``--walk``): a policy's ``Action.base`` velocity is sent as
+``LocoClient.Move(vx, vy, vyaw)`` from a 10 Hz commander thread (the RPC blocks,
+so it never runs on the tick thread), clamped to ``config.BASE_VEL_MAX``. Move
+is a 1 s dead-man command on the robot; the commander re-sends while a command
+is set, sends ``StopMove`` when it clears, and stops before the arms are
+released. Move works in FSM 200, so no extra FSM transition is needed.
+Pre-flight for walking: standing on the floor or hoisted with feet touching,
+~2 m clear in every direction, no tether to snag, spotter on the remote (L2+B).
+
 Camera: for policies that use it, the head camera is streamed over WebRTC
 (``--camera-ip``, ``$UNITREE_AES_128_KEY``) and connected *before* any FSM
 transition, so a bad camera link fails before the robot is touched. The robot
@@ -30,12 +39,13 @@ from __future__ import annotations
 
 import argparse
 import os
+import threading
 import time
 
 import numpy as np
 
 from camera import WebRTCCamera
-from config import ARM_SDK_WEIGHT_IDX, CONTROL_DT, NUM_JOINTS, UPPER_BODY
+from config import ARM_SDK_WEIGHT_IDX, BASE_VEL_MAX, CONTROL_DT, NUM_JOINTS, UPPER_BODY
 from policy import Action
 from envs.base import Env
 
@@ -102,6 +112,88 @@ class ArmSdk:
         self.pub.Write(self.cmd)
 
 
+class BaseCommander:
+    """Owns LocoClient.Move on its own thread with a latest-only command slot.
+    ``command(base)`` never blocks; the worker re-sends every ``period`` seconds
+    while a command is set and sends StopMove once when it clears or on stop."""
+
+    def __init__(self, loco, period: float = 0.1, limits=BASE_VEL_MAX) -> None:
+        self.loco = loco
+        self.period = period
+        self.limits = np.asarray(limits, dtype=float)
+        self._cond = threading.Condition()
+        self._cmd = None
+        self._changed = False
+        self._stop = False
+        self._thread: threading.Thread | None = None
+        self._last_sent = None
+        self.calls = 0
+        self.failures = 0
+        self.latency_max = 0.0
+        self._latency_sum = 0.0
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._run, name="base-commander", daemon=True)
+        self._thread.start()
+
+    def command(self, base) -> None:
+        if base is not None:
+            base = tuple(float(v) for v in np.clip(base, -self.limits, self.limits))
+        with self._cond:
+            self._cmd = base
+            self._changed = True
+            self._cond.notify()
+
+    def stop(self, join: float = 3.0) -> None:
+        with self._cond:
+            self._cmd = None
+            self._stop = True
+            self._changed = True
+            self._cond.notify()
+        t = self._thread
+        if t is not None:
+            t.join(timeout=join)     # the robot's own 1 s dead-man is the backstop
+
+    def _run(self) -> None:
+        while True:
+            with self._cond:
+                self._cond.wait_for(lambda: self._changed or self._stop, timeout=self.period)
+                cmd, stop = self._cmd, self._stop
+                self._changed = False
+            if stop:
+                break
+            if cmd is not None:
+                self._send(lambda: self.loco.Move(*cmd))
+                self._last_sent = cmd
+            elif self._last_sent is not None:
+                self._send(self.loco.StopMove)
+                self._last_sent = None
+        if self._last_sent is not None:
+            self._send(self.loco.StopMove)
+            self._last_sent = None
+
+    def _send(self, fn) -> None:
+        t0 = time.monotonic()
+        try:
+            code = fn()
+        except Exception as e:           # a failed RPC must not kill the commander
+            code = e
+        dt = time.monotonic() - t0
+        self.calls += 1
+        self._latency_sum += dt
+        self.latency_max = max(self.latency_max, dt)
+        if code not in (0, None):
+            self.failures += 1
+            if self.failures <= 3:
+                print(f"base: command failed ({code})")
+
+    def summary(self) -> str:
+        if not self.calls:
+            return "base: no commands sent"
+        return (f"base: {self.calls} command(s), {self.failures} failure(s), RPC latency mean "
+                f"{self._latency_sum / self.calls * 1e3:.0f} ms max {self.latency_max * 1e3:.0f} ms")
+
+
 class RobotEnv(Env):
     name = "robot"
 
@@ -115,6 +207,10 @@ class RobotEnv(Env):
                             "standing: remember FSM, ->FSM200, run, release, ->remembered FSM, no Damp")
         g.add_argument("--countdown", type=int, default=3,
                        help="seconds to count down before taking over the arms")
+        g.add_argument("--walk", action="store_true",
+                       help="let the policy drive the base with LocoClient.Move (FSM 200), clamped to "
+                            "BASE_VEL_MAX. PRE-FLIGHT: on the floor or hoisted with feet touching, ~2 m "
+                            "clear all round, no tether to snag, spotter on the remote with L2+B")
         g.add_argument("--camera-ip", default=os.environ.get("UNITREE_ROBOT_IP"),
                        help="robot IP for the head camera stream (default: $UNITREE_ROBOT_IP)")
         g.add_argument("--camera-timeout", type=float, default=15.0,
@@ -160,6 +256,13 @@ class RobotEnv(Env):
             print(f"Taking over arms in {s}...")
             time.sleep(1.0)
         self.arm = ArmSdk()
+        self.base = None
+        if self.args.walk:
+            print("WALKING ENABLED: the policy may drive the base (Move, <= "
+                  f"{BASE_VEL_MAX[0]} m/s). Clear floor, spotter ready."
+                  + (" Gantry mode: mind the tether." if self.args.mode == "gantry" else ""))
+            self.base = BaseCommander(self.loco)
+            self.base.start()
 
     def _fsm(self):
         code, fsm = self.loco.GetFsmId()
@@ -179,6 +282,10 @@ class RobotEnv(Env):
                 camera.stop()
 
     def _teardown_robot(self) -> None:
+        base = getattr(self, "base", None)
+        if base is not None:
+            print("Stopping the base")
+            base.stop()                  # StopMove before the arms are released
         arm = getattr(self, "arm", None)
         if arm is not None:
             print("Releasing arms")
@@ -214,6 +321,11 @@ class RobotEnv(Env):
         bad = [j for j in action.joints if j not in UPPER_BODY]
         if bad:
             raise RuntimeError(f"arm_sdk can only command waist+arms, policy tried {bad}")
+        base = getattr(self, "base", None)
+        if action.base is not None and base is None:
+            raise RuntimeError("the policy commands the base; pass --walk (read its pre-flight first)")
+        if base is not None:
+            base.command(action.base)
         self.arm.send(action)
         self._wall += CONTROL_DT
         lag = self._wall - time.time()
@@ -224,6 +336,9 @@ class RobotEnv(Env):
         return np.array([m.q for m in self.arm.state.motor_state[:NUM_JOINTS]])
 
     def report(self) -> bool:
+        base = getattr(self, "base", None)
+        if base is not None:
+            print(base.summary())
         overruns = getattr(self, "overruns", 0)
         if overruns:
             print(f"robot: {overruns} tick overrun(s) > {CONTROL_DT * 1e3:.0f} ms; "

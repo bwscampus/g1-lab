@@ -12,19 +12,25 @@ same calls so the runner loop is identical:
 Camera frames are optional: ``frame()`` returns the latest one (or None) and
 ``clock()`` is the timebase its ``stamp`` is on, so ``observe`` can compute the
 frame's age. The runner sets ``use_camera`` before ``setup`` from
-``Policy.uses_camera``; envs only open a camera when it is set.
+``Policy.uses_camera``; envs only open a camera when it is set. A vision model
+is plugged in the same way: the runner sets ``perceiver`` and ``observe`` offers
+it each frame and attaches its latest ``Percept`` with the age of the frame that
+percept describes (on the same clock, so the model's latency is included).
 """
 from __future__ import annotations
 
 import argparse
 import math
 import time
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 import numpy as np
 
 from camera import Frame
 from policy import Action, Obs
+
+if TYPE_CHECKING:
+    from perception import Perceiver
 
 
 class EnvAbort(Exception):
@@ -34,6 +40,7 @@ class EnvAbort(Exception):
 class Env:
     name: ClassVar[str] = "env"
     use_camera: bool = False
+    perceiver: "Perceiver | None" = None
 
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
@@ -75,5 +82,12 @@ class Env:
 
     def observe(self, q: np.ndarray) -> Obs:
         f = self.frame()
-        age = math.inf if f is None else max(0.0, self.clock() - f.stamp)
-        return Obs(q, f, age)
+        now = self.clock()
+        age = math.inf if f is None else max(0.0, now - f.stamp)
+        p = None
+        if self.perceiver is not None:
+            if f is not None:
+                self.perceiver.offer(f)
+            p = self.perceiver.latest()
+        p_age = math.inf if p is None else max(0.0, now - p.frame_stamp)
+        return Obs(q, f, age, p, p_age)

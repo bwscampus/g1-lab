@@ -83,3 +83,10 @@ def test_weight_zero_masks_out_of_bounds_motion_speed():
     kinds = {v.kind for v in env.violations}
     assert kinds == {"above"}
     assert np.all(env.peak_vel == 0)
+
+
+def test_weight_violation_prints_no_joint_name(capsys):
+    env = make_check()
+    run(BadWeight(), env)
+    lines = [l for l in capsys.readouterr().out.splitlines() if "weight" in l and "t=" in l]
+    assert lines and all(" -  " in l and "wrist" not in l for l in lines)
