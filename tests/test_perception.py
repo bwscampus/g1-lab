@@ -1,6 +1,7 @@
 import json
 import math
 import threading
+import time
 
 import numpy as np
 import pytest
@@ -9,8 +10,9 @@ from camera import Frame
 from config import CONTROL_DT, STAND_Q, joint_index
 from envs import CheckEnv
 from motions import SixSeven
-from perception import (DEFAULT_MODEL, Detected, FakePerceiver, HFPerceiver, Perceiver, Percept,
-                        RequestError, build_perceiver, extract_json)
+from perception import (DEFAULT_MODEL, Detected, HFPerceiver, Perceiver, Percept, RequestError,
+                        VisionQuery, build_perceiver, extract_json)
+from tests.doubles import FakePerceiver
 from policy import Obs
 from routines import POLICIES, Selector
 from run import build_parser, main, run
@@ -73,30 +75,61 @@ class Gated(Perceiver):
         return Percept(f"frame {f.seq}", [], True, f.seq, f.stamp)
 
 
-def test_worker_keeps_latest_only():
+def wait_until(cond, timeout=2.0):
+    t0 = time.monotonic()
+    while not cond():
+        if time.monotonic() - t0 > timeout:
+            return False
+        time.sleep(0.005)
+    return True
+
+
+def test_worker_runs_only_on_request_and_coalesces():
     per = Gated()
     per.start()
     try:
+        assert per.request() is False                 # nothing offered yet
         per.offer(frame(1))
-        deadline = threading.Event()
-        for _ in range(100):                      # wait until the worker holds frame 1
-            if per.requests >= 1:
-                break
-            deadline.wait(0.01)
+        time.sleep(0.05)
+        assert per.requests == 0                      # offering alone never runs the model
+        assert per.request() is True
+        assert wait_until(lambda: per.requests == 1)  # the worker now holds frame 1 (gated)
+        assert per.pending
         for s in range(2, 11):
             per.offer(frame(s))
+            assert per.request() is False             # in flight: ignored
         per.gate.set()
-        for _ in range(200):
-            if per.count >= 2:
-                break
-            deadline.wait(0.01)
-        assert per.seen == [1, 10]
-        assert per.latest().frame_seq == 10 and per.latest().seq == 2
-        per.offer(frame(10))                      # already described: no new request
-        deadline.wait(0.05)
-        assert per.requests == 2
+        assert wait_until(lambda: per.count == 1 and not per.pending)
+        assert per.seen == [1] and per.latest().frame_seq == 1
+        assert per.request() is True                  # the newest offered frame, 10
+        assert wait_until(lambda: per.count == 2)
+        assert per.seen == [1, 10] and per.latest().seq == 2
+        assert wait_until(lambda: not per.pending)
+        assert per.request() is False                 # frame 10 already described
     finally:
         per.stop()
+
+
+def test_request_min_interval_floor():
+    per = FakePerceiver(min_interval=10.0)
+    per.offer(frame(1))
+    assert per.request() is True
+    per.offer(frame(2))
+    assert per.request() is False and per.requests == 1
+
+
+def test_vision_query_polls_at_refresh():
+    per = FakePerceiver()
+    q = VisionQuery(refresh=1.0)
+    f1 = frame(1)
+    assert q.poll(per, Obs(STAND_Q), 0.0) is False                      # no frame
+    assert q.poll(per, Obs(STAND_Q, f1, 0.0), 0.0) is True
+    p = per.latest()
+    assert q.poll(per, Obs(STAND_Q, f1, 0.0, p, 0.0), 0.5) is False     # percept already describes f1
+    f2 = frame(2)
+    assert q.poll(per, Obs(STAND_Q, f2, 0.0, p, 0.1), 0.5) is False     # too soon
+    assert q.poll(per, Obs(STAND_Q, f2, 0.0, p, 0.6), 1.0) is True
+    assert q.sent == 2
 
 
 def test_worker_errors_counted_not_raised():
@@ -107,11 +140,11 @@ def test_worker_errors_counted_not_raised():
             return Percept("ok", [], True, f.seq, f.stamp)
 
     per = Boom(min_interval=0.0, threaded=False)
-    per.offer(frame(1))
-    per.offer(frame(2))
+    per.offer(frame(1)); per.request()
+    per.offer(frame(2)); per.request()
     assert per.errors == 1 and "model down" in str(per.last_error)
-    assert per.latest().frame_seq == 1
-    per.offer(frame(3))
+    assert per.latest().frame_seq == 1 and not per.pending
+    per.offer(frame(3)); per.request()
     assert per.latest().frame_seq == 3 and per.requests == 3
     assert "1 error(s)" in per.summary()
 
@@ -121,11 +154,12 @@ def test_fake_perceiver_labels_red_blob():
     img = solid((0, 0, 0))
     img[:, 48:] = (230, 20, 20)
     per.offer(Frame(img, 1.5, 7))
+    assert per.latest() is None and per.request()
     p = per.latest()
     assert p.frame_seq == 7 and p.frame_stamp == 1.5 and p.seq == 1
     d = p.salient()
     assert d.label == "ball" and d.x > 0.5 and d.bearing > 0 and p.path_clear is False
-    per.offer(frame(8))
+    per.offer(frame(8)); per.request()
     assert per.latest().objects == [] and per.latest().path_clear is True
 
 
@@ -154,6 +188,7 @@ def test_hf_request_and_stream():
     img = solid((200, 30, 30), h=48, w=64)        # red in RGB
     p = per.describe(Frame(img, 2.0, 3))
     url, headers, body = calls[0]
+    assert per.model == "m/vl"
     assert url == "https://router.huggingface.co/v1/chat/completions"
     assert headers["Authorization"] == "Bearer hf_x"
     assert body["model"] == "m/vl" and body["stream"] is True
@@ -222,11 +257,11 @@ def test_describe_passes_check_under_noise():
         ages.append((obs.frame_age, obs.percept_age))
         return obs
     env.observe = observe
-    p = Describe(duration=3.0)
+    p = Describe(duration=3.0, vision_refresh=0.5)
     assert run(p, env, perceiver=per) is True
     assert env.violations == []
-    assert per.requests > 30
-    assert all(pa == fa for fa, pa in ages if fa != math.inf)   # inline fake: same age
+    assert 5 <= per.requests <= 8                       # one per refresh, not one per frame
+    assert all(pa >= fa for fa, pa in ages if pa != math.inf)   # a percept is never newer than its frame
     assert env.q_min[WAIST_YAW] < 0 or env.q_max[WAIST_YAW] > 0   # it moved
 
 
@@ -272,7 +307,10 @@ def test_wave_on_person_selector():
     assert p.uses_vision is True
     assert run(p, env, perceiver=per) is True
     assert env.violations == []
-    assert env.ticks == round((10.0 + SixSeven().duration) / CONTROL_DT)
+    # takeover 5 s -> first idle tick asks the model (served inline) -> the percept is visible
+    # on the next tick -> trigger -> sixseven -> handback: one tick more than a frame trigger
+    assert env.ticks == round((10.0 + SixSeven().duration) / CONTROL_DT) + 1
+    assert per.requests == 1
 
 
 def test_selector_rules_see_percepts_without_frames():
@@ -289,25 +327,27 @@ def test_selector_rules_see_percepts_without_frames():
 
 # -- CLI ---------------------------------------------------------------------------------
 
-def test_build_perceiver_modes(monkeypatch):
+def test_build_perceiver_modes(monkeypatch, capsys):
     parse = lambda *a: build_parser().parse_args(["--env", "check", "--policy", "x", *a])
-    assert isinstance(build_perceiver(parse(), Describe()), FakePerceiver)
-    assert build_perceiver(parse(), POLICIES["look"]()) is None
-    assert build_perceiver(parse("--vision", "off"), Describe()) is None
-    fake = build_perceiver(parse("--vision", "fake", "--vision-fake-label", "cat"), POLICIES["look"]())
-    assert isinstance(fake, FakePerceiver) and fake.label == "cat"
     monkeypatch.delenv("HF_TOKEN", raising=False)
     monkeypatch.delenv("G1_VISION_API_KEY", raising=False)
+    assert build_perceiver(parse(), POLICIES["look"]()) is None              # no vision needed
+    assert build_perceiver(parse(), Describe()) is None                       # auto without a token
+    assert "no HF_TOKEN" in capsys.readouterr().out
+    assert build_perceiver(parse("--vision", "off"), Describe()) is None
     with pytest.raises(RuntimeError):
         build_perceiver(parse("--vision", "api"), Describe())
     with pytest.raises(SystemExit):
         main(["--env", "check", "--policy", "describe", "--vision", "api"])
     monkeypatch.setenv("HF_TOKEN", "hf_t")
+    auto = build_perceiver(parse(), Describe())
+    assert isinstance(auto, HFPerceiver) and auto.model == DEFAULT_MODEL
     api = build_perceiver(parse("--vision", "api", "--vision-model", "x/y", "--vision-interval", "5"), Describe())
     assert isinstance(api, HFPerceiver) and api.model == "x/y" and api.min_interval == 5.0
 
 
-def test_cli_describe_runs_with_fake(capsys):
-    assert main(["--env", "check", "--policy", "describe", "--camera-noise", "--max-time", "5"]) == 1
+def test_describe_with_fake_perceiver_narrates(capsys):
+    env = check_env("--camera-noise")
+    assert run(Describe(duration=2.0, vision_refresh=0.5), env, perceiver=FakePerceiver()) is True
     out = capsys.readouterr().out
     assert "[describe] a red ball at" in out and "perception:" in out

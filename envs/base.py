@@ -13,9 +13,10 @@ Camera frames are optional: ``frame()`` returns the latest one (or None) and
 ``clock()`` is the timebase its ``stamp`` is on, so ``observe`` can compute the
 frame's age. The runner sets ``use_camera`` before ``setup`` from
 ``Policy.uses_camera``; envs only open a camera when it is set. A vision model
-is plugged in the same way: the runner sets ``perceiver`` and ``observe`` offers
-it each frame and attaches its latest ``Percept`` with the age of the frame that
-percept describes (on the same clock, so the model's latency is included).
+is plugged in the same way: the runner sets ``perceiver``, ``observe`` offers it
+each frame and attaches its latest ``Percept`` with the age of the frame that
+percept describes (on the same clock, so the model's latency is included). The
+model only runs when a policy asks (``perceiver.request``).
 """
 from __future__ import annotations
 
@@ -41,6 +42,15 @@ class Env:
     name: ClassVar[str] = "env"
     use_camera: bool = False
     perceiver: "Perceiver | None" = None
+
+    @property
+    def can_walk(self) -> bool:
+        """Whether this env accepts Action.base right now."""
+        return False
+
+    def base_pose(self):
+        """The env's own (x, y, yaw) base estimate, or None."""
+        return None
 
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
@@ -90,4 +100,4 @@ class Env:
                 self.perceiver.offer(f)
             p = self.perceiver.latest()
         p_age = math.inf if p is None else max(0.0, now - p.frame_stamp)
-        return Obs(q, f, age, p, p_age)
+        return Obs(q, f, age, p, p_age, self.perceiver, self.base_pose())

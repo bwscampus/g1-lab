@@ -317,6 +317,10 @@ class RobotEnv(Env):
     def frame(self):
         return None if self.camera is None else self.camera.latest()
 
+    @property
+    def can_walk(self) -> bool:
+        return bool(self.args.walk)
+
     def step(self, action: Action) -> np.ndarray:
         bad = [j for j in action.joints if j not in UPPER_BODY]
         if bad:

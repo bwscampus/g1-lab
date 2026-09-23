@@ -9,7 +9,7 @@ from camera import ClockedCamera, Frame
 from config import BASE_VEL_MAX, CONTROL_DT, STAND_Q, UPPER_BODY, joint_index
 from envs import CheckEnv, RobotEnv
 from envs.robot import BaseCommander
-from perception import Detected, FakePerceiver, Percept
+from perception import Detected, Percept
 from policy import Action, Obs, ReactivePolicy
 from run import build_parser, run
 from targets import Doorway, Labeled, RedDot, Salient, Sighting, Target, seen
@@ -175,7 +175,7 @@ def test_goto_reaches_and_stops():
     assert cmds and all(abs(b[i]) <= BASE_VEL_MAX[i] + 1e-9 for b in cmds for i in range(3))
     assert any(b[0] == 0 and b[2] < 0 for b in cmds)   # turned right first, without walking
     assert any(b[0] > 0.15 for b in cmds)              # then walked
-    assert env.base_path > 0 and env.base_pose[2] < 0
+    assert env.base_path > 0 and env.base_pose()[2] < 0
     last = max(i for i, b in enumerate(env.bases) if b is not None)
     assert all(b is None for b in env.bases[last + 1:]) and len(env.bases) - last > 0.4 / CONTROL_DT
     assert env.ticks < (20.0 + 0.8) / CONTROL_DT          # finished early

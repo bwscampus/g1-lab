@@ -215,6 +215,13 @@ class SimEnv(Env):
     def clock(self) -> float:
         return float(self.data.time)
 
+    @property
+    def can_walk(self) -> bool:
+        return self._pin_base
+
+    def base_pose(self):
+        return tuple(float(v) for v in self._base_pose)
+
     def step(self, action: Action) -> np.ndarray:
         if self.viewer is not None and not self.viewer.is_running():
             raise KeyboardInterrupt("viewer closed")

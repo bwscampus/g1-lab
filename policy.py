@@ -18,7 +18,7 @@ from camera import Frame
 from config import CONTROL_DT, JOINT_HI, JOINT_LO, NUM_JOINTS, STAND_Q, UPPER_BODY
 
 if TYPE_CHECKING:
-    from perception import Percept
+    from perception import Perceiver, Percept
 
 
 @dataclass
@@ -69,6 +69,10 @@ class Obs:
                recent frame), or None. Latest-only too: key on ``percept.seq``.
     percept_age: env-clock age of the frame that percept describes, so it
                includes the model's latency (inf when there is no percept).
+    perceiver: the vision model handle, or None. Percepts are produced only on
+               request (non-blocking; the result lands in a later obs).
+    base_pose: the env's own (x, y, yaw) base estimate (check/sim integrate the
+               commanded velocity; the robot has none yet).
     """
 
     q: np.ndarray
@@ -76,6 +80,8 @@ class Obs:
     frame_age: float = math.inf
     percept: Optional["Percept"] = None     # latest vision-model description, if any
     percept_age: float = math.inf           # age of the frame it describes (latency included)
+    perceiver: Optional["Perceiver"] = None # ask for a fresh percept with .request(frame)
+    base_pose: Optional[tuple[float, float, float]] = None   # env's (x, y, yaw) estimate, if any
 
     def __post_init__(self) -> None:
         self.q = np.asarray(self.q, dtype=float)
@@ -91,6 +97,7 @@ class Policy:
     kd: float = 1.5
     uses_camera: bool = False       # the runner only opens a camera for policies that ask
     uses_vision: bool = False       # ... and only runs a vision model for policies that ask
+    perceiver: Optional["Perceiver"] = None   # set by the runner before reset()
 
     def reset(self, obs: Obs) -> None:
         """Called once with the robot's current observation before the first step."""
@@ -101,6 +108,9 @@ class Policy:
         Must not block: on the robot the whole tick is 20 ms. Do heavy per-frame
         work on another thread and read its latest result here."""
         raise NotImplementedError
+
+    def close(self) -> None:
+        """Called once by the runner after the env is torn down (also on Ctrl-C)."""
 
     def action(self, q: np.ndarray, weight: float = 1.0,
                base: Optional[tuple[float, float, float]] = None) -> Action:
@@ -129,6 +139,7 @@ class Segment:
     duration: float
     weight: WeightFn = field(default=lambda a: 1.0)
     label: str = ""
+    base: Optional[tuple[float, float, float]] = None   # base velocity held for the whole segment
 
 
 class SegmentPolicy(Policy):
@@ -185,7 +196,7 @@ class SegmentPolicy(Policy):
                 out = self._q0.copy()
                 for j in self.joints:
                     out[j] = start[j] + a * (goal[j] - start[j])
-                return self.action(out, weight=seg.weight(a))
+                return self.action(out, weight=seg.weight(a), base=seg.base)
         return None
 
 
@@ -249,13 +260,14 @@ class ReactivePolicy(Policy):
 
     def __init__(self, duration: float = 10.0, *, ramp: float = 2.0, to_stand: float = 3.0,
                  margin: float = 0.05, max_vel: float = 3.0, stale_after: float = 0.5,
-                 name: str | None = None) -> None:
+                 vision_refresh: float = 2.0, name: str | None = None) -> None:
         self.track_time = duration
         self.ramp = ramp
         self.to_stand = to_stand
         self.margin = margin
         self.max_vel = max_vel
         self.stale_after = stale_after
+        self.vision_refresh = vision_refresh    # seconds between vision-model requests
         if name is not None:
             self.name = name
 
@@ -300,6 +312,8 @@ class ReactivePolicy(Policy):
         self._finished = False
         self._track_end: float | None = None
         self.phase = "takeover"
+        from perception import VisionQuery
+        self.vision = VisionQuery(self.vision_refresh)
 
     def _label(self, label: str) -> None:
         if label != self._last_label:
@@ -322,6 +336,8 @@ class ReactivePolicy(Policy):
             if t < d - EPS and not self._finished:
                 self.phase = "track"
                 self._label("tracking")
+                if self.uses_vision:
+                    self.vision.poll(self.perceiver, obs, t)   # ask the model; never waits
                 key = self.fresh(obs)
                 if key is not None and key != self._last_key:
                     self._last_key = key

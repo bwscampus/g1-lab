@@ -72,7 +72,7 @@ class CheckEnv(Env):
         self.peak_vel = np.zeros(NUM_JOINTS)
         self.q_min = np.full(NUM_JOINTS, np.inf)
         self.q_max = np.full(NUM_JOINTS, -np.inf)
-        self.base_pose = np.zeros(3)      # x, y, yaw from integrating Action.base
+        self.base_pose_xy_yaw = np.zeros(3)   # x, y, yaw from integrating Action.base
         self.base_path = 0.0
         self.base_ticks = 0
         self.base_peak = np.zeros(3)
@@ -86,6 +86,13 @@ class CheckEnv(Env):
 
     def clock(self) -> float:
         return self.t
+
+    @property
+    def can_walk(self) -> bool:
+        return True
+
+    def base_pose(self):
+        return tuple(float(v) for v in self.base_pose_xy_yaw)
 
     def frame(self):
         return None if self.camera is None else self.camera.poll(self.t)
@@ -111,11 +118,11 @@ class CheckEnv(Env):
                 if abs(v[i]) > BASE_VEL_MAX[i]:
                     self.violations.append(Violation(self.t, -1, kind, v[i], BASE_VEL_MAX[i]))
             self.base_peak = np.maximum(self.base_peak, np.abs(v))
-            x, y, yaw = self.base_pose
+            x, y, yaw = self.base_pose_xy_yaw
             yaw += v[2] * dt
             x += (math.cos(yaw) * v[0] - math.sin(yaw) * v[1]) * dt
             y += (math.sin(yaw) * v[0] + math.cos(yaw) * v[1]) * dt
-            self.base_pose = np.array([x, y, yaw])
+            self.base_pose_xy_yaw = np.array([x, y, yaw])
             self.base_path += math.hypot(v[0], v[1]) * dt
             self.base_ticks += 1
 
@@ -159,7 +166,7 @@ class CheckEnv(Env):
             print(f"{JOINT_NAMES[j]:<22} {self.q_min[j]:8.3f} {self.q_max[j]:8.3f} "
                   f"{self.peak_vel[j]:9.2f}   [{JOINT_LO[j]:+.3f}, {JOINT_HI[j]:+.3f}]")
         if self.base_ticks:
-            x, y, yaw = self.base_pose
+            x, y, yaw = self.base_pose_xy_yaw
             print(f"base: {self.base_ticks} ticks commanded, path {self.base_path:.2f} m, ended at "
                   f"({x:+.2f}, {y:+.2f}) m yaw {math.degrees(yaw):+.0f} deg; peak "
                   f"vx {self.base_peak[0]:.2f} vy {self.base_peak[1]:.2f} vyaw {self.base_peak[2]:.2f}")

@@ -26,6 +26,7 @@ from camera import Frame
 from motions import MOTIONS, Handback, Hold, SixSeven, Takeover, TPose
 from policy import Action, Motion, Obs, Policy, Segment, SegmentPolicy
 from behaviors import Describe, Face, GoTo, Look
+from perception import VisionQuery
 from targets import Doorway, Labeled, RedDot, seen
 
 
@@ -82,12 +83,14 @@ class Selector(Policy):
     uses_camera = True
 
     def __init__(self, rules: Sequence[Rule], *, timeout: float = 30.0, once: bool = True,
-                 cooldown: float = 1.0, uses_vision: bool = False, name: str | None = None) -> None:
+                 cooldown: float = 1.0, uses_vision: bool = False, vision_refresh: float = 2.0,
+                 name: str | None = None) -> None:
         self.rules = [(pred, MOTIONS[m]() if isinstance(m, str) else m) for pred, m in rules]
         self.timeout = timeout
         self.once = once
         self.cooldown = cooldown
         self.uses_vision = uses_vision
+        self.vision = VisionQuery(vision_refresh)
         joints: set[int] = set(Takeover().joints)
         for _, m in self.rules:
             joints.update(m.joints)
@@ -97,6 +100,7 @@ class Selector(Policy):
 
     def reset(self, obs: Obs) -> None:
         self._cmd = obs.q.copy()
+        self.vision.reset()
         self._last_seq: int | None = None
         self._last_pseq: int | None = None
         self._sub: SegmentPolicy | None = None
@@ -126,6 +130,8 @@ class Selector(Policy):
                 self._enter("handback", t, Handback())
                 return self.step(t, obs)
             self._enter("idle", t)
+        if self.uses_vision:
+            self.vision.poll(self.perceiver, obs, t)       # ask for a fresh view while idle
         if t - self._t0 >= self.timeout:
             print(f"[{self.name}] idle for {self.timeout:.0f}s, handing back")
             self._enter("handback", t, Handback())

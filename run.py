@@ -45,15 +45,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help="open the env's camera: auto = only if the policy uses it (default)")
     v = p.add_argument_group("vision")
     v.add_argument("--vision", choices=VISION_MODES, default="auto",
-                   help="scene description: auto = fake iff the policy uses vision (default); "
-                        "fake = offline red-blob stand-in; api = Hugging Face model ($HF_TOKEN)")
+                   help="vision model for policies that use one: auto = run it iff the policy asks "
+                        "and $HF_TOKEN is set (default); api = require it; off = never")
     v.add_argument("--vision-model", default=os.environ.get("G1_VISION_MODEL"),
                    help="HF model id for --vision api (default: $G1_VISION_MODEL or perception.DEFAULT_MODEL)")
-    v.add_argument("--vision-interval", type=float, default=2.0,
-                   help="minimum seconds between model requests (default 2.0)")
+    v.add_argument("--vision-interval", type=float, default=1.0,
+                   help="cost floor: requests closer together than this are ignored (default 1.0); "
+                        "policies decide when to ask (their vision_refresh, default 2 s)")
     v.add_argument("--vision-echo", action="store_true", help="print the model's streamed text live")
-    v.add_argument("--vision-fake-label", default="red ball",
-                   help="label the fake perceiver gives the red blob (default 'red ball')")
     p.add_argument("--max-time", type=float, default=120.0,
                    help="abort if the policy runs longer than this many seconds (default 120)")
     for env_cls in ENVS.values():
@@ -77,6 +76,7 @@ def run(policy: Policy, env: Env, max_time: float = 120.0, perceiver=None) -> bo
     if mode == "off" and perceiver is not None:
         raise SystemExit("--camera off but the vision model needs frames; drop --camera off or use --vision off")
     env.use_camera = wants_camera if mode == "auto" else mode == "on"
+    policy.perceiver = perceiver
     if perceiver is not None:
         perceiver.start()
     try:
@@ -104,6 +104,7 @@ def run(policy: Policy, env: Env, max_time: float = 120.0, perceiver=None) -> bo
         if perceiver is not None:
             perceiver.stop()
             print(perceiver.summary())
+        policy.close()
     return env.report()
 
 
