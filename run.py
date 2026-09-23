@@ -28,6 +28,7 @@ from perception import VISION_MODES, build_perceiver
 from policy import Policy
 from routines import POLICIES, ROUTINES, build_policy
 from skills import SKILLS, describe_menu
+from agent import AGENTS
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -54,6 +55,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help="cost floor: requests closer together than this are ignored (default 1.0); "
                         "policies decide when to ask (their vision_refresh, default 2 s)")
     v.add_argument("--vision-echo", action="store_true", help="print the model's streamed text live")
+    a = p.add_argument_group("agent (--policy search / replay)")
+    a.add_argument("--goal", default=None, help="what search should look for, e.g. \"find the mug\"")
+    a.add_argument("--episode", default=None, metavar="DIR", help="recorded run to replay (--policy replay)")
+    a.add_argument("--max-steps", type=int, default=30, help="decision steps before giving up (default 30)")
+    a.add_argument("--step-timeout", type=float, default=30.0,
+                   help="wall seconds to wait for a decision (default 30)")
+    a.add_argument("--log", default="runs", metavar="DIR", help="where search records its steps (default runs/)")
+    a.add_argument("--no-log", action="store_true", help="do not record the run")
     p.add_argument("--max-time", type=float, default=120.0,
                    help="abort if the policy runs longer than this many seconds (default 120)")
     for env_cls in ENVS.values():
@@ -118,19 +127,24 @@ def main(argv: list[str] | None = None) -> int:
         print("routines: " + ", ".join(sorted(ROUTINES)))
         print("policies: " + ", ".join(sorted(POLICIES)))
         print("motions:  " + ", ".join(sorted(MOTIONS)))
+        print("agents:   " + ", ".join(sorted(AGENTS)) + "   (search --goal ..., replay --episode DIR)")
         print("skills:   (chain them like motions, e.g. --policy walk_forward:0.5,turn:45,arms_up)")
         print(describe_menu(list(SKILLS.values())))
         return 0
     if args.policy is None:
         parser.error("--policy is required (or set $G1_POLICY)")
 
+    env = ENVS[args.env](args)
     try:
-        policy = build_policy(args.policy, pause=args.pause)
+        if args.policy in AGENTS:
+            policy = AGENTS[args.policy](args, env.can_walk)
+        else:
+            policy = build_policy(args.policy, pause=args.pause)
     except KeyError as e:
         parser.error(f"unknown policy {e}; routines: {', '.join(sorted(ROUTINES))}; "
-                     f"policies: {', '.join(sorted(POLICIES))}; "
+                     f"agents: {', '.join(sorted(AGENTS))}; policies: {', '.join(sorted(POLICIES))}; "
                      f"motions: {', '.join(sorted(MOTIONS))}; skills: {', '.join(SKILLS)}")
-    except ValueError as e:
+    except (ValueError, RuntimeError) as e:
         parser.error(str(e))
     try:
         perceiver = build_perceiver(args, policy)
@@ -140,13 +154,14 @@ def main(argv: list[str] | None = None) -> int:
                                  or (args.env == "sim" and args.headless and args.realtime is None)):
         print("warning: this run is not paced to realtime, so vision-model results will describe "
               "frames from well before they arrive; use --vision fake here, or --realtime 1 in sim")
-    env = ENVS[args.env](args)
     segments = getattr(policy, "segments", ())
     if any(getattr(s, "base", None) for s in segments) and not env.can_walk:
         parser.error(f"{policy.name} drives the base; {env.name} cannot walk here"
                      + (" (pass --walk after reading its pre-flight)" if args.env == "robot"
                         else " (drop --free-base)" if args.env == "sim" else ""))
     print(f"== {policy.name} @ {env.name} ==")
+    if args.policy == "search" and args.max_time <= 120.0:
+        print("hint: search is open-ended (6-10 s per step); raise --max-time, e.g. --max-time 600")
     ok = run(policy, env, max_time=args.max_time, perceiver=perceiver)
     return 0 if ok else 1
 
