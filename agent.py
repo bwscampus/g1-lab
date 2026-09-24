@@ -35,10 +35,10 @@ from typing import Callable, Optional, Sequence
 import numpy as np
 
 from config import CONTROL_DT, JOINT_NAMES, UPPER_BODY, joint_index
-from decider import AgentContext, AgentTurn, Decider, Decision, HFDecider, ProtocolError, build_context, observation
+from decider import AgentContext, AgentTurn, Decider, Decision, VLMDecider, ProtocolError, build_context, observation
 from envs.monitor import JointMonitor
 from episode import EpisodeWriter, StepRecord, chain_of, load_episode
-from hf import Overloaded, QuotaExceeded
+from vlm import Overloaded, QuotaExceeded
 from policy import EPS, Action, Obs, Policy, SegmentPolicy
 from routines import build_policy
 from skills import STEP_MAX, Check, Handback, Skill, Takeover, menu, skill_policy, skill_segments, use_catalog
@@ -574,7 +574,8 @@ def build_search(args, can_walk: bool, has_loco: bool = False) -> Agent:
     if getattr(args, "skills", None):
         use_catalog(args.skills)
     echo = (lambda s: print(s, end="", flush=True)) if getattr(args, "vision_echo", False) else None
-    decider = HFDecider.from_env(getattr(args, "vision_model", None), on_text=echo,
+    decider = VLMDecider.from_env(getattr(args, "vision_model", None), provider=getattr(args, "vision_provider", None),
+                                  on_text=echo,
                                  live_image_window=getattr(args, "live_image_window", 8),
                                  fresh_turns=getattr(args, "fresh_turns", False))
     skills = menu(can_walk, has_loco)
@@ -596,7 +597,8 @@ def build_search(args, can_walk: bool, has_loco: bool = False) -> Agent:
         frames = max(1, min(MAX_FRAMES, getattr(args, "demo_frames", DEFAULT_FRAMES)))
         selector = None
         if any(isinstance(p, VideoPart) for p in request.content):
-            selector = build_selector(getattr(args, "demo_select", "auto"), frames, getattr(args, "vision_model", None))
+            selector = build_selector(getattr(args, "demo_select", "auto"), frames, getattr(args, "vision_model", None),
+                                      getattr(args, "vision_provider", None))
         where = recorder.dir / "input" if recorder is not None else Path(tempfile.mkdtemp(prefix="g1-demo-"))
         prepared, reports = prepare(request, where, selector=selector, max_frames=frames)
         content = prepared.content

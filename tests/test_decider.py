@@ -3,9 +3,9 @@ import json
 import numpy as np
 import pytest
 
-from decider import (AgentTurn, Decision, HFDecider, ProtocolError, build_context, instructions, observation,
+from decider import (AgentTurn, Decision, VLMDecider, ProtocolError, build_context, instructions, observation,
                      parse_selection)
-from hf import HFClient, Overloaded, QuotaExceeded, RequestError, classify
+from vlm import VLMClient, Overloaded, QuotaExceeded, RequestError, classify
 from skills import CATALOG, menu
 from tests.doubles import RedBallDecider
 
@@ -137,7 +137,7 @@ HOLD = '{"name": "hold", "arguments": {"seconds": 1, "note": "waiting"}}'
 
 def test_hf_decider_keeps_the_conversation_and_prunes_images():
     calls = []
-    dec = HFDecider(HFClient("m/vl", "hf_x", transport=transport_of([TURN, HOLD, TURN], calls)), live_image_window=2)
+    dec = VLMDecider(VLMClient("m/vl", "hf_x", transport=transport_of([TURN, HOLD, TURN], calls)), live_image_window=2)
     dec.start(ctx())
     d = dec.decide(turn(step=0, request_id=1))
     assert d.name == "move" and d.arguments == {"dx_m": 0.0, "dy_m": 0.0, "dyaw_deg": 45.0, "note": "searching"}
@@ -168,7 +168,7 @@ def test_hf_decider_keeps_the_conversation_and_prunes_images():
 
 def test_hf_decider_fresh_turns_and_call_details():
     calls = []
-    dec = HFDecider(HFClient("m/vl", "hf_x", transport=transport_of([TURN, HOLD], calls)), fresh_turns=True)
+    dec = VLMDecider(VLMClient("m/vl", "hf_x", transport=transport_of([TURN, HOLD], calls)), fresh_turns=True)
     dec.start(ctx())
     dec.threaded = False
     assert dec.request(turn(step=0, request_id=1)) and dec.request(turn(step=1, request_id=2))
@@ -181,7 +181,7 @@ def test_hf_decider_fresh_turns_and_call_details():
 
 def test_hf_decider_bad_reply_is_a_protocol_error():
     calls = []
-    dec = HFDecider(HFClient("m/vl", "hf_x", transport=transport_of(['{"name": "fly", "arguments": {}}'], calls)))
+    dec = VLMDecider(VLMClient("m/vl", "hf_x", transport=transport_of(['{"name": "fly", "arguments": {}}'], calls)))
     dec.start(ctx())
     dec.threaded = False
     assert dec.request(turn()) is True
@@ -195,7 +195,7 @@ def test_hf_client_steps_down_structured_output_and_classifies_errors():
     calls = []
     replies = [RequestError(400, "response_format json_schema is not supported"), TURN,
                RequestError(400, "response_format not supported"), TURN, TURN]
-    client = HFClient("m/vl", "hf_x", transport=transport_of(replies, calls))
+    client = VLMClient("m/vl", "hf_x", transport=transport_of(replies, calls))
     assert client.complete([], schema={"type": "object"}) == TURN
     assert [c.get("response_format", {}).get("type") for c in calls] == ["json_schema", "json_object"]
     assert client.response_mode == "json_object" and not client.json_schema
@@ -208,4 +208,4 @@ def test_hf_client_steps_down_structured_output_and_classifies_errors():
     assert isinstance(classify(402, ""), QuotaExceeded) and isinstance(classify(403, "monthly quota"), QuotaExceeded)
     assert type(classify(500, "boom")) is RequestError
     with pytest.raises(Overloaded):
-        HFClient("m", "k", transport=transport_of([Overloaded(429, "x")], [])).complete([])
+        VLMClient("m", "k", transport=transport_of([Overloaded(429, "x")], [])).complete([])

@@ -9,7 +9,7 @@ import pytest
 from camera import Frame
 from config import CONTROL_DT, STAND_Q, joint_index
 from skills import SixSeven
-from perception import (DEFAULT_MODEL, Detected, HFPerceiver, Perceiver, Percept, RequestError,
+from perception import (DEFAULT_MODEL, Detected, VLMPerceiver, Perceiver, Percept, RequestError,
                         VisionQuery, build_perceiver, extract_json)
 from tests.doubles import FakePerceiver
 from policy import Obs
@@ -182,7 +182,7 @@ def test_hf_request_and_stream():
                         " \"width\": 0.3, \"height\": 0.5, \"distance_m\": 1.5}]}\n```"))
 
     deltas = []
-    per = HFPerceiver("m/vl", "hf_x", transport=transport, on_text=deltas.append, max_width=32)
+    per = VLMPerceiver("m/vl", "hf_x", transport=transport, on_text=deltas.append, max_width=32)
     img = solid((200, 30, 30), h=48, w=64)        # red in RGB
     p = per.describe(Frame(img, 2.0, 3))
     url, headers, body = calls[0]
@@ -211,7 +211,7 @@ def test_hf_drops_json_mode_on_400():
             raise RequestError(400, "response_format is not supported by this provider")
         return iter(sse('{"summary": "empty room", "objects": [], "path_clear": true}'))
 
-    per = HFPerceiver("m/vl", "hf_x", transport=transport)
+    per = VLMPerceiver("m/vl", "hf_x", transport=transport)
     p = per.describe(frame())
     assert p.summary == "empty room" and len(bodies) == 2
     assert "response_format" in bodies[0] and "response_format" not in bodies[1]
@@ -224,22 +224,9 @@ def test_hf_other_errors_propagate():
     def transport(url, headers, body, timeout):
         raise RequestError(401, "bad token")
 
-    per = HFPerceiver("m/vl", "hf_x", transport=transport)
+    per = VLMPerceiver("m/vl", "hf_x", transport=transport)
     with pytest.raises(RequestError):
         per.describe(frame())
-
-
-def test_hf_from_env(monkeypatch):
-    monkeypatch.delenv("HF_TOKEN", raising=False)
-    monkeypatch.delenv("G1_VISION_API_KEY", raising=False)
-    monkeypatch.delenv("G1_VISION_MODEL", raising=False)
-    with pytest.raises(RuntimeError):
-        HFPerceiver.from_env()
-    monkeypatch.setenv("HF_TOKEN", "hf_t")
-    assert HFPerceiver.from_env().model == DEFAULT_MODEL
-    monkeypatch.setenv("G1_VISION_MODEL", "a/b:deepinfra")
-    assert HFPerceiver.from_env().model == "a/b:deepinfra"
-    assert HFPerceiver.from_env("c/d").model == "c/d"
 
 
 # -- through the check env -------------------------------------------------------------
@@ -329,10 +316,11 @@ def test_selector_rules_see_percepts_without_frames():
 def test_build_perceiver_modes(monkeypatch, capsys):
     parse = lambda *a: build_parser().parse_args(["--env", "sim", "--policy", "x", *a])
     monkeypatch.delenv("HF_TOKEN", raising=False)
-    monkeypatch.delenv("G1_VISION_API_KEY", raising=False)
+    monkeypatch.delenv("VLM_API_KEY", raising=False)
+    monkeypatch.delenv("VLM_PROVIDER", raising=False)
     assert build_perceiver(parse(), POLICIES["look"]()) is None              # no vision needed
     assert build_perceiver(parse(), Describe()) is None                       # auto without a token
-    assert "no HF_TOKEN" in capsys.readouterr().out
+    assert "set HF_TOKEN" in capsys.readouterr().out
     assert build_perceiver(parse("--vision", "off"), Describe()) is None
     with pytest.raises(RuntimeError):
         build_perceiver(parse("--vision", "api"), Describe())
@@ -340,9 +328,9 @@ def test_build_perceiver_modes(monkeypatch, capsys):
         main(["--env", "sim", "--headless", "--policy", "describe", "--vision", "api"])
     monkeypatch.setenv("HF_TOKEN", "hf_t")
     auto = build_perceiver(parse(), Describe())
-    assert isinstance(auto, HFPerceiver) and auto.model == DEFAULT_MODEL
+    assert isinstance(auto, VLMPerceiver) and auto.model == DEFAULT_MODEL
     api = build_perceiver(parse("--vision", "api", "--vision-model", "x/y", "--vision-interval", "5"), Describe())
-    assert isinstance(api, HFPerceiver) and api.model == "x/y" and api.min_interval == 5.0
+    assert isinstance(api, VLMPerceiver) and api.model == "x/y" and api.min_interval == 5.0
 
 
 def test_describe_with_fake_perceiver_narrates(capsys):

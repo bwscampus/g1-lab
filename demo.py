@@ -40,7 +40,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Optional, Sequence, Union
 
-from hf import HFClient, image_part
+from vlm import VLMClient, image_part
 
 VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
@@ -544,7 +544,7 @@ class ModelSelector:
 
     name = "model"
 
-    def __init__(self, client: HFClient, max_frames: int = DEFAULT_FRAMES, per_window: int = 8,
+    def __init__(self, client: VLMClient, max_frames: int = DEFAULT_FRAMES, per_window: int = 8,
                  max_width: int = 640) -> None:
         self.client = client
         self.max_frames = max_frames
@@ -569,7 +569,7 @@ class ModelSelector:
                                     max_tokens=1200, schema=schema)
         self.calls.append({"model": self.client.model, "elapsed_s": self.client.last_elapsed, "status": "completed",
                            "usage": self.client.last_usage, "response_mode": self.client.response_mode,
-                           "provider": "huggingface", "phase": "demo"})
+                           "provider": self.client.provider, "phase": "demo"})
         return validate_selection(parse_selection(text), len(frames), limit)
 
     def select(self, instruction: str, label: str, candidates: list[dict]) -> dict:
@@ -753,12 +753,12 @@ def save_input(request: Request, directory: Path) -> Path:
     return directory / "input.json"
 
 
-def build_selector(kind: str, max_frames: int, model: Optional[str] = None):
-    """``model`` when a token is there (or asked for), else ``uniform``."""
+def build_selector(kind: str, max_frames: int, model: Optional[str] = None, provider: Optional[str] = None):
+    """``model`` when the provider's key is there (or asked for), else ``uniform``."""
     if kind == "uniform":
         return UniformSelector(max_frames)
     try:
-        client = HFClient.from_env(model)
+        client = VLMClient.from_env(model, provider=provider)
     except RuntimeError:
         if kind == "model":
             raise
@@ -781,7 +781,8 @@ def _main(argv: Optional[list[str]] = None) -> int:
     prep.add_argument("--demo-mode", choices=MODES, default=None)
     prep.add_argument("--demo-select", choices=("auto", "model", "uniform"), default="auto")
     prep.add_argument("--demo-frames", type=int, default=DEFAULT_FRAMES)
-    prep.add_argument("--model", default=None, help="HF model id for --demo-select model")
+    prep.add_argument("--model", default=None, help="model id for --demo-select model (default: $VLM_MODEL)")
+    prep.add_argument("--provider", default=None, help="VLM provider (default: $VLM_PROVIDER or huggingface)")
     show = sub.add_parser("show", help="print what the model gets from a bundle")
     show.add_argument("bundle", help="demo.json or its directory")
     args = p.parse_args(argv)
@@ -799,7 +800,7 @@ def _main(argv: Optional[list[str]] = None) -> int:
         request = build_request(args.goal, manifest=args.input_json, demo=args.demo, mode=args.demo_mode)
         if not any(isinstance(x, VideoPart) for x in request.content):
             p.error("nothing to compile: pass --demo or a manifest with a video")
-        selector = build_selector(args.demo_select, args.demo_frames, args.model)
+        selector = build_selector(args.demo_select, args.demo_frames, args.model, args.provider)
         out = Path(args.out)
         prepared, reports = prepare(request, out, selector=selector, max_frames=args.demo_frames)
     except (ValueError, RuntimeError) as e:

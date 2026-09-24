@@ -16,12 +16,12 @@ skill did (residuals, base error, a measured settle report) or why it was
 rejected. The reply must name a skill from the menu and satisfy its parameter
 schema (jsonschema, Draft 2020-12); every movement skill carries a ``note``.
 
-``HFDecider`` keeps one conversation per run: the system prompt once, then
+``VLMDecider`` keeps one conversation per run: the system prompt once, then
 each observation and the model's own reply, so the model has its history.
 Only the last ``live_image_window`` observations keep their image (their
 ``live_image_window``); demonstration images are never dropped.
 
-    HF_TOKEN=hf_... python -m decider step_0003.png --goal "find the mug"    # one real decision
+    HF_TOKEN=hf_... python -m decider step_0003.png --goal "find the mug"    # one real decision (or VLM_PROVIDER=...)
 """
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ import numpy as np
 from jsonschema import Draft202012Validator, ValidationError
 
 from config import HEAD_CAMERA_FOVY, NUM_JOINTS
-from hf import DEFAULT_MODEL, HFClient, image_part
+from vlm import DEFAULT_MODEL, VLMClient, image_part
 from skills import CATALOG, Catalog, Skill, menu
 from worker import Worker
 
@@ -285,12 +285,11 @@ class Decider(Worker[AgentTurn, Decision]):
         return {}
 
 
-class HFDecider(Decider):
-    """Asks the Hugging Face vision model, keeping the conversation."""
+class VLMDecider(Decider):
+    """Asks the vision-language model (any OpenAI-compatible endpoint, see
+    ``vlm.py``), keeping the conversation."""
 
-    provider = "huggingface"
-
-    def __init__(self, client: HFClient, *, max_width: int = 640, live_image_window: Optional[int] = 8,
+    def __init__(self, client: VLMClient, *, max_width: int = 640, live_image_window: Optional[int] = 8,
                  fresh_turns: bool = False, min_interval: float = 0.0) -> None:
         super().__init__(min_interval=min_interval)
         if live_image_window is not None and live_image_window < 1:
@@ -303,13 +302,17 @@ class HFDecider(Decider):
 
     @classmethod
     def from_env(cls, model: Optional[str] = None, *, live_image_window: Optional[int] = 8,
-                 fresh_turns: bool = False, **client_kw) -> "HFDecider":
-        return cls(HFClient.from_env(model, **client_kw), live_image_window=live_image_window,
+                 fresh_turns: bool = False, **client_kw) -> "VLMDecider":
+        return cls(VLMClient.from_env(model, **client_kw), live_image_window=live_image_window,
                    fresh_turns=fresh_turns)
 
     @property
     def model(self) -> str:      # type: ignore[override]
         return self.client.model
+
+    @property
+    def provider(self) -> str:   # type: ignore[override]
+        return self.client.provider
 
     def start(self, context: AgentContext) -> None:
         super().start(context)
@@ -388,10 +391,12 @@ class HFDecider(Decider):
 
 def _main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="python -m decider",
-                                description="one real decision from a saved frame (needs $HF_TOKEN)")
+                                description="one real decision from a saved frame (needs the provider's key, "
+                                            "see vlm.py: VLM_PROVIDER / VLM_MODEL / VLM_BASE_URL)")
     p.add_argument("image", help="png/jpg, e.g. a step_NNNN.png from runs/")
     p.add_argument("--goal", required=True)
-    p.add_argument("--model", default=None, help=f"HF model id (default: $G1_VISION_MODEL or {DEFAULT_MODEL})")
+    p.add_argument("--model", default=None, help="model id (default: $VLM_MODEL, or the provider's default)")
+    p.add_argument("--provider", default=None, help="VLM provider (default: $VLM_PROVIDER or huggingface)")
     p.add_argument("--no-base", action="store_true", help="hide the walking skills, as on a robot without --walk")
     args = p.parse_args(argv)
     import cv2
@@ -400,7 +405,7 @@ def _main(argv: list[str] | None = None) -> int:
         p.error(f"could not read {args.image}")
     image = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
     try:
-        dec = HFDecider.from_env(args.model, on_text=lambda s: print(s, end="", flush=True))
+        dec = VLMDecider.from_env(args.model, provider=args.provider, on_text=lambda s: print(s, end="", flush=True))
     except RuntimeError as e:
         p.error(str(e))
     context = build_context(menu(not args.no_base), can_walk=not args.no_base, max_decisions=30)
@@ -410,7 +415,7 @@ def _main(argv: list[str] | None = None) -> int:
              "waist_yaw_deg": 0.0, "base_pose_cmd": [0.0, 0.0, 0.0], "base_pose_env": None}
     obs = observation(args.goal, state, [{"name": "head", "width": w, "height": h, "captured_age_s": 0.0}],
                       {"env_step": 0, "decisions_left": 30, "can_walk": not args.no_base})
-    print(f"model {dec.model}; goal {args.goal!r}; image {w}x{h}")
+    print(f"{dec.provider}: model {dec.model}; goal {args.goal!r}; image {w}x{h}")
     t0 = time.monotonic()
     try:
         d = dec.decide(AgentTurn(obs, {"head": image}))

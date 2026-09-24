@@ -13,7 +13,8 @@ commanded targets, the command speed, the weight and any base velocity (see
 Policies that use the camera (``look``, ``wave_on_red``) get frames from the
 env: rendered in sim, or replayed / random with ``--camera-dir`` /
 ``--camera-noise``, the head camera on the robot (``--camera-ip``). ``describe``
-asks the Hugging Face model (``$HF_TOKEN``) for a scene description; ``search``
+asks the vision model (any OpenAI-compatible API: ``VLM_PROVIDER`` / ``VLM_MODEL`` /
+``VLM_BASE_URL`` and the provider's key, see ``vlm.py``) for a scene description; ``search``
 asks it for the next skill every decision, feeds back what happened, records
 everything under ``runs/`` and asks you for the verdict at the end. ``goto_red``
 and the walking skills drive the base: sim slides it, the robot needs ``--walk``.
@@ -30,6 +31,7 @@ from perception import VISION_MODES, build_perceiver
 from policy import Policy
 from routines import POLICIES, ROUTINES, build_policy
 from skills import SKILLS, describe_menu, use_catalog
+from vlm import PROVIDERS
 from agent import AGENTS
 
 
@@ -50,9 +52,12 @@ def build_parser() -> argparse.ArgumentParser:
     v = p.add_argument_group("vision")
     v.add_argument("--vision", choices=VISION_MODES, default="auto",
                    help="vision model for policies that use one: auto = run it iff the policy asks "
-                        "and $HF_TOKEN is set (default); api = require it; off = never")
-    v.add_argument("--vision-model", default=os.environ.get("G1_VISION_MODEL"),
-                   help="HF model id for --vision api (default: $G1_VISION_MODEL or perception.DEFAULT_MODEL)")
+                        "and the provider's key is set (default); api = require it; off = never")
+    v.add_argument("--vision-provider", default=None, choices=sorted(PROVIDERS),
+                   help="which OpenAI-compatible API to use (default: $VLM_PROVIDER or huggingface); "
+                        "$VLM_BASE_URL overrides its endpoint, $VLM_API_KEY its key variable")
+    v.add_argument("--vision-model", default=None,
+                   help="model id to query (default: $VLM_MODEL, or the provider's default)")
     v.add_argument("--vision-interval", type=float, default=1.0,
                    help="cost floor: requests closer together than this are ignored (default 1.0); "
                         "policies decide when to ask (their vision_refresh, default 2 s)")
@@ -69,7 +74,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="video: images only (default for video files); video+action: also the skills, joint "
                         "angles and base poses (default for recorded runs)")
     a.add_argument("--demo-select", choices=("auto", "model", "uniform"), default="auto",
-                   help="how keyframes are picked from a video file: the vision model (default with $HF_TOKEN) "
+                   help="how keyframes are picked from a video file: the vision model (default when its key is set) "
                         "or evenly spaced")
     a.add_argument("--demo-frames", type=int, default=12, help="keyframes to keep per demonstration (default 12, max 24)")
     a.add_argument("--ref", action="append", default=None, metavar="IMAGE",

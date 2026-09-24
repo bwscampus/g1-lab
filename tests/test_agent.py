@@ -10,7 +10,7 @@ from camera import ClockedCamera
 from config import CONTROL_DT, STAND_Q
 from decider import Decider, ProtocolError
 from episode import EpisodeWriter, chain_of, load_episode
-from hf import Overloaded, QuotaExceeded
+from vlm import Overloaded, QuotaExceeded
 from run import build_parser, main, run
 from skills import SKILLS, STEP_MAX, menu
 from tests.doubles import RedBallDecider, scripted_sim, select, sim_env
@@ -407,7 +407,8 @@ def test_replay_reproduces_a_recorded_run(tmp_path):
 
 def test_cli_search_needs_goal_and_token(monkeypatch, capsys):
     monkeypatch.delenv("HF_TOKEN", raising=False)
-    monkeypatch.delenv("G1_VISION_API_KEY", raising=False)
+    monkeypatch.delenv("VLM_API_KEY", raising=False)
+    monkeypatch.delenv("VLM_PROVIDER", raising=False)
     with pytest.raises(SystemExit):
         main(["--env", "sim", "--headless", "--policy", "search", "--no-log"])
     assert "needs --goal" in capsys.readouterr().err

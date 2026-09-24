@@ -1,6 +1,21 @@
-"""Hugging Face Inference Providers client: OpenAI-compatible chat completions
-with image input, stdlib urllib, streamed SSE, JSON mode with a fallback.
-Shared by the perceiver (describe a frame) and the decider (choose a skill).
+"""The vision-language model client: any OpenAI-compatible chat-completions
+API, with image input, stdlib urllib, streamed SSE and structured output with
+a step-down. Shared by the perceiver (describe a frame), the decider (choose a
+skill) and the demo keyframe selector.
+
+The endpoint is chosen by environment:
+
+    VLM_PROVIDER   one of PROVIDERS (default huggingface); sets the base URL and
+                   which key variable is read
+    VLM_MODEL      the model id to query (required unless the provider has a default)
+    VLM_BASE_URL   overrides the provider's base URL (required for VLM_PROVIDER=custom)
+    VLM_API_KEY    overrides the provider's key variable (HF_TOKEN, OPENAI_API_KEY, ...)
+
+A ``.env`` file in the repo root (copy ``.env.example``) is read on first use;
+exported variables win over it.
+
+    VLM_PROVIDER=openai VLM_MODEL=gpt-4o-mini OPENAI_API_KEY=... python -m decider frame.png --goal ...
+    VLM_PROVIDER=ollama VLM_MODEL=qwen2.5vl python -m perception head.png
 """
 from __future__ import annotations
 
@@ -10,15 +25,91 @@ import os
 import time
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Iterator, Optional
 
 import numpy as np
 
-HF_BASE_URL = "https://router.huggingface.co/v1"
-# Verified live on the HF router (2026-09): image input, structured output on
-# its providers, small active-parameter MoE so it answers fast. Override with
-# --vision-model / $G1_VISION_MODEL; ":deepinfra" etc. pins a provider.
-DEFAULT_MODEL = "Qwen/Qwen3-VL-30B-A3B-Instruct"
+
+@dataclass(frozen=True)
+class Provider:
+    name: str
+    base_url: Optional[str]           # None: VLM_BASE_URL is required
+    key_var: Optional[str]            # None: no key needed (a local server)
+    default_model: Optional[str] = None
+
+
+PROVIDERS = {p.name: p for p in (
+    # Verified live on the HF router (2026-09): image input, structured output on its
+    # providers, a small active-parameter MoE that answers fast; ":deepinfra" etc. pins a provider.
+    Provider("huggingface", "https://router.huggingface.co/v1", "HF_TOKEN", "Qwen/Qwen3-VL-30B-A3B-Instruct"),
+    Provider("openai", "https://api.openai.com/v1", "OPENAI_API_KEY"),
+    Provider("openrouter", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
+    Provider("groq", "https://api.groq.com/openai/v1", "GROQ_API_KEY"),
+    Provider("together", "https://api.together.xyz/v1", "TOGETHER_API_KEY"),
+    Provider("deepinfra", "https://api.deepinfra.com/v1/openai", "DEEPINFRA_API_KEY"),
+    Provider("mistral", "https://api.mistral.ai/v1", "MISTRAL_API_KEY"),
+    Provider("xai", "https://api.x.ai/v1", "XAI_API_KEY"),
+    Provider("gemini", "https://generativelanguage.googleapis.com/v1beta/openai", "GEMINI_API_KEY"),
+    Provider("ollama", "http://localhost:11434/v1", None),
+    Provider("custom", None, None),
+)}
+DEFAULT_PROVIDER = "huggingface"
+DEFAULT_MODEL = PROVIDERS[DEFAULT_PROVIDER].default_model
+HF_BASE_URL = PROVIDERS[DEFAULT_PROVIDER].base_url
+
+
+DOTENV = Path(__file__).parent / ".env"
+
+
+def load_dotenv(path: Optional[Path] = None, env: Optional[dict] = None) -> dict:
+    """Read ``KEY=value`` lines from ``.env`` (see ``.env.example``) into the
+    environment, never overriding a variable that is already set."""
+    env = os.environ if env is None else env
+    loaded = {}
+    try:
+        lines = Path(DOTENV if path is None else path).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return loaded
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip().removeprefix("export ").strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if key and key not in env:
+            env[key] = value
+            loaded[key] = value
+    return loaded
+
+
+def resolve(model: Optional[str] = None, provider: Optional[str] = None,
+            env: Optional[dict] = None) -> tuple[Provider, str, str, Optional[str]]:
+    """(provider, base_url, model, key) from the environment (``.env`` in the
+    repo root is read first); every failure names the variable to set."""
+    if env is None:
+        load_dotenv()
+    env = os.environ if env is None else env
+    name = (provider or env.get("VLM_PROVIDER") or DEFAULT_PROVIDER).strip().lower()
+    if name not in PROVIDERS:
+        raise RuntimeError(f"unknown VLM_PROVIDER {name!r}; one of {', '.join(PROVIDERS)}")
+    p = PROVIDERS[name]
+    base_url = env.get("VLM_BASE_URL") or p.base_url
+    if not base_url:
+        raise RuntimeError(f"VLM_PROVIDER={name} needs VLM_BASE_URL (an OpenAI-compatible /v1 endpoint)")
+    model = model or env.get("VLM_MODEL") or p.default_model
+    if not model:
+        raise RuntimeError(f"no model for provider {name}: set VLM_MODEL (or --vision-model)")
+    key = env.get("VLM_API_KEY")
+    if not key and p.key_var:
+        key = env.get(p.key_var)
+        if not key:
+            raise RuntimeError(f"no API key for provider {name}: set {p.key_var} (or VLM_API_KEY)")
+    return p, base_url.rstrip("/"), model, key or None
 
 
 class RequestError(RuntimeError):
@@ -106,27 +197,31 @@ def _sse_post(url: str, headers: dict, body: dict, timeout: float) -> Iterator[s
             yield "\n".join(plain)
 
 
-class HFClient:
-    """One chat completion at a time. ``transport`` is injectable for tests.
+class VLMClient:
+    """One chat completion at a time against an OpenAI-compatible endpoint.
+    ``transport`` is injectable for tests.
 
     Structured output is asked for in three steps, each dropped for the rest
     of the session on a 400 that names it: a ``json_schema`` response format
     when the caller passes a schema, then ``json_object``, then nothing (the
-    prompt alone). ``response_mode`` says which one the last call used; the
-    caller validates the reply itself either way. ``last_usage`` holds the
-    provider's token counts for the last call, ``last_elapsed`` its wall time."""
+    prompt alone); ``stream_options`` is dropped the same way for servers that
+    reject it. ``response_mode`` says which one the last call used; the caller
+    validates the reply itself either way. ``last_usage`` holds the provider's
+    token counts for the last call, ``last_elapsed`` its wall time."""
 
     def __init__(self, model: str = DEFAULT_MODEL, token: Optional[str] = None, *,
-                 base_url: str = HF_BASE_URL, stream: bool = True, json_mode: bool = True,
-                 json_schema: bool = True, timeout: float = 30.0,
+                 base_url: str = HF_BASE_URL, provider: str = DEFAULT_PROVIDER, stream: bool = True,
+                 json_mode: bool = True, json_schema: bool = True, timeout: float = 30.0,
                  on_text: Optional[Callable[[str], None]] = None,
                  transport: Optional[Callable[[str, dict, dict, float], Iterator[str]]] = None) -> None:
         self.model = model
         self.token = token or ""
         self.base_url = base_url.rstrip("/")
+        self.provider = provider
         self.stream = stream
         self.json_mode = json_mode
         self.json_schema = json_schema
+        self.stream_options = True
         self.timeout = timeout
         self.on_text = on_text
         self.transport = transport or _sse_post
@@ -136,20 +231,18 @@ class HFClient:
         self.calls = 0
 
     @classmethod
-    def from_env(cls, model: Optional[str] = None, **kw) -> "HFClient":
-        token = os.environ.get("HF_TOKEN") or os.environ.get("G1_VISION_API_KEY")
-        if not token:
-            raise RuntimeError("no Hugging Face token: set HF_TOKEN (or G1_VISION_API_KEY)")
-        return cls(model or os.environ.get("G1_VISION_MODEL") or DEFAULT_MODEL, token, **kw)
+    def from_env(cls, model: Optional[str] = None, *, provider: Optional[str] = None, **kw) -> "VLMClient":
+        p, base_url, model, key = resolve(model, provider)
+        return cls(model, key, base_url=base_url, provider=p.name, **kw)
 
     def complete(self, messages: list[dict], *, max_tokens: int = 400,
                  temperature: float = 0.0, schema: Optional[dict] = None) -> str:
         body = {"model": self.model, "stream": self.stream, "temperature": temperature,
                 "max_tokens": max_tokens, "messages": messages}
-        if self.stream:
-            body["stream_options"] = {"include_usage": True}
         while True:
             attempt = dict(body)               # a fresh body per attempt, so records see what was sent
+            if self.stream and self.stream_options:
+                attempt["stream_options"] = {"include_usage": True}
             if schema is not None and self.json_schema:
                 self.response_mode = "json_schema"
                 attempt["response_format"] = {"type": "json_schema",
@@ -162,7 +255,10 @@ class HFClient:
             try:
                 return self._send(attempt)
             except RequestError as e:
-                # Structured output is provider-dependent on the HF router: step down and retry.
+                # Structured output and stream_options are server-dependent: step down and retry.
+                if e.status == 400 and self.stream_options and "stream_options" in e.body:
+                    self.stream_options = False
+                    continue
                 mentions = e.status == 400 and any(k in e.body for k in ("response_format", "json_schema", "schema"))
                 if mentions and self.response_mode == "json_schema":
                     self.json_schema = False
@@ -173,7 +269,9 @@ class HFClient:
                 raise
 
     def _send(self, body: dict) -> str:
-        headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
         parts: list[str] = []
         self.last_usage = None
         self.calls += 1

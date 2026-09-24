@@ -29,8 +29,9 @@ mjpython run.py --env sim   --policy look --sim-target 1.0,0.5,0.6      # red sp
 python   run.py --env robot --policy look --iface <iface> --mode standing --camera-ip <ip>  # + $UNITREE_AES_128_KEY
 python -m camera --ip <ip>           # head camera smoke test: fps and frame gaps, no robot control
 
-python   run.py --env sim --policy describe --headless            # vision policy (needs $HF_TOKEN)
+python   run.py --env sim --policy describe --headless            # vision policy (needs the provider's key)
 HF_TOKEN=hf_... python -m perception head.png                     # one real model request: streams text, prints the Percept
+VLM_PROVIDER=openai VLM_MODEL=gpt-4o-mini OPENAI_API_KEY=... python -m perception head.png   # any OpenAI-compatible API
 HF_TOKEN=hf_... mjpython run.py --env sim --policy describe --sim-obstacle 1.2,0,0.225 --vision api --vision-echo
 mjpython run.py --env sim   --policy goto_red --sim-target 1.5,0.3,0.6   # walk-to-target loop: base slides to the ball
 python   run.py --env robot --policy goto_red --iface <iface> --mode standing --camera-ip <ip> --walk  # real walking
@@ -253,9 +254,16 @@ env.report()
   latest-only from a daemon worker, one request in flight, at most one per `min_interval`.
   `Env.observe` offers each frame and attaches `obs.percept` with `obs.percept_age` = env-clock
   age of the *frame described* (so the model's latency is included). `HFPerceiver` is the only
-  network backend: Hugging Face Inference Providers (`https://router.huggingface.co/v1`,
-  `$HF_TOKEN`, model `$G1_VISION_MODEL` / `--vision-model`, default `perception.DEFAULT_MODEL`),
-  stdlib `urllib`, streamed SSE, `response_format: json_object` dropped automatically on a 400.
+  network backend: `vlm.VLMClient`, any OpenAI-compatible chat-completions API. `VLM_PROVIDER`
+  picks the row of `vlm.PROVIDERS` (huggingface — the default —, openai, openrouter, groq,
+  together, deepinfra, mistral, xai, gemini, ollama, custom): its base URL and which key
+  variable is read (`HF_TOKEN`, `OPENAI_API_KEY`, ...; ollama needs none); `VLM_MODEL` is the
+  model (only huggingface has a default); `VLM_BASE_URL` / `VLM_API_KEY` override the row;
+  `--vision-provider` / `--vision-model` per run; a `.env` in the repo root (`.env.example`
+  lists everything) is read by `vlm.load_dotenv` without overriding exported variables, and
+  `tests/conftest.py` keeps tests away from it. `vlm.resolve` names the missing variable.
+  stdlib `urllib`, streamed SSE; `json_schema` → `json_object` → none and `stream_options` are
+  stepped down on a 400 that names them.
   A rule-based perceiver double runs inline in `tests/doubles.py` so the tests are
   deterministic; `--vision auto` picks it for policies with `uses_vision`, `api` is always
   explicit. The runner starts the perceiver before the env and stops it after, so it never gates

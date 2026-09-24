@@ -9,7 +9,7 @@ result appears as ``obs.percept`` a few ticks later. ``policy.step`` never
 waits: a model round trip is 1-5 s, the control tick is 20 ms.
 
 Smoke-test one image before any sim/robot use:
-    HF_TOKEN=hf_... python -m perception head.png
+    HF_TOKEN=hf_... python -m perception head.png        # or VLM_PROVIDER=openai VLM_MODEL=... OPENAI_API_KEY=...
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from typing import Optional
 import numpy as np
 
 from camera import Frame
-from hf import DEFAULT_MODEL, HFClient, RequestError, encode_jpeg, extract_json, image_part  # noqa: F401 (re-exported)
+from vlm import DEFAULT_MODEL, VLMClient, RequestError, encode_jpeg, extract_json, image_part  # noqa: F401 (re-exported)
 from vision import bearing, elevation
 from worker import Worker
 
@@ -171,20 +171,20 @@ class VisionQuery:
         return False
 
 
-class HFPerceiver(Perceiver):
-    """Hugging Face Inference Providers over the OpenAI-compatible endpoint."""
+class VLMPerceiver(Perceiver):
+    """The vision model over any OpenAI-compatible endpoint (see ``vlm.py``)."""
 
     def __init__(self, model: str = DEFAULT_MODEL, token: Optional[str] = None, *,
-                 min_interval: float = 1.0, max_width: int = 640, client: Optional[HFClient] = None,
+                 min_interval: float = 1.0, max_width: int = 640, client: Optional[VLMClient] = None,
                  **client_kw) -> None:
         super().__init__(min_interval=min_interval)
-        self.client = client or HFClient(model, token, **client_kw)
+        self.client = client or VLMClient(model, token, **client_kw)
         self.max_width = max_width
 
     @classmethod
-    def from_env(cls, model: Optional[str] = None, *, min_interval: float = 1.0,
-                 max_width: int = 640, **client_kw) -> "HFPerceiver":
-        return cls(client=HFClient.from_env(model, **client_kw), min_interval=min_interval,
+    def from_env(cls, model: Optional[str] = None, *, provider: Optional[str] = None, min_interval: float = 1.0,
+                 max_width: int = 640, **client_kw) -> "VLMPerceiver":
+        return cls(client=VLMClient.from_env(model, provider=provider, **client_kw), min_interval=min_interval,
                    max_width=max_width)
 
     @property
@@ -221,20 +221,22 @@ def build_perceiver(args: argparse.Namespace, policy) -> Optional[Perceiver]:
         return None
     echo = (lambda s: print(s, end="", flush=True)) if getattr(args, "vision_echo", False) else None
     try:
-        return HFPerceiver.from_env(getattr(args, "vision_model", None),
-                                    min_interval=getattr(args, "vision_interval", 1.0), on_text=echo)
-    except RuntimeError:
+        return VLMPerceiver.from_env(getattr(args, "vision_model", None), provider=getattr(args, "vision_provider", None),
+                                     min_interval=getattr(args, "vision_interval", 1.0), on_text=echo)
+    except RuntimeError as e:
         if mode == "api":
             raise
-        print("notice: this policy uses vision but no HF_TOKEN is set; running without percepts")
+        print(f"notice: this policy uses vision but the model is not configured ({e}); running without percepts")
         return None
 
 
 def _main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="python -m perception",
-                                description="describe one image with the vision model (needs $HF_TOKEN)")
+                                description="describe one image with the vision model (needs the provider's key, "
+                                            "see vlm.py: VLM_PROVIDER / VLM_MODEL / VLM_BASE_URL)")
     p.add_argument("image", help="image file (png/jpg)")
-    p.add_argument("--model", default=None, help=f"HF model id (default: $G1_VISION_MODEL or {DEFAULT_MODEL})")
+    p.add_argument("--model", default=None, help="model id (default: $VLM_MODEL, or the provider's default)")
+    p.add_argument("--provider", default=None, help="VLM provider (default: $VLM_PROVIDER or huggingface)")
     p.add_argument("--no-stream", action="store_true")
     args = p.parse_args(argv)
     import cv2
@@ -243,7 +245,7 @@ def _main(argv: list[str] | None = None) -> int:
         p.error(f"could not read {args.image}")
     frame = Frame(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), 0.0, 1)
     try:
-        per = HFPerceiver.from_env(args.model, stream=not args.no_stream,
+        per = VLMPerceiver.from_env(args.model, provider=args.provider, stream=not args.no_stream,
                                    on_text=lambda s: print(s, end="", flush=True))
     except RuntimeError as e:
         p.error(str(e))

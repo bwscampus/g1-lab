@@ -107,7 +107,8 @@ demo.py             demonstrations on turn 0: a recorded run, a video (ffmpeg + 
                     or a goal image, compiled into a portable demo.json; python -m demo prepare/show
 scene.py            the sim room: textures, furniture, real object meshes; python -m scene fetch
 perception.py       Percept / Perceiver: describe a frame with the vision model, on request only
-hf.py, worker.py    Hugging Face client (urllib, SSE); background worker with a latest-only result
+vlm.py, worker.py   the vision-model client for any OpenAI-compatible API (providers, env, urllib, SSE);
+                    background worker with a latest-only result
 run.py              CLI and the single run loop shared by all envs
 envs/
   base.py           Env interface: setup / reset / step / teardown / report
@@ -218,16 +219,35 @@ FOV), and `path_clear`. Policies read it as `obs.percept`; `obs.percept_age` is
 the age of the frame it describes, so it includes the model's latency, and a
 policy holds when it grows stale. The control loop never waits on the model.
 
-Backend: **Hugging Face Inference Providers** only. Get a fine-grained token with
-the "Make calls to Inference Providers" permission and export it as `HF_TOKEN`.
-The default model is `perception.DEFAULT_MODEL` (a Qwen3-VL instruct model,
-verified live on the router); override with `--vision-model` or
-`$G1_VISION_MODEL`, and pin a provider with a suffix such as
-`Qwen/Qwen3-VL-30B-A3B-Instruct:deepinfra` when you need structured output.
+Backend: **any OpenAI-compatible chat-completions API** (`vlm.py`), chosen by
+three variables plus the provider's own key:
 
 ```
-python   run.py --env sim   --policy describe --headless               # needs $HF_TOKEN
-export HF_TOKEN=hf_...
+VLM_PROVIDER   huggingface (default) | openai | openrouter | groq | together | deepinfra |
+               mistral | xai | gemini | ollama | custom
+VLM_MODEL      the model id to query (required, except huggingface has a default)
+VLM_BASE_URL   overrides the provider's endpoint; required for custom (any /v1 server: vLLM, ...)
+VLM_API_KEY    overrides the provider's key variable: HF_TOKEN, OPENAI_API_KEY, OPENROUTER_API_KEY,
+               GROQ_API_KEY, TOGETHER_API_KEY, DEEPINFRA_API_KEY, MISTRAL_API_KEY, XAI_API_KEY,
+               GEMINI_API_KEY; ollama and custom need none
+```
+
+Put them in a `.env` in the repo root (`cp .env.example .env`; git-ignored; read
+on first use, exported variables win) or export them.
+`--vision-provider` / `--vision-model` override the first two per run. With
+nothing set, the default is Hugging Face Inference Providers (a fine-grained
+token with "Make calls to Inference Providers" as `HF_TOKEN`) and
+`vlm.DEFAULT_MODEL`, a Qwen3-VL instruct model verified live on the router;
+a suffix such as `Qwen/Qwen3-VL-30B-A3B-Instruct:deepinfra` pins one of its
+providers. Structured output (`json_schema`, then `json_object`) and
+`stream_options` are requested and stepped down automatically when a server
+rejects them.
+
+```
+python   run.py --env sim   --policy describe --headless               # needs the provider's key
+export HF_TOKEN=hf_...                                              # or e.g.:
+export VLM_PROVIDER=openai VLM_MODEL=gpt-4o-mini OPENAI_API_KEY=sk-...
+export VLM_PROVIDER=ollama VLM_MODEL=qwen2.5vl                      # a local server, no key
 python -m perception head.png                                       # one real request, prints the Percept + latency
 mjpython run.py --env sim --policy describe --sim-obstacle 1.2,0,0.225 --vision api --vision-echo
 python   run.py --env sim --policy describe --headless --realtime 1 --sim-target 1.0,0.5,0.6 --vision api
@@ -329,7 +349,7 @@ fetch once, ~35 MB, git-ignored):
 
 ```
 python -m scene fetch
-export HF_TOKEN=hf_...
+export HF_TOKEN=hf_...            # or VLM_PROVIDER=... VLM_MODEL=... and that provider's key
 mjpython run.py --env sim --scene room --policy search --goal "find the mug" \
         --sim-objects mug@1.5,1.2 pencil@0.9,-0.4 --camera-size 720x1280 --realtime 1 --max-time 600
 ```

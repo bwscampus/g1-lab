@@ -6,12 +6,12 @@ import numpy as np
 import pytest
 
 from agent import Agent
-from decider import HFDecider
+from decider import VLMDecider
 from demo import (HISTORICAL, HISTORICAL_ACTION, HISTORICAL_VIDEO, ImagePart, ModelSelector, Request, TextPart,
                   UniformSelector, VideoPart, build_request, bundle_parts, compile_run, compile_video, content_records,
                   load_bundle, load_manifest, prepare, save_input, thin, validate_selection, write_bundle, _main)
 from episode import EpisodeWriter
-from hf import HFClient
+from vlm import VLMClient
 from run import build_parser, main, run
 from skills import SKILLS, menu
 from tests.test_agent import Sequence, check
@@ -144,7 +144,7 @@ def test_prepare_and_turn_zero(tmp_path):
         calls.append(body)
         return iter([json.dumps({"choices": [{"delta": {"content": turn_json if len(calls) == 1 else done_json}}]}), "[DONE]"])
 
-    dec = HFDecider(HFClient("m/vl", "hf_x", transport=transport), live_image_window=1)
+    dec = VLMDecider(VLMClient("m/vl", "hf_x", transport=transport), live_image_window=1)
     dec.threaded = False
     agent = Agent("find the red ball", dec, menu(True), content=prepared.content, max_decisions=5)
     assert run(agent, check(), max_time=120) is True and agent.result == "completed"
@@ -204,7 +204,7 @@ def test_video_model_selection(tmp_path):
         return iter([json.dumps({"choices": [{"delta": {"content": json.dumps(reply)}}]}),
                      json.dumps({"choices": [], "usage": {"prompt_tokens": 9}}), "[DONE]"])
 
-    sel = ModelSelector(HFClient("m/vl", "hf_x", transport=transport), max_frames=6)
+    sel = ModelSelector(VLMClient("m/vl", "hf_x", transport=transport), max_frames=6)
     b = compile_video(video, "find the mug", tmp_path / "kf", selector=sel, cache_dir=tmp_path / "cache")
     assert len(calls) == 1 and calls[0]["response_format"]["type"] == "json_schema"
     user = calls[0]["messages"][1]["content"]
@@ -234,7 +234,8 @@ def test_cli_prepare_show_and_run_flags(tmp_path, capsys, monkeypatch):
                                       "--demo-mode", "video", "--demo-frames", "5", "--input-json", "m.json"])
     assert args.demo == "x.mp4" and args.ref == ["a.png", "b.png"] and args.demo_frames == 5
     monkeypatch.delenv("HF_TOKEN", raising=False)
-    monkeypatch.delenv("G1_VISION_API_KEY", raising=False)
+    monkeypatch.delenv("VLM_API_KEY", raising=False)
+    monkeypatch.delenv("VLM_PROVIDER", raising=False)
     with pytest.raises(SystemExit):
         main(["--env", "sim", "--headless", "--policy", "search", "--goal", "g", "--demo", str(tmp_path / "none.mp4"), "--no-log"])
     assert "demonstration not found" in capsys.readouterr().err
