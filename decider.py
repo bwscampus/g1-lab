@@ -196,6 +196,15 @@ def instructions(context_menu: Sequence[type[Skill]], *, can_walk: bool, max_dec
             if can_walk else
             "The base cannot be driven in this run, so no walking skills are offered: search by looking.")
     fov_h = 2 * math.degrees(math.atan(math.tan(math.radians(HEAD_CAMERA_FOVY / 2)) * 4 / 3))
+    joints = ""
+    if any(s.name == "arm_path" for s in context_menu):
+        from skills import joint_table
+        rows = "\n".join(f"- {r['name']}: [{r['min']}, {r['max']}] rad, stand {r['stand']}" for r in joint_table())
+        joints = f"""
+Joints arm_path may command (radians; the stand pose is where every run starts and ends):
+{rows}
+- Conventions verified on the model: elbow 0 is a 90-degree bend with the forearm forward, about 1.57 is a straight arm, more negative bends the forearm up; shoulder_roll +1.57 (left) / -1.57 (right) with shoulder_pitch 0 and elbow 1.47 is a T-pose; wrist_roll -1.57 (left) / +1.57 (right) turns the palms up; waist_yaw positive looks LEFT.
+"""
     text = f"""You control a Unitree G1 humanoid robot through a small set of skills, one decision per turn.
 
 Robot and camera conventions:
@@ -203,7 +212,7 @@ Robot and camera conventions:
 - One forward head camera (RGB, no depth) on the torso, pointing 47 degrees down: the floor 1-3 m ahead fills the lower half of the image, and the image spans about {fov_h:.0f} degrees horizontally. Pixel positions are not metric distances; judge distance from apparent size and from where an object meets the floor.
 - +yaw is LEFT (counter-clockwise). state.base_pose_cmd is the dead-reckoned [x forward, y left, yaw degrees] since the start, integrated from the commands sent; base_pose_env is the simulator's own measurement and null on the real robot. state.waist_yaw_deg is where the camera looks relative to the feet.
 - {walk}
-{notes}
+{joints}{notes}
 Return exactly one skill selection per turn: {{"name": "...", "arguments": {{...}}}}. No Markdown or text outside this object. The host runs the whole skill, waits for the joints to settle, then supplies a fresh observation whose previous_result reports what happened.
 
 Skills:

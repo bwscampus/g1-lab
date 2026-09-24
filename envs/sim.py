@@ -312,6 +312,8 @@ class SimEnv(Env):
             if not self._pin_base:
                 raise EnvAbort("sim cannot walk: base commands need the pinned base (drop --free-base)")
             self._slide_base(action.base)
+        if action.command is not None:
+            raise EnvAbort(f"sim has no onboard gesture {action.command[0]}; that skill is robot-only")
         for _ in range(self.substeps):
             self._physics_tick()
         self._tick += 1

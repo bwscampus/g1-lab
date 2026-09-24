@@ -26,7 +26,7 @@ from policy import Action, Obs, Policy, Segment, SegmentPolicy
 from behaviors import Describe, Face, GoTo, Look
 from perception import VisionQuery
 from skills import (SKILLS, Handback, Hold, SixSeven, Skill, Takeover, TPose, parse_skill,
-                    skill_segments)
+                    skill_segments, split_outside)
 from targets import Doorway, Labeled, RedDot, seen
 
 
@@ -165,7 +165,7 @@ def build_policy(spec: str, pause: float = 1.0) -> Policy:
         return ROUTINES[spec]()
     if spec in POLICIES:
         return POLICIES[spec]()
-    items = [n.strip() for n in spec.split(",") if n.strip()]
+    items = [n.strip() for n in split_outside(spec, ",") if n.strip()]
     if not items:
         raise KeyError(spec)
     parts = []

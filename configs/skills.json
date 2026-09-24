@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "selection_description": "One skill selection for a Unitree G1 humanoid with {n_joints} joints. The host runs the whole skill (arm_sdk joint targets; LocoClient velocity commands for walking skills), waits for the joints to settle, then supplies a fresh observation with the result.",
+  "selection_description": "One skill selection for a Unitree G1 humanoid with {n_joints} joints. The host plans the skill, checks it against joint and speed limits, runs it to its end (arm_sdk joint targets; LocoClient velocity commands for the base; the onboard controller for gestures), waits for the joints to settle, then supplies a fresh observation with the result.",
   "schemas": {
     "note": {
       "type": "string",
@@ -10,53 +10,87 @@
   },
   "skills": [
     {
-      "name": "walk_forward",
-      "skill": "skills.WalkForward",
+      "name": "move",
+      "skill": "skills.Move",
       "enabled": true,
       "needs_base": true,
-      "description": "Walk straight ahead by distance_m metres at 0.2 m/s, then stand still.",
-      "prompt": "Walk straight ahead by distance_m metres (0.1 to 3.0) at 0.2 m/s; a 3 m walk takes 15 s and is observed every 3 s but not re-decided. Only when the note states that the floor ahead is clear for that distance. The head camera looks 47 degrees down, so the floor 1-3 m ahead fills the lower half of the image. Walk when the goal is centred and far; turn first when it is off-centre.",
+      "description": "One relative base displacement: dx_m forward, dy_m left (sidestep) and dyaw_deg turn, in the frame the robot stands in now. Translates first, then turns.",
+      "prompt": "Move the base by dx_m forward (-3 to 3; negative walks backward), dy_m left (-1.5 to 1.5; a sidestep) and dyaw_deg (-180 to 180, positive turns LEFT), in the current frame. The host translates at 0.2 m/s then turns at 0.4 rad/s, observing every 3 s but not re-deciding. Only when the note states the floor is clear for the whole displacement; a 1 m move takes 5 s. To face a visible target, turn by its bearing (the image spans about 77 degrees horizontally). To search, turn LEFT in steps of 45-60 degrees and observe between turns; after a full circle without seeing the goal, move 0.5 m into clear space and search again. To pass an obstacle, sidestep or turn around it in short moves rather than walking at it.",
       "parameters": {
         "type": "object",
         "properties": {
-          "distance_m": {"type": "number", "minimum": 0.1, "maximum": 3.0, "description": "metres to walk"},
-          "note": {"$schema": "note"}
+          "dx_m": {
+            "type": "number",
+            "minimum": -3.0,
+            "maximum": 3.0,
+            "default": 0.0,
+            "description": "metres forward (negative: backward)"
+          },
+          "dy_m": {
+            "type": "number",
+            "minimum": -1.5,
+            "maximum": 1.5,
+            "default": 0.0,
+            "description": "metres to the left (negative: right)"
+          },
+          "dyaw_deg": {
+            "type": "number",
+            "minimum": -180.0,
+            "maximum": 180.0,
+            "default": 0.0,
+            "description": "degrees to turn, + left / - right"
+          },
+          "note": {
+            "$schema": "note"
+          }
         },
-        "required": ["distance_m", "note"],
+        "required": [
+          "note"
+        ],
         "additionalProperties": false
       }
     },
     {
-      "name": "turn",
-      "skill": "skills.Turn",
-      "enabled": true,
-      "needs_base": true,
-      "description": "Turn in place by angle_deg degrees at 0.4 rad/s: positive = LEFT (counter-clockwise), negative = RIGHT.",
-      "prompt": "Turn in place by angle_deg degrees (-180 to 180); positive turns LEFT, negative RIGHT. To face a visible goal, turn by its bearing (the image spans about 77 degrees horizontally). To search, turn LEFT in steps of 45-60 degrees and observe between turns; after a full circle without seeing the goal, walk 0.5 m into clear space and search again.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "angle_deg": {"type": "number", "minimum": -180.0, "maximum": 180.0, "description": "degrees, + left / - right"},
-          "note": {"$schema": "note"}
-        },
-        "required": ["angle_deg", "note"],
-        "additionalProperties": false
-      }
-    },
-    {
-      "name": "look",
-      "skill": "skills.Look",
+      "name": "arm_path",
+      "skill": "skills.ArmPath",
       "enabled": true,
       "needs_base": false,
-      "description": "Turn only the waist (not the feet) by yaw_deg and hold it, so the next image looks sideways: positive = LEFT, negative = RIGHT. The next skill recentres the waist.",
-      "prompt": "Turn only the waist by yaw_deg degrees (-45 to 45), positive LEFT, and hold it so the next image looks sideways; the feet do not move and the next skill recentres the waist. Use it to glance around when turning is not offered, or to inspect something beside the robot.",
+      "description": "Move the waist and arms through joint-space waypoints: each waypoint names joints and their target angles in radians and how long to take; omitted joints keep their pose.",
+      "prompt": "Move the waist and arms through 1 to 8 joint-space waypoints; each gives joints (name -> radians, see the joint table) and seconds (0.5 to 10, default 2). Omitted joints keep their current pose. Use waist_yaw alone (positive LEFT, up to +/-45 degrees = 0.785 rad) to glance sideways without moving the feet; the next arm_path or move may recentre it. Keep the arms clear of the body and the head; the host rejects a path that leaves the joint limits or moves too fast, without moving. A gesture, a glance or a reach: not a search move.",
       "parameters": {
         "type": "object",
         "properties": {
-          "yaw_deg": {"type": "number", "minimum": -45.0, "maximum": 45.0, "description": "degrees, + left / - right"},
-          "note": {"$schema": "note"}
+          "waypoints": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 8,
+            "items": {
+              "type": "object",
+              "properties": {
+                "joints": {
+                  "$template": "arm_joints"
+                },
+                "seconds": {
+                  "type": "number",
+                  "minimum": 0.5,
+                  "maximum": 10.0,
+                  "default": 2.0
+                }
+              },
+              "required": [
+                "joints"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "note": {
+            "$schema": "note"
+          }
         },
-        "required": ["yaw_deg", "note"],
+        "required": [
+          "waypoints",
+          "note"
+        ],
         "additionalProperties": false
       }
     },
@@ -70,48 +104,20 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "seconds": {"type": "number", "minimum": 0.1, "maximum": 30.0, "default": 1.0, "description": "how long to wait"},
-          "note": {"$schema": "note"}
+          "seconds": {
+            "type": "number",
+            "minimum": 0.1,
+            "maximum": 30.0,
+            "default": 1.0,
+            "description": "how long to wait"
+          },
+          "note": {
+            "$schema": "note"
+          }
         },
-        "required": ["note"],
-        "additionalProperties": false
-      }
-    },
-    {
-      "name": "tpose",
-      "skill": "skills.TPose",
-      "enabled": true,
-      "needs_base": false,
-      "description": "Raise both arms straight out to the sides (a T-pose), hold, then lower them.",
-      "prompt": "Raise both arms straight out to the sides, hold for hold seconds, then lower them (rise seconds each way). A gesture, not a search move; needs clear space to both sides at shoulder height.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "hold": {"type": "number", "minimum": 0.5, "maximum": 30.0, "default": 5.0, "description": "seconds to hold the pose"},
-          "rise": {"type": "number", "minimum": 1.0, "maximum": 10.0, "default": 3.0, "description": "seconds to raise and lower"},
-          "note": {"$schema": "note"}
-        },
-        "required": ["note"],
-        "additionalProperties": false
-      }
-    },
-    {
-      "name": "sixseven",
-      "skill": "skills.SixSeven",
-      "enabled": true,
-      "needs_base": false,
-      "description": "A two-handed see-saw wave: palms up, forearms swing up and down in turn, then arms down.",
-      "prompt": "A two-handed see-saw wave with the palms up: reps swings per hand of swing_time seconds each, after settle seconds to reach the palms-up pose and hold seconds before and after. A gesture toward a person; not a search move.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "reps": {"type": "integer", "minimum": 1, "maximum": 10, "default": 3, "description": "swings per hand"},
-          "swing_time": {"type": "number", "minimum": 0.3, "maximum": 2.0, "default": 0.8, "description": "seconds per swing"},
-          "settle": {"type": "number", "minimum": 0.5, "maximum": 5.0, "default": 3.0, "description": "seconds to reach the palms-up pose"},
-          "hold": {"type": "number", "minimum": 0.1, "maximum": 5.0, "default": 1.0, "description": "seconds to hold before and after"},
-          "note": {"$schema": "note"}
-        },
-        "required": ["note"],
+        "required": [
+          "note"
+        ],
         "additionalProperties": false
       }
     },
@@ -121,15 +127,94 @@
       "enabled": true,
       "needs_base": false,
       "description": "Dry-run a skill with the given arguments from the current commanded pose without moving: joint limits, command speed, base velocity limits, duration and the resulting base displacement. No physics or contact check.",
-      "prompt": "Check a skill and its arguments without moving: the host plans it from the current commanded pose and reports joint-limit, command-speed and base-velocity violations, its duration and the base displacement it would produce. It does not simulate contact or prove the path is clear; judge that from the image. Use it for an uncertain long walk or turn before committing.",
+      "prompt": "Check a skill and its arguments without moving: the host plans it from the current commanded pose and reports joint-limit, command-speed and base-velocity violations, its duration and the base displacement it would produce. It does not simulate contact or prove the path is clear; judge that from the image. Use it for an uncertain long move or an arm_path near the limits before committing; every movement is dry-run this way before it executes anyway.",
       "parameters": {
         "type": "object",
         "properties": {
-          "skill": {"$template": "skill_name"},
-          "arguments": {"type": "object", "description": "the arguments that skill would run with (its note may be omitted)"},
-          "note": {"$schema": "note"}
+          "skill": {
+            "$template": "skill_name"
+          },
+          "arguments": {
+            "type": "object",
+            "description": "the arguments that skill would run with (its note may be omitted)"
+          },
+          "note": {
+            "$schema": "note"
+          }
         },
-        "required": ["skill", "arguments", "note"],
+        "required": [
+          "skill",
+          "arguments",
+          "note"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "wave_hand",
+      "skill": "skills.WaveHand",
+      "enabled": true,
+      "needs_base": false,
+      "needs_loco": true,
+      "description": "The robot's own wave gesture (onboard controller): it takes the arms for the gesture and hands them back. Robot only.",
+      "prompt": "Wave with the onboard controller's built-in gesture; turn_flag true adds a turn of the hand. The host hands the arms to the onboard controller for seconds (default 4), then takes them back. A greeting toward a person; not a search move.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "turn_flag": {
+            "type": "boolean",
+            "default": false,
+            "description": "wave with a turn of the hand"
+          },
+          "seconds": {
+            "type": "number",
+            "minimum": 1.0,
+            "maximum": 15.0,
+            "default": 4.0,
+            "description": "how long the onboard gesture takes"
+          },
+          "note": {
+            "$schema": "note"
+          }
+        },
+        "required": [
+          "note"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "shake_hand",
+      "skill": "skills.ShakeHand",
+      "enabled": true,
+      "needs_base": false,
+      "needs_loco": true,
+      "description": "The robot's own handshake gesture (onboard controller). Robot only.",
+      "prompt": "Offer a handshake with the onboard controller's built-in gesture (stage -1 runs the whole gesture). The host hands the arms to the onboard controller for seconds (default 6), then takes them back. Only when a person stands within reach in front of the robot.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "stage": {
+            "type": "integer",
+            "minimum": -1,
+            "maximum": 1,
+            "default": -1,
+            "description": "-1: the whole gesture"
+          },
+          "seconds": {
+            "type": "number",
+            "minimum": 1.0,
+            "maximum": 15.0,
+            "default": 6.0,
+            "description": "how long the onboard gesture takes"
+          },
+          "note": {
+            "$schema": "note"
+          }
+        },
+        "required": [
+          "note"
+        ],
         "additionalProperties": false
       }
     },
@@ -144,10 +229,20 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "summary": {"type": "string", "minLength": 1, "description": "direct current evidence of the requested outcome and any remaining uncertainty"},
-          "hindsight": {"type": "string", "description": "lessons from this attempt"}
+          "summary": {
+            "type": "string",
+            "minLength": 1,
+            "description": "direct current evidence of the requested outcome and any remaining uncertainty"
+          },
+          "hindsight": {
+            "type": "string",
+            "description": "lessons from this attempt"
+          }
         },
-        "required": ["summary", "hindsight"],
+        "required": [
+          "summary",
+          "hindsight"
+        ],
         "additionalProperties": false
       }
     },
@@ -162,12 +257,188 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "reason": {"type": "string", "minLength": 1},
-          "hindsight": {"type": "string"}
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          },
+          "hindsight": {
+            "type": "string"
+          }
         },
-        "required": ["reason", "hindsight"],
+        "required": [
+          "reason",
+          "hindsight"
+        ],
         "additionalProperties": false
       }
+    },
+    {
+      "name": "walk_forward",
+      "skill": "skills.WalkForward",
+      "enabled": true,
+      "needs_base": true,
+      "description": "Walk straight ahead by distance_m metres at 0.2 m/s, then stand still.",
+      "prompt": "Walk straight ahead by distance_m metres (0.1 to 3.0) at 0.2 m/s; a 3 m walk takes 15 s and is observed every 3 s but not re-decided. Only when the note states that the floor ahead is clear for that distance. The head camera looks 47 degrees down, so the floor 1-3 m ahead fills the lower half of the image. Walk when the goal is centred and far; turn first when it is off-centre.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "distance_m": {
+            "type": "number",
+            "minimum": 0.1,
+            "maximum": 3.0,
+            "description": "metres to walk"
+          },
+          "note": {
+            "$schema": "note"
+          }
+        },
+        "required": [
+          "distance_m",
+          "note"
+        ],
+        "additionalProperties": false
+      },
+      "offer": false
+    },
+    {
+      "name": "turn",
+      "skill": "skills.Turn",
+      "enabled": true,
+      "needs_base": true,
+      "description": "Turn in place by angle_deg degrees at 0.4 rad/s: positive = LEFT (counter-clockwise), negative = RIGHT.",
+      "prompt": "Turn in place by angle_deg degrees (-180 to 180); positive turns LEFT, negative RIGHT. To face a visible goal, turn by its bearing (the image spans about 77 degrees horizontally). To search, turn LEFT in steps of 45-60 degrees and observe between turns; after a full circle without seeing the goal, walk 0.5 m into clear space and search again.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "angle_deg": {
+            "type": "number",
+            "minimum": -180.0,
+            "maximum": 180.0,
+            "description": "degrees, + left / - right"
+          },
+          "note": {
+            "$schema": "note"
+          }
+        },
+        "required": [
+          "angle_deg",
+          "note"
+        ],
+        "additionalProperties": false
+      },
+      "offer": false
+    },
+    {
+      "name": "look",
+      "skill": "skills.Look",
+      "enabled": true,
+      "needs_base": false,
+      "description": "Turn only the waist (not the feet) by yaw_deg and hold it, so the next image looks sideways: positive = LEFT, negative = RIGHT. The next skill recentres the waist.",
+      "prompt": "Turn only the waist by yaw_deg degrees (-45 to 45), positive LEFT, and hold it so the next image looks sideways; the feet do not move and the next skill recentres the waist. Use it to glance around when turning is not offered, or to inspect something beside the robot.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "yaw_deg": {
+            "type": "number",
+            "minimum": -45.0,
+            "maximum": 45.0,
+            "description": "degrees, + left / - right"
+          },
+          "note": {
+            "$schema": "note"
+          }
+        },
+        "required": [
+          "yaw_deg",
+          "note"
+        ],
+        "additionalProperties": false
+      },
+      "offer": false
+    },
+    {
+      "name": "tpose",
+      "skill": "skills.TPose",
+      "enabled": true,
+      "needs_base": false,
+      "description": "Raise both arms straight out to the sides (a T-pose), hold, then lower them.",
+      "prompt": "Raise both arms straight out to the sides, hold for hold seconds, then lower them (rise seconds each way). A gesture, not a search move; needs clear space to both sides at shoulder height.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "hold": {
+            "type": "number",
+            "minimum": 0.5,
+            "maximum": 30.0,
+            "default": 5.0,
+            "description": "seconds to hold the pose"
+          },
+          "rise": {
+            "type": "number",
+            "minimum": 1.0,
+            "maximum": 10.0,
+            "default": 3.0,
+            "description": "seconds to raise and lower"
+          },
+          "note": {
+            "$schema": "note"
+          }
+        },
+        "required": [
+          "note"
+        ],
+        "additionalProperties": false
+      },
+      "offer": false
+    },
+    {
+      "name": "sixseven",
+      "skill": "skills.SixSeven",
+      "enabled": true,
+      "needs_base": false,
+      "description": "A two-handed see-saw wave: palms up, forearms swing up and down in turn, then arms down.",
+      "prompt": "A two-handed see-saw wave with the palms up: reps swings per hand of swing_time seconds each, after settle seconds to reach the palms-up pose and hold seconds before and after. A gesture toward a person; not a search move.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "reps": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10,
+            "default": 3,
+            "description": "swings per hand"
+          },
+          "swing_time": {
+            "type": "number",
+            "minimum": 0.3,
+            "maximum": 2.0,
+            "default": 0.8,
+            "description": "seconds per swing"
+          },
+          "settle": {
+            "type": "number",
+            "minimum": 0.5,
+            "maximum": 5.0,
+            "default": 3.0,
+            "description": "seconds to reach the palms-up pose"
+          },
+          "hold": {
+            "type": "number",
+            "minimum": 0.1,
+            "maximum": 5.0,
+            "default": 1.0,
+            "description": "seconds to hold before and after"
+          },
+          "note": {
+            "$schema": "note"
+          }
+        },
+        "required": [
+          "note"
+        ],
+        "additionalProperties": false
+      },
+      "offer": false
     },
     {
       "name": "takeover",
@@ -180,8 +451,20 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "ramp": {"type": "number", "minimum": 0.0, "maximum": 10.0, "default": 2.0, "description": "weight ramp seconds"},
-          "to_stand": {"type": "number", "minimum": 0.0, "maximum": 10.0, "default": 3.0, "description": "seconds to reach STAND"}
+          "ramp": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 10.0,
+            "default": 2.0,
+            "description": "weight ramp seconds"
+          },
+          "to_stand": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 10.0,
+            "default": 3.0,
+            "description": "seconds to reach STAND"
+          }
         },
         "required": [],
         "additionalProperties": false
@@ -198,8 +481,20 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "to_stand": {"type": "number", "minimum": 0.0, "maximum": 10.0, "default": 3.0, "description": "seconds to reach STAND"},
-          "ramp": {"type": "number", "minimum": 0.0, "maximum": 10.0, "default": 2.0, "description": "weight ramp seconds"}
+          "to_stand": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 10.0,
+            "default": 3.0,
+            "description": "seconds to reach STAND"
+          },
+          "ramp": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 10.0,
+            "default": 2.0,
+            "description": "weight ramp seconds"
+          }
         },
         "required": [],
         "additionalProperties": false

@@ -49,6 +49,7 @@ from config import ARM_SDK_WEIGHT_IDX, BASE_VEL_MAX, CONTROL_DT, NUM_JOINTS, UPP
 from policy import Action
 from envs.base import Env
 from envs.monitor import JointMonitor
+from skills import LOCO_METHODS
 
 
 FSM_LOCKED_STAND = 4
@@ -326,6 +327,10 @@ class RobotEnv(Env):
     def can_walk(self) -> bool:
         return bool(self.args.walk)
 
+    @property
+    def has_loco(self) -> bool:
+        return True                    # LocoClient is always up on the robot
+
     def _motor(self, attr: str):
         arm = getattr(self, "arm", None)
         if arm is None or arm.state is None:
@@ -347,6 +352,15 @@ class RobotEnv(Env):
             raise RuntimeError("the policy commands the base; pass --walk (read its pre-flight first)")
         if base is not None:
             base.command(action.base)
+        if action.command is not None:
+            name, kw = action.command
+            if name not in LOCO_METHODS:
+                raise RuntimeError(f"onboard call {name!r} is not allowed (allowed: {sorted(LOCO_METHODS)})")
+            print(f"LocoClient.{name}({kw})")
+            code = getattr(self.loco, name)(**kw)
+            self.last_command = {"name": name, "args": dict(kw), "code": code}
+            if code not in (0, None):
+                print(f"warning: LocoClient.{name} returned {code}")
         self.arm.send(action)
         self._wall += CONTROL_DT
         lag = self._wall - time.time()

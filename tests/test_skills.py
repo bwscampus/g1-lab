@@ -12,7 +12,13 @@ from skills import (CATALOG, CATALOG_PATH, SKILLS, STEP_MAX, WAIST_YAW, Catalog,
                     validate_args)
 from tests.doubles import sim_env
 
+WP = [{"joints": {"left_shoulder_roll": 1.2, "left_elbow": 0.3}, "seconds": 1.5},
+      {"joints": {"right_shoulder_roll": -1.2, "left_shoulder_roll": 0.2, "left_elbow": 1.28}, "seconds": 1.5}]
 EXTREMES = {                       # (extreme args, cheap args for the pairwise test)
+    "move": ([{"dx_m": -3.0, "dy_m": 1.5, "dyaw_deg": -180.0}, {"dx_m": 3.0, "dy_m": -1.5, "dyaw_deg": 180.0}, {}],
+             {"dx_m": 0.1, "dyaw_deg": 5.0}),
+    "arm_path": ([{"waypoints": WP}, {"waypoints": [{"joints": {"waist_yaw": 0.785}}]}],
+                 {"waypoints": [{"joints": {"waist_yaw": -0.3}, "seconds": 1.0}]}),
     "walk_forward": ([{"distance_m": 0.1}, {"distance_m": 3.0}], {"distance_m": 0.1}),
     "turn": ([{"angle_deg": -180.0}, {"angle_deg": 180.0}, {"angle_deg": 0.0}, {"angle_deg": 3.0}],
              {"angle_deg": 5.0}),
@@ -93,8 +99,17 @@ def test_validate_args():
 
 
 def test_menu_and_parse():
-    assert {s.name for s in menu(False)} == {"look", "hold", "tpose", "sixseven", "check", "done", "give_up"}
-    assert [s.name for s in menu(True)] == [n for n in SKILLS if not SKILLS[n].internal]
+    assert [s.name for s in menu(False)] == ["arm_path", "hold", "check", "done", "give_up"]
+    assert [s.name for s in menu(True)] == ["move", "arm_path", "hold", "check", "done", "give_up"]
+    assert [s.name for s in menu(True, True)] == ["move", "arm_path", "hold", "check", "wave_hand", "shake_hand",
+                                                 "done", "give_up"]
+    assert {n for n in SKILLS if not SKILLS[n].offer} == {"walk_forward", "turn", "look", "tpose", "sixseven"}
+    m = parse_skill("move:1:0.3:-45")
+    assert m.args == {"dx_m": 1.0, "dy_m": 0.3, "dyaw_deg": -45.0, "note": ""}
+    a = parse_skill('arm_path:waypoints=[{"joints":{"left_elbow":-0.4},"seconds":1.5}]')
+    assert a.waypoints == [{"joints": {"left_elbow": -0.4}, "seconds": 1.5}] and a.duration == 1.5
+    with pytest.raises(ValueError):
+        parse_skill("arm_path:waypoints=notjson")
     skill = parse_skill("turn:45")
     assert skill.name == "turn" and skill.args == {"angle_deg": 45.0, "note": ""}
     assert parse_skill("look:yaw_deg=-20").args == {"yaw_deg": -20.0, "note": ""}
@@ -104,15 +119,19 @@ def test_menu_and_parse():
         parse_skill("fly:1")
     with pytest.raises(ValueError):
         parse_skill("tpose:1:2:3")
-    assert "walk_forward(distance_m: number [0.1, 3.0])  [needs --walk]" in describe_menu(menu())
+    text = describe_menu(list(SKILLS.values()))
+    assert "walk_forward(distance_m: number [0.1, 3.0])  [needs --walk]  [preset: not offered to the model]" in text
+    assert "wave_hand(turn_flag: boolean, seconds: number [1.0, 15.0])  [robot only]" in text
 
 
 def test_skill_chain_is_a_routine():
     r = build_policy("walk_forward:0.5,turn:45,tpose:0.5:1,sixseven:1:0.4:1:0.1")
     assert isinstance(r, Routine)
-    assert [s.name for s in r.skills] == ["walk_forward", "turn", "tpose", "sixseven"]
+    assert [s.name for s in r.skills] == ["walk_forward", "turn", "tpose", "sixseven"]     # presets still chain
     env = sim_env()
     assert run(r, env) is True and env.violations == [] and env.base_path == pytest.approx(0.5)
+    r = build_policy('move:1:0.3:-45,arm_path:waypoints=[{"joints":{"waist_yaw":0.5},"seconds":1}]')
+    assert [s.name for s in r.skills] == ["move", "arm_path"]
     with pytest.raises(ValueError):
         build_policy("done:yes:no")
     with pytest.raises(ValueError):
@@ -167,7 +186,7 @@ def test_catalog_binds_every_skill_and_each_runs_with_its_defaults():
             if k in cls.params["required"] and "default" not in spec:
                 args[k] = ("n" if spec.get("type") == "string" else spec.get("minimum", 0)
                            if spec.get("type") in ("number", "integer") else {} if spec.get("type") == "object"
-                           else "turn")
+                           else [{"joints": {"waist_yaw": 0.0}}] if spec.get("type") == "array" else "move")
         skill = cls(**args)
         segs = skill.segments()
         assert isinstance(segs, tuple)
@@ -210,19 +229,20 @@ def test_catalog_renderings_and_swap(tmp_path):
     import json
     m = menu(True)
     bullets = CATALOG.prompt_catalog(m)
-    assert bullets.startswith("- walk_forward: ") and bullets.count("\n") == len(m) - 1
+    assert bullets.startswith("- move: ") and bullets.count("\n") == len(m) - 1
     fns = CATALOG.function_schemas(m)
     assert [f["function"]["name"] for f in fns] == [s.name for s in m]
     assert fns[0]["function"]["parameters"]["properties"]["note"]["minLength"] == 1
-    assert next(f for f in fns if f["function"]["name"] == "check")["function"]["parameters"]["properties"]["skill"]["enum"][0] == "walk_forward"
+    assert next(f for f in fns if f["function"]["name"] == "check")["function"]["parameters"]["properties"]["skill"]["enum"][0] == "move"
     schema = CATALOG.output_schema(m)
     assert "One skill selection for a Unitree G1 humanoid with 29 joints" in schema["description"]
     loose = CATALOG.output_schema(m, strict=False)
     assert "default" in next(a for a in loose["properties"]["arguments"]["anyOf"] if "seconds" in a["properties"])["properties"]["seconds"]
     # a swapped catalog with a different prompt and range is what the model sees
     data = catalog_data()
-    data["skills"][0]["prompt"] = "WALK PROMPT"
-    data["skills"][0]["parameters"]["properties"]["distance_m"]["maximum"] = 1.0
+    walk = next(s for s in data["skills"] if s["name"] == "walk_forward")
+    walk["prompt"] = "WALK PROMPT"
+    walk["parameters"]["properties"]["distance_m"]["maximum"] = 1.0
     p = tmp_path / "alt.json"
     p.write_text(json.dumps(data))
     try:
@@ -233,3 +253,70 @@ def test_catalog_renderings_and_swap(tmp_path):
     finally:
         use_catalog(None)
     assert SKILLS["walk_forward"].prompt != "WALK PROMPT"
+
+
+# --------------------------------------------------------------------------
+# The general primitives
+# --------------------------------------------------------------------------
+
+def test_move_ends_exactly_where_asked():
+    for args, end in [({"dx_m": 1.0, "dy_m": 0.3, "dyaw_deg": -45.0}, (1.0, 0.3, -45.0)),
+                      ({"dx_m": -0.5}, (-0.5, 0.0, 0.0)), ({"dyaw_deg": 90.0}, (0.0, 0.0, 90.0)), ({}, (0.0, 0.0, 0.0))]:
+        env = sim_env()
+        assert run(bookended(SKILLS["move"](**args)), env) is True and env.violations == [], args
+        x, y, yaw = env.base_pose()
+        assert (x, y, math.degrees(yaw)) == pytest.approx(end, abs=1e-6)
+    segs = SKILLS["move"](dx_m=1.0, dy_m=0.3, dyaw_deg=-45.0).segments()
+    assert len(segs) == 2 and segs[0].base[2] == 0.0 and segs[1].base[:2] == (0.0, 0.0)   # translate, then turn
+    assert validate_args(SKILLS["move"], {"dx_m": 9})[0]["dx_m"] == 3.0
+
+
+def test_arm_path_waypoints_in_order_and_rejections():
+    env = sim_env()
+    skill = SKILLS["arm_path"](waypoints=WP)
+    assert run(bookended(skill), env) is True and env.violations == []
+    assert env.cmd_max[16] == pytest.approx(1.2, abs=1e-6) and env.cmd_min[23] == pytest.approx(-1.2, abs=1e-6)
+    p = skill_policy(skill)
+    p.reset(Obs(STAND_Q))
+    left = [p.step(n * 0.02, Obs(STAND_Q)).q[16] for n in range(int(3.0 / 0.02))]
+    assert max(left[:75]) == pytest.approx(1.2, abs=1e-3) and left[-1] == pytest.approx(0.2, abs=1e-3)   # in order
+    for bad in [{"waypoints": []}, {"waypoints": [{"joints": {}}]}, {"waypoints": [{"joints": {"nope": 0.1}}]},
+                {"waypoints": [{"joints": {"left_elbow": 3.0}}]}, {"waypoints": [{"joints": {"waist_yaw": "x"}}]},
+                {"waypoints": [{"joints": {"waist_yaw": 0.1}, "seconds": 0.1}]}, {"waypoints": "up"}]:
+        with pytest.raises(ValueError):
+            SKILLS["arm_path"](**bad)
+    schema = CATALOG.parameters(SKILLS["arm_path"], menu(True))
+    joints = schema["properties"]["waypoints"]["items"]["properties"]["joints"]
+    assert joints["properties"]["left_elbow"] == {"type": "number", "minimum": -1.047, "maximum": 2.094}
+    assert joints["additionalProperties"] is False and len(joints["properties"]) == 17
+
+
+class DampGesture(SKILLS["wave_hand"]):
+    command = "Damp"
+
+
+def test_gestures_emit_one_onboard_call_and_sim_refuses(tmp_path, capsys):
+    import json
+    from envs import EnvAbort
+    from policy import SegmentPolicy
+    w = SKILLS["wave_hand"](turn_flag=True, seconds=2.0)
+    p = SegmentPolicy(skill_segments(w), joints=w.joints)
+    p.reset(Obs(STAND_Q))
+    cmds = [a.command for n in range(int(4.0 / 0.02)) if (a := p.step(n * 0.02, Obs(STAND_Q))) is not None]
+    assert cmds.count(("WaveHand", {"turn_flag": True})) == 1 and cmds[0] is None       # once, after the handover
+    env = sim_env()
+    assert run(bookended(w), env) is True                       # the abort still reports; nothing moved
+    assert "robot-only" in capsys.readouterr().out and env.base_ticks == 0
+    assert not any(s.needs_loco for s in menu(True)) and [s.name for s in menu(True, True) if s.needs_loco] == ["wave_hand", "shake_hand"]
+    data = json.loads(CATALOG_PATH.read_text())
+    data["skills"][0] = {**data["skills"][0], "name": "damp", "skill": "tests.test_skills.DampGesture", "needs_loco": True}
+    p2 = tmp_path / "c.json"
+    p2.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match="allowed onboard method"):
+        load_catalog(p2)
+    data["skills"][0] = {**data["skills"][0], "skill": "skills.WaveHand", "needs_loco": False}
+    p2.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match="needs_loco"):
+        load_catalog(p2)
+    assert [t["function"]["name"] for t in CATALOG.function_schemas(menu(True))] == ["move", "arm_path", "hold", "check", "done", "give_up"]
+    assert [t["function"]["name"] for t in CATALOG.function_schemas(menu(True, True))][4:6] == ["wave_hand", "shake_hand"]

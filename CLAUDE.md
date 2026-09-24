@@ -41,6 +41,7 @@ HF_TOKEN=hf_... mjpython run.py --env sim --scene room --policy search --goal "f
         --sim-objects mug@1.5,1.2 --camera-size 720x1280 --realtime 1 --max-time 600   # ask the model each decision
 python   run.py ... --policy search --max-decisions 20 --live-image-window 8 --skills my_catalog.json --no-verdict
 python   run.py ... --policy search --goal "find the mug" --demo runs/<earlier run>   # demonstration on turn 0
+python   run.py --env sim --policy 'move:1:0.3:-45,arm_path:waypoints=[{"joints":{"left_elbow":-0.4}}]' --headless
 python -m demo prepare --goal "find the mug" --demo walk_to_mug.mp4 out/ && python -m demo show out/demo.json
 python   run.py --env sim --policy replay --episode runs/<dir> --headless    # a saved run, no camera or model
 python -m episode runs/<dir>            # step table + the --policy chain that replays it
@@ -164,6 +165,25 @@ env.report()
   `fresh_turns` is the stateless mode. It asks the router for `json_schema` output and steps
   down to `json_object`, then none, on a 400. **Fakes are test doubles only**
   (`tests/doubles.py`): `search` always uses the real model; no `--decider fake`.
+- **The tools map onto the robot's controls** (the analogue of their `ToolExecutor`). The model
+  picks a catalog entry; its class plans segments; the env is the only thing that touches the
+  SDK: `Action.q` → `arm_sdk` joint targets, `Action.base` → `LocoClient.Move` via
+  `BaseCommander`, `Action.command` → one onboard `LocoClient` call (`Segment.command`, emitted
+  on the segment's first tick; allow-listed in `skills.LOCO_METHODS` = `WaveHand`, `ShakeHand`;
+  sim aborts on it, the catalog hides such skills where `env.has_loco` is false). The model's
+  menu is general primitives: `move(dx_m, dy_m, dyaw_deg)` (translate, then turn, so the
+  dead-reckoned end pose is exactly the request), `arm_path(waypoints=[{joints: {name: rad},
+  seconds}])` (joint-space waypoints over the 17 arm_sdk joints; the prompt carries the joint
+  table and sign conventions; names and limits are checked at construction and by the schema's
+  `arm_joints` template), `hold`, `check`, `wave_hand`/`shake_hand` (robot only: weight 1→0,
+  the onboard gesture, 0→1), `done`, `give_up`. `walk_forward`, `turn`, `look`, `tpose`,
+  `sixseven` stay as CLI presets (`"offer": false`: chainable and replayable, never offered).
+  **Every movement is dry-run before it executes** (`dry_run` through a `JointMonitor` from the
+  commanded pose — their IK check before submission): a limit, speed or base violation is fed
+  back as `motion_not_executed` with the violations, spends a decision, and moves nothing.
+  FSM, damp, torque, sit, squat and stand height are unreachable from a model reply by
+  construction. JSON arguments work on the CLI:
+  `--policy 'move:1:0.3:-45,arm_path:waypoints=[{"joints":{"waist_yaw":0.5}}]'`.
 - **Demonstrations** (`demo.py`), their context compiler: a request is an instruction plus
   content parts (`TextPart`, `ImagePart(path, label, detail)`, `VideoPart(path, label, detail,
   mode)`) from `--demo` / `--ref` / `--input-json` (`load_manifest` enforces their rules).

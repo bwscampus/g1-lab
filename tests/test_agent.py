@@ -96,7 +96,8 @@ def test_search_finds_the_ball_and_records(tmp_path):
     agent.close()
     assert agent.result == "completed" and env.violations == []
     names = [s.skill["name"] for s in agent.steps]
-    assert names[-2:] == ["walk_forward", "done"] and set(names[:-2]) == {"turn"}
+    assert names[-1] == "done" and set(names[:-1]) == {"move"}
+    assert agent.steps[-2].skill["args"]["dx_m"] == 0.5 and all(s.skill["args"]["dx_m"] == 0 for s in agent.steps[:-2])
     assert [s.outcome["status"] for s in agent.steps] == ["completed"] * (len(names) - 1) + ["done"]
     for a, b in zip(agent.steps, agent.steps[1:]):
         assert a.cmd_end == b.cmd_start                       # seeded from the last command
@@ -109,7 +110,7 @@ def test_search_finds_the_ball_and_records(tmp_path):
     assert meta["result"] == "completed" and meta["outcome"] == "unreviewed" and meta["model_outcome"] == "success"
     assert meta["steps"] == len(names) and len(steps) == len(names)
     assert np.array_equal(steps[-2].image, red_square(32, 24, 5))             # the frame it walked on
-    assert steps[-2].decision["name"] == "walk_forward" and steps[-2].decision["model"] == "red-ball-rules"
+    assert steps[-2].decision["name"] == "move" and steps[-2].decision["model"] == "red-ball-rules"
     assert "floor clear" in steps[-2].decision["arguments"]["note"]
     assert steps[0].base_pose["env_start"] == [0.0, 0.0, 0.0]
     assert math.hypot(*steps[-1].base_pose["env_end"][:2]) == pytest.approx(0.5, abs=1e-6)
@@ -121,7 +122,7 @@ def test_search_finds_the_ball_and_records(tmp_path):
 def test_observation_and_feedback_follow_the_contract():
     pytest.importorskip("cv2")
     env = check()
-    dec = Sequence([("turn", {"angle_deg": 30}), ("walk_forward", {"distance_m": 0.3}),
+    dec = Sequence([("move", {"dyaw_deg": 30}), ("move", {"dx_m": 0.3}),
                     ("done", {"summary": "s", "hindsight": "h"})])
     agent = Agent("find it", dec, menu(True), safety_notes=["a wall behind"], max_decisions=10)
     assert run(agent, env, max_time=120) is True
@@ -135,7 +136,7 @@ def test_observation_and_feedback_follow_the_contract():
     assert o[0]["extra"] == {"env_step": 0, "decisions_left": 10, "can_walk": True}
     prev = o[1]["previous_result"]
     fb = prev["result"]["execution_feedback"]
-    assert prev["tool"] == "turn" and prev["result"]["status"] == "completed"
+    assert prev["tool"] == "move" and prev["result"]["status"] == "completed"
     assert fb["base_target_pose"][2] == pytest.approx(30.0, abs=1e-6)
     assert fb["base_measured_source"] == "env" and max(abs(v) for v in fb["base_error"]) < 1e-6
     assert fb["max_joint_residual_rad"] < 0.05 and len(fb["joint_residual_rad"]) == 29
@@ -143,7 +144,7 @@ def test_observation_and_feedback_follow_the_contract():
     assert "motion_progress" not in fb                              # recorded, hidden from the model
     assert fb["settle"]["settled"] is True and fb["settle"]["max_velocity_rad_s"] <= 0.05
     assert "required_samples" not in fb["settle"]                   # bookkeeping dropped once settled
-    assert o[2]["previous_result"]["tool"] == "walk_forward"
+    assert o[2]["previous_result"]["tool"] == "move"
     assert o[2]["state"]["base_pose_cmd"][0] == pytest.approx(0.3 * math.cos(math.radians(30)), abs=1e-6)
     # the context the decider was started with
     ctx = dec.context
@@ -159,7 +160,7 @@ def test_long_skill_runs_as_three_second_chunks(tmp_path):
     env = check()
     dec = Sequence([("tpose", {}), ("done", {"summary": "s", "hindsight": ""})])     # tpose is 11 s
     rec = recorder(tmp_path, dec)
-    agent = Agent("g", dec, menu(True), recorder=rec)
+    agent = Agent("g", dec, menu(True) + [SKILLS["tpose"]], recorder=rec)              # a preset, offered here
     assert run(agent, env, max_time=120) is True
     agent.close()
     tpose = [s for s in agent.steps if s.skill["name"] == "tpose"]
@@ -185,13 +186,13 @@ def test_search_without_base_skills_looks_instead():
     agent = Agent("find the red ball", RedBallDecider(), menu(False), max_decisions=4, can_walk=False)
     assert run(agent, env, max_time=120) is True
     assert env.violations == [] and env.base_ticks == 0
-    assert agent.steps[0].skill["name"] == "look" and agent.result in ("budget_exhausted", "completed")
+    assert agent.steps[0].skill["name"] == "arm_path" and agent.result in ("budget_exhausted", "completed")
     assert "no walking skills" in agent.context.instructions
 
 
 def test_rejected_and_invalid_replies_are_feedback_and_cost_a_decision():
     dec = Sequence([("raw", "not json at all"),                              # unparseable
-                    ("walk_forward", {"distance_m": 0.2}),                  # base skill, but cannot walk
+                    ("move", {"dx_m": 0.2}),                                # base skill, but cannot walk
                     ("hold", {"seconds": 0.3}),
                     ("give_up", {"reason": "r", "hindsight": "h"})])
     env = check()
@@ -200,7 +201,7 @@ def test_rejected_and_invalid_replies_are_feedback_and_cost_a_decision():
     o = observations(dec)
     assert [x["extra"]["env_step"] for x in o] == [0, 1, 2, 3]
     assert o[1]["previous_result"] == {"tool": None, "error": "invalid_selection: invalid selection: not json at all"}
-    assert o[2]["previous_result"]["tool"] == "walk_forward" and "tool_rejected" in o[2]["previous_result"]["error"]
+    assert o[2]["previous_result"]["tool"] == "move" and "tool_rejected" in o[2]["previous_result"]["error"]
     assert o[3]["previous_result"]["tool"] == "hold" and o[3]["previous_result"]["result"]["status"] == "completed"
     assert [s.outcome["status"] for s in agent.steps] == ["rejected", "rejected", "completed", "give_up"]
     assert agent.steps[0].decision["raw"] == "not json at all" and agent.steps[0].skill is None
@@ -208,8 +209,8 @@ def test_rejected_and_invalid_replies_are_feedback_and_cost_a_decision():
 
 
 def test_check_dry_runs_without_moving():
-    dec = Sequence([("check", {"skill": "walk_forward", "arguments": {"distance_m": 1.0}}),
-                    ("check", {"skill": "turn", "arguments": {"angle_deg": "fast"}}),
+    dec = Sequence([("check", {"skill": "move", "arguments": {"dx_m": 1.0}}),
+                    ("check", {"skill": "move", "arguments": {"dyaw_deg": "fast"}}),
                     ("done", {"summary": "s", "hindsight": ""})])
     env = check()
     agent = Agent("g", dec, menu(True), max_decisions=10)
@@ -224,8 +225,37 @@ def test_check_dry_runs_without_moving():
     assert verdict["status"] == "ok" and verdict["base_delta"][2] == pytest.approx(90.0, abs=1e-6)
 
 
+def test_too_fast_or_out_of_reach_motion_is_not_executed():
+    """Their IK check before submission: a violating plan is rejected before anything moves."""
+    fast = {"waypoints": [{"joints": {"left_elbow": 2.0}, "seconds": 0.5}, {"joints": {"left_elbow": -1.0}, "seconds": 0.5}]}
+    dec = Sequence([("arm_path", fast), ("done", {"summary": "s", "hindsight": ""})])
+    env = check()
+    agent = Agent("g", dec, menu(True), max_decisions=5)
+    assert run(agent, env, max_time=120) is True
+    o = observations(dec)
+    err = o[1]["previous_result"]
+    assert err["tool"] == "arm_path" and err["error"] == "motion_not_executed" and err["n_violations"] > 0
+    assert "velocity" in err["violations"][0] and err["requested_motion"] == fast
+    assert agent.steps[0].outcome["status"] == "rejected" and env.cmd_max[18] == pytest.approx(1.28, abs=1e-6)
+    assert env.violations == []
+
+
+def test_gestures_need_the_onboard_controller(capsys):
+    dec = Sequence([("wave_hand", {}), ("done", {"summary": "s", "hindsight": ""})])
+    env = check()
+    agent = Agent("g", dec, menu(True, True), max_decisions=5, has_loco=False)
+    assert run(agent, env, max_time=120) is True
+    assert "no onboard controller" in observations(dec)[1]["previous_result"]["error"] and agent.result == "completed"
+    env = check()
+    agent = Agent("g", Sequence([("wave_hand", {"seconds": 1.0})]), menu(True, True), max_decisions=5, has_loco=True)
+    run(agent, env, max_time=120)                                     # sim refuses the onboard call itself
+    assert "robot-only" in capsys.readouterr().out and agent.result is None
+    agent.close()
+
+
 def test_unsettled_pose_is_reported():
-    dec = Sequence([("look", {"yaw_deg": 40}), ("done", {"summary": "s", "hindsight": ""})])
+    dec = Sequence([("arm_path", {"waypoints": [{"joints": {"waist_yaw": 0.7}, "seconds": 1.5}]}),
+                    ("done", {"summary": "s", "hindsight": ""})])
     env = check()
     agent = Agent("g", dec, menu(True), settle_tol=1e-9, settle_samples=5, settle_timeout=1.0)
     assert run(agent, env, max_time=120) is True
@@ -303,7 +333,7 @@ def test_budget_and_no_frame():
 def test_run_files_and_human_verdict(tmp_path):
     pytest.importorskip("cv2")
     env = check()
-    dec = Sequence([("turn", {"angle_deg": 20}), ("raw", "junk"), ("done", {"summary": "s", "hindsight": "h"})])
+    dec = Sequence([("move", {"dyaw_deg": 20}), ("raw", "junk"), ("done", {"summary": "s", "hindsight": "h"})])
     rec = recorder(tmp_path, dec)
     agent = Agent("g", dec, menu(True), recorder=rec, verdict=lambda: "success")
     assert run(agent, env, max_time=120) is True
@@ -366,7 +396,7 @@ def test_replay_reproduces_a_recorded_run(tmp_path):
     policy = build_replay(args, True)
     assert policy.name.startswith("replay:")
     names = [s.name for s in policy.skills]
-    assert names[-1] == "walk_forward" and set(names[:-1]) == {"turn"}
+    assert set(names) == {"move"} and policy.skills[-1].dx_m == 0.5
     env2 = sim_env()
     assert run(policy, env2) is True and env2.violations == []
     assert env2.base_path == pytest.approx(env.base_path)

@@ -169,7 +169,7 @@ def main(argv: list[str] | None = None) -> int:
     env = ENVS[args.env](args)
     try:
         if args.policy in AGENTS:
-            policy = AGENTS[args.policy](args, env.can_walk)
+            policy = AGENTS[args.policy](args, env.can_walk, env.has_loco)
         else:
             policy = build_policy(args.policy, pause=args.pause)
     except KeyError as e:

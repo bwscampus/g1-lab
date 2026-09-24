@@ -40,29 +40,34 @@ def test_observation_is_compact_rounded_json():
 def test_decision_parse_validates_like_theirs():
     c = ctx()
     t = turn()
-    d = Decision.parse('{"name": "turn", "arguments": {"angle_deg": "200", "note": "a wall"}}', t, c)
-    assert d.name == "turn" and d.arguments == {"angle_deg": 180.0, "note": "a wall"} and d.notes
+    d = Decision.parse('{"name": "move", "arguments": {"dyaw_deg": "200", "note": "a wall"}}', t, c)
+    assert d.name == "move" and d.arguments == {"dx_m": 0.0, "dy_m": 0.0, "dyaw_deg": 180.0, "note": "a wall"} and d.notes
     assert d.request_id == 7 and d.step == 3 and d.frame_seq == 9 and d.frame_stamp == 1.5 and d.note == "a wall"
-    assert d.wire == {"name": "turn", "arguments": {"angle_deg": "200", "note": "a wall"}}
+    assert d.wire == {"name": "move", "arguments": {"dyaw_deg": "200", "note": "a wall"}}
+    d = Decision.parse('{"name": "arm_path", "arguments": {"waypoints": [{"joints": {"waist_yaw": 0.3}}], "note": "n"}}', t, c)
+    assert d.arguments["waypoints"] == [{"joints": {"waist_yaw": 0.3}}]
     fenced = '```json\n{"name": "done", "arguments": {"summary": "seen", "hindsight": ""}}\n```'
     assert Decision.parse(fenced, t, c).name == "done"
     d = Decision.parse('{"name": "hold", "arguments": {"note": "wait"}}', t, c)
     assert d.arguments == {"seconds": 1.0, "note": "wait"}                 # defaults fill in
     bad = ['{"name": "fly", "arguments": {}}',
-           '{"name": "walk_forward", "arguments": {"distance_m": "far", "note": "n"}}',
-           '{"name": "turn", "arguments": {"angle_deg": 10}}',              # note required
-           '{"name": "turn", "arguments": {"angle_deg": 10, "note": ""}}',   # note empty
+           '{"name": "move", "arguments": {"dx_m": "far", "note": "n"}}',
+           '{"name": "move", "arguments": {"dyaw_deg": 10}}',                # note required
+           '{"name": "move", "arguments": {"dyaw_deg": 10, "note": ""}}',    # note empty
            '{"name": "done", "arguments": []}',
            '{"name": "done", "arguments": {"summary": "s"}}',                # hindsight required
-           'sure! {"name": "turn", "arguments": {"angle_deg": 10, "note": "n"}}',   # a fragment in prose
-           '{"name": "turn", "arguments": {"angle_deg": NaN, "note": "n"}}',
-           '{"name": "check", "arguments": {"skill": "done", "arguments": {}, "note": "n"}}']
+           'sure! {"name": "move", "arguments": {"dyaw_deg": 10, "note": "n"}}',   # a fragment in prose
+           '{"name": "move", "arguments": {"dyaw_deg": NaN, "note": "n"}}',
+           '{"name": "check", "arguments": {"skill": "done", "arguments": {}, "note": "n"}}',
+           '{"name": "turn", "arguments": {"angle_deg": 10, "note": "n"}}',        # a preset, not offered
+           '{"name": "arm_path", "arguments": {"waypoints": [{"joints": {"left_elbow": 3.0}}], "note": "n"}}',   # limit
+           '{"name": "arm_path", "arguments": {"waypoints": [{"joints": {"nope": 0.1}}], "note": "n"}}']
     for text in bad:
         with pytest.raises(ProtocolError) as e:
             Decision.parse(text, t, c)
         assert e.value.raw == text and str(e.value).startswith("invalid selection")
     with pytest.raises(ProtocolError):
-        Decision.parse('{"name": "walk_forward", "arguments": {"distance_m": 0.3, "note": "n"}}', t, ctx(False))
+        Decision.parse('{"name": "move", "arguments": {"dx_m": 0.3, "note": "n"}}', t, ctx(False))
     with pytest.raises(ValueError):
         parse_selection("[1, 2]")
 
@@ -70,7 +75,8 @@ def test_decision_parse_validates_like_theirs():
 def test_context_renders_catalog_and_rules():
     c = ctx(safety_notes=["a table behind the robot"])
     text = c.instructions
-    assert text.count("Robot skill catalog:") == 1 and "- walk_forward:" in text and "- check:" in text
+    assert text.count("Robot skill catalog:") == 1 and "- move:" in text and "- check:" in text
+    assert "- left_elbow: [-1.047, 2.094] rad, stand 1.28" in text and "palms up" in text
     assert "hidden obstacles" in text and "a table behind the robot" in text
     assert "30 decisions" in text and "note" in text and "give_up" in text
     assert json.loads(text.split("Robot skill catalog:\n", 1)[1]) == c.tools
@@ -79,9 +85,9 @@ def test_context_renders_catalog_and_rules():
     strict = next(a for a in schema["properties"]["arguments"]["anyOf"] if "seconds" in a["properties"])
     assert strict["required"] == ["seconds", "note"] and strict["properties"]["seconds"]["anyOf"][1] == {"type": "null"}
     check = next(t for t in c.tools if t["function"]["name"] == "check")["function"]["parameters"]
-    assert check["properties"]["skill"]["enum"] == ["walk_forward", "turn", "look", "hold", "tpose", "sixseven"]
+    assert check["properties"]["skill"]["enum"] == ["move", "arm_path", "hold"]
     no_base = ctx(False).instructions
-    assert "walk_forward" not in no_base.split("Skills:")[1].split("Every movement")[0]
+    assert "- move:" not in no_base.split("Skills:")[1].split("Every movement")[0]
     assert instructions(menu(True), can_walk=True, max_decisions=5) == build_context(menu(True), can_walk=True, max_decisions=5).instructions
 
 
@@ -89,19 +95,20 @@ def test_red_ball_rules():
     dec = RedBallDecider()
     dec.start(ctx())
     d = dec.decide(turn())
-    assert d.name == "turn" and d.arguments["angle_deg"] == 45.0
+    assert d.name == "move" and d.arguments["dyaw_deg"] == 45.0
     img = solid(); img[20:28, 52:60] = (230, 20, 20)                 # small, far right
     d = dec.decide(turn(img))
-    assert d.name == "turn" and d.arguments["angle_deg"] < 0
+    assert d.name == "move" and d.arguments["dyaw_deg"] < 0
     d = dec.decide(turn(img, waist=40.0))         # camera turned 40 left, ball 30 right of it: net left
-    assert d.name == "turn" and d.arguments["angle_deg"] > 0
+    assert d.name == "move" and d.arguments["dyaw_deg"] > 0
     img = solid(); img[20:28, 28:36] = (230, 20, 20)                  # small, centred
-    assert dec.decide(turn(img)).name == "walk_forward"
+    d = dec.decide(turn(img))
+    assert d.name == "move" and d.arguments["dx_m"] == 0.5
     img = solid(); img[10:38, 18:46] = (230, 20, 20)                  # looming
     d = dec.decide(turn(img))
     assert d.name == "done" and "reached" in d.arguments["summary"]
     dec.start(ctx(False))
-    assert dec.decide(turn()).name == "look"
+    assert dec.decide(turn()).name == "arm_path"
     assert len(dec.calls) == 6
 
 
@@ -124,7 +131,7 @@ def transport_of(replies, calls):
     return transport
 
 
-TURN = '{"name": "turn", "arguments": {"angle_deg": 45, "note": "searching"}}'
+TURN = '{"name": "move", "arguments": {"dyaw_deg": 45, "note": "searching"}}'
 HOLD = '{"name": "hold", "arguments": {"seconds": 1, "note": "waiting"}}'
 
 
@@ -133,7 +140,7 @@ def test_hf_decider_keeps_the_conversation_and_prunes_images():
     dec = HFDecider(HFClient("m/vl", "hf_x", transport=transport_of([TURN, HOLD, TURN], calls)), live_image_window=2)
     dec.start(ctx())
     d = dec.decide(turn(step=0, request_id=1))
-    assert d.name == "turn" and d.arguments == {"angle_deg": 45.0, "note": "searching"}
+    assert d.name == "move" and d.arguments == {"dx_m": 0.0, "dy_m": 0.0, "dyaw_deg": 45.0, "note": "searching"}
     body = calls[0]
     assert body["response_format"]["type"] == "json_schema" and body["response_format"]["json_schema"]["schema"] == dec.context.output_schema
     assert body["stream_options"] == {"include_usage": True} and body["max_tokens"] == 400

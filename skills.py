@@ -33,21 +33,27 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
-from config import CONTROL_DT, NUM_JOINTS, UPPER_BODY, joint_index
+from config import CONTROL_DT, JOINT_HI, JOINT_LO, JOINT_NAMES, NUM_JOINTS, STAND_Q, UPPER_BODY, joint_index
 from poses import ARMS_UP, SIXSEVEN, STAND
 from policy import Policy, Segment, SegmentPolicy
 
 STEP_MAX = 3.0        # s: how often a running skill is observed and recorded
 WALK_SPEED = 0.2      # m/s (< BASE_VEL_MAX[0]; the speed proven on the robot)
+SIDE_SPEED = 0.15     # m/s (< BASE_VEL_MAX[1])
 TURN_RATE = 0.4       # rad/s (< BASE_VEL_MAX[2])
 MIN_SEGMENT = 0.5     # s: a shorter entry segment could recentre a held waist too fast
 WAIST_YAW = joint_index("waist_yaw")
+ARM_JOINTS = [JOINT_NAMES[j] for j in UPPER_BODY]      # the 17 joints arm_sdk may command, by name
+# The only onboard LocoClient calls a skill may make. Everything else (FSM, damp, torque,
+# sit, squat, stand height) is unreachable from a model reply by construction.
+LOCO_METHODS = frozenset({"WaveHand", "ShakeHand"})
 L_ELBOW, R_ELBOW = 18, 25
 ELBOW_REST = 0.0      # 90-degree bend, forearm horizontal
 ELBOW_UP = -0.45      # fingertips at shoulder height
 
 CATALOG_PATH = Path(__file__).parent / "configs" / "skills.json"
 _NAME = re.compile(r"[a-z][a-z0-9_]*\Z")
+STATIC_TEMPLATES = {"arm_joints"}          # resolvable without a menu, so bound onto the class
 
 
 def _ticks(seconds: float) -> float:
@@ -66,10 +72,13 @@ class Skill:
     prompt: str = ""
     params: dict = {"type": "object", "properties": {}, "required": [], "additionalProperties": False}
     enabled: bool = True
+    offer: bool = True              # in the model's menu (False: CLI presets and replay only)
     needs_base: bool = False        # hidden where the env cannot walk
+    needs_loco: bool = False        # hidden where the env has no onboard LocoClient (sim)
     terminal: bool = False          # ends an agent run (`done`, `give_up`)
     internal: bool = False          # bookends: never in a menu, never CLI-chainable
     allows_start: bool = False      # may use the reserved "start" goal
+    command: Optional[str] = None   # the LocoClient method a gesture skill calls (LOCO_METHODS)
     joints: list[int] = UPPER_BODY
     note: str = ""                  # the model's evidence + intent, bound like any argument
 
@@ -97,6 +106,27 @@ class Skill:
 # Locomotion: a segment holding a base velocity
 # --------------------------------------------------------------------------
 
+class Move(Skill):
+    """One relative base displacement in the start frame, their ``move_to``
+    for a base: translate at (vx, vy), then rotate, so the dead-reckoned end
+    pose is exactly (dx, dy, dyaw). Zero parts are skipped."""
+
+    def segments(self) -> tuple[Segment, ...]:
+        out = []
+        if abs(self.dx_m) > 1e-6 or abs(self.dy_m) > 1e-6:
+            duration = _ticks(max(abs(self.dx_m) / WALK_SPEED, abs(self.dy_m) / SIDE_SPEED))
+            out.append(Segment(STAND, duration, base=(self.dx_m / duration, self.dy_m / duration, 0.0),
+                               label=f"move {self.dx_m:+.2f} m forward, {self.dy_m:+.2f} m left"))
+        rad = math.radians(self.dyaw_deg)
+        if abs(rad) > 1e-6:
+            duration = _ticks(abs(rad) / TURN_RATE)
+            out.append(Segment(STAND, duration, base=(0.0, 0.0, rad / duration),
+                               label=f"turn {self.dyaw_deg:+.0f} deg"))
+        if not out:
+            out.append(Segment(STAND, MIN_SEGMENT, label="move 0"))
+        return tuple(out)
+
+
 class WalkForward(Skill):
     def segments(self) -> tuple[Segment, ...]:
         duration = _ticks(self.distance_m / WALK_SPEED)
@@ -117,6 +147,38 @@ class Turn(Skill):
 # --------------------------------------------------------------------------
 # Upper body
 # --------------------------------------------------------------------------
+
+class ArmPath(Skill):
+    """Joint-space waypoints over the arm_sdk joints, their ``move_eef_chunk``
+    without IK. Each waypoint's ``joints`` merges onto the previous pose."""
+
+    def __init__(self, **args) -> None:
+        super().__init__(**args)
+        if not self.waypoints:
+            raise ValueError("arm_path: at least one waypoint")
+        for i, wp in enumerate(self.waypoints):
+            if not isinstance(wp, dict) or not isinstance(wp.get("joints"), dict) or not wp["joints"]:
+                raise ValueError(f"arm_path: waypoint {i} needs a non-empty joints object")
+            for name, v in wp["joints"].items():
+                if name not in ARM_JOINTS:
+                    raise ValueError(f"arm_path: unknown joint {name!r} (allowed: {ARM_JOINTS})")
+                j = joint_index(name)
+                try:
+                    v = float(v)
+                except (TypeError, ValueError):
+                    raise ValueError(f"arm_path: {name} must be a number") from None
+                if not (JOINT_LO[j] <= v <= JOINT_HI[j]):
+                    raise ValueError(f"arm_path: {name}={v} outside [{JOINT_LO[j]:.3f}, {JOINT_HI[j]:.3f}]")
+            seconds = wp.get("seconds", 2.0)
+            if not isinstance(seconds, (int, float)) or not (0.5 <= seconds <= 10.0):
+                raise ValueError(f"arm_path: waypoint {i} seconds must be within [0.5, 10]")
+
+    def segments(self) -> tuple[Segment, ...]:
+        n = len(self.waypoints)
+        return tuple(Segment({joint_index(k): float(v) for k, v in wp["joints"].items()},
+                             float(wp.get("seconds", 2.0)), label=f"waypoint {i + 1}/{n}")
+                     for i, wp in enumerate(self.waypoints))
+
 
 class Look(Skill):
     def segments(self) -> tuple[Segment, ...]:
@@ -169,6 +231,43 @@ class SixSeven(Skill):
                 *self._swings(),
                 Segment(SIXSEVEN, self.hold, label="holding"),
                 Segment(STAND, 1.2, label="arms down"))
+
+
+# --------------------------------------------------------------------------
+# Onboard gestures: the LocoClient does the motion, arm_sdk lets go meanwhile
+# --------------------------------------------------------------------------
+
+class Gesture(Skill):
+    """Hand the arms to the onboard controller (weight 1->0), call the
+    LocoClient method once, hold at weight 0 for the gesture's length, then
+    take the arms back (0->1). Robot-only: sim has no onboard gestures."""
+
+    needs_loco = True
+    ramp = 1.0
+
+    def call_args(self) -> dict:
+        return {}
+
+    def segments(self) -> tuple[Segment, ...]:
+        assert self.command is not None
+        return (Segment(STAND, self.ramp, weight=lambda a: 1.0 - a, label="handing the arms to the onboard controller"),
+                Segment(STAND, self.seconds, weight=lambda a: 0.0, command=(self.command, self.call_args()),
+                        label=f"{self.name} (onboard)"),
+                Segment(STAND, self.ramp, weight=lambda a: a, label="taking the arms back"))
+
+
+class WaveHand(Gesture):
+    command = "WaveHand"
+
+    def call_args(self) -> dict:
+        return {"turn_flag": bool(self.turn_flag)}
+
+
+class ShakeHand(Gesture):
+    command = "ShakeHand"
+
+    def call_args(self) -> dict:
+        return {"stage": int(self.stage)}
 
 
 # --------------------------------------------------------------------------
@@ -296,11 +395,16 @@ class Catalog:
         if not isinstance(cls, type) or not issubclass(cls, Skill):
             raise ValueError(f"skill catalog {src}: {name}: {path} is not a Skill")
         flags = {}
-        for key in ("enabled", "terminal", "internal", "needs_base"):
-            v = entry.get(key, key == "enabled")
+        for key in ("enabled", "offer", "terminal", "internal", "needs_base", "needs_loco"):
+            v = entry.get(key, key in ("enabled", "offer"))
             if not isinstance(v, bool):
                 raise ValueError(f"skill catalog {src}: {name}.{key} must be boolean")
             flags[key] = v
+        if cls.command is not None and cls.command not in LOCO_METHODS:
+            raise ValueError(f"skill catalog {src}: {name} calls {cls.command!r}, not an allowed onboard method "
+                             f"{sorted(LOCO_METHODS)}")
+        if cls.command is not None and not flags["needs_loco"]:
+            raise ValueError(f"skill catalog {src}: {name} calls the onboard controller and must set needs_loco")
         for key in ("description", "prompt"):
             v = entry.get(key)
             if not isinstance(v, str) or not v.strip():
@@ -341,7 +445,7 @@ class Catalog:
                 raise ValueError(f"skill catalog {self.source}: unknown schema {ref!r}")
             return self._resolve(self.schemas[ref], templates=templates, menu=menu)
         if set(value) == {"$template"}:
-            if not templates:
+            if not templates and value["$template"] not in STATIC_TEMPLATES:
                 return dict(value)
             return self._template(value["$template"], menu)
         return {k: self._resolve(v, templates=templates, menu=menu) for k, v in value.items()}
@@ -350,6 +454,11 @@ class Catalog:
         if name == "skill_name":
             names = [s.name for s in menu if not s.terminal and not s.internal and s is not Check]
             return {"type": "string", "enum": names, "description": "a skill from this menu"}
+        if name == "arm_joints":
+            props = {n: {"type": "number", "minimum": round(float(JOINT_LO[joint_index(n)]), 3),
+                         "maximum": round(float(JOINT_HI[joint_index(n)]), 3)} for n in ARM_JOINTS}
+            return {"type": "object", "properties": props, "additionalProperties": False, "minProperties": 1,
+                    "description": "joint name -> target angle in radians; omitted joints keep their pose"}
         raise ValueError(f"skill catalog {self.source}: unknown template {name!r}")
 
     def parameters(self, cls: type[Skill], menu: Sequence[type[Skill]]) -> dict:
@@ -423,10 +532,18 @@ def use_catalog(path: Path | str | None) -> Catalog:
     return CATALOG
 
 
-def menu(allow_base: bool = True) -> list[type[Skill]]:
-    """The skills a decider may choose from: enabled, no bookends, and no
-    walking where the env cannot walk."""
-    return [s for s in SKILLS.values() if not s.internal and (allow_base or not s.needs_base)]
+def menu(allow_base: bool = True, has_loco: bool = False) -> list[type[Skill]]:
+    """The skills a decider may choose from: enabled and offered, no bookends,
+    no walking where the env cannot walk, no onboard gestures without a LocoClient."""
+    return [s for s in SKILLS.values() if not s.internal and s.offer
+            and (allow_base or not s.needs_base) and (has_loco or not s.needs_loco)]
+
+
+def joint_table() -> list[dict]:
+    """The arm_sdk joints for the prompt: name, limits, the STAND value."""
+    return [{"name": n, "min": round(float(JOINT_LO[joint_index(n)]), 3),
+             "max": round(float(JOINT_HI[joint_index(n)]), 3),
+             "stand": round(float(STAND_Q[joint_index(n)]), 3)} for n in ARM_JOINTS]
 
 
 def validate_args(skill: "type[Skill]", args: dict) -> tuple[dict, list[str]]:
@@ -467,6 +584,9 @@ def validate_args(skill: "type[Skill]", args: dict) -> tuple[dict, list[str]]:
             elif kind == "object":
                 if not isinstance(v, dict):
                     raise TypeError
+            elif kind == "array":
+                if not isinstance(v, list):
+                    raise TypeError
         except (TypeError, ValueError):
             raise ValueError(f"{skill.name}: argument {key!r} must be {kind}, got {args[key]!r}") from None
         if kind in ("number", "integer"):
@@ -482,22 +602,50 @@ def validate_args(skill: "type[Skill]", args: dict) -> tuple[dict, list[str]]:
 def parse_skill(item: str) -> Skill:
     """``name[:arg[:arg…]]`` with args positional in schema order or ``k=v``
     (``note`` is skipped: nobody reads it on the CLI)."""
-    parts = item.split(":")
+    parts = split_outside(item, ":")
     name = parts[0].strip()
     if name not in SKILLS:
         raise KeyError(name)
     cls = SKILLS[name]
-    keys = [k for k in cls.params.get("properties", {}) if k != "note"]
+    props = cls.params.get("properties", {})
+    keys = [k for k in props if k != "note"]
     args: dict = {}
     for i, raw in enumerate(p.strip() for p in parts[1:] if p.strip()):
-        if "=" in raw:
+        if "=" in raw and not raw.startswith(("{", "[")):
             k, v = raw.split("=", 1)
             args[k.strip()] = v.strip()
         elif i < len(keys):
             args[keys[i]] = raw
         else:
             raise ValueError(f"{name}: too many arguments in {item!r}")
+    for k, v in list(args.items()):
+        if props.get(k, {}).get("type") in ("object", "array") and isinstance(v, str):
+            try:
+                args[k] = json.loads(v)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"{name}: {k} must be JSON ({e.msg})") from None
     return cls(**args)
+
+
+def split_outside(item: str, sep: str = ":") -> list[str]:
+    """Split on ``sep`` outside JSON brackets and quotes, so a JSON argument survives."""
+    out, depth, quote, cur = [], 0, None, []
+    for ch in item:
+        if quote:
+            if ch == quote:
+                quote = None
+        elif ch in "\"'":
+            quote = ch
+        elif ch in "{[":
+            depth += 1
+        elif ch in "}]":
+            depth -= 1
+        elif ch == sep and depth == 0:
+            out.append("".join(cur)); cur = []
+            continue
+        cur.append(ch)
+    out.append("".join(cur))
+    return out
 
 
 def skill_segments(skill: Skill) -> list[Segment]:
@@ -508,7 +656,7 @@ def skill_segments(skill: Skill) -> list[Segment]:
         if seg.goal == "start" and not skill.allows_start:
             raise ValueError(f"skill {skill.name!r} uses the reserved 'start' goal")
         out.append(Segment(seg.goal, seg.duration, seg.weight,
-                           f"{skill.name}: {seg.label}" if seg.label else "", seg.base))
+                           f"{skill.name}: {seg.label}" if seg.label else "", seg.base, seg.command))
     return out
 
 
@@ -525,5 +673,7 @@ def describe_menu(skills: Sequence[type[Skill]]) -> str:
     for s in skills:
         ps = ", ".join(f"{k}: {v.get('type', 'enum')}" + (f" [{v['minimum']}, {v['maximum']}]" if "minimum" in v else "")
                        for k, v in s.params.get("properties", {}).items() if k != "note")
-        lines.append(f"  {s.name}({ps})" + ("  [needs --walk]" if s.needs_base else ""))
+        tags = ("  [needs --walk]" if s.needs_base else "") + ("  [robot only]" if s.needs_loco else "") \
+            + ("" if s.offer else "  [preset: not offered to the model]")
+        lines.append(f"  {s.name}({ps})" + tags)
     return "\n".join(lines)

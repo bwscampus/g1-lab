@@ -74,12 +74,13 @@ class RedBallDecider(Decider):
             image = image[::2, ::2]
         blob = red_blob(image)
         if blob is None:
-            if "turn" in names:
-                return self._reply(turn, "turn", {"angle_deg": 45.0, "note": "no red ball in view; searching left"})
-            if "look" in names:
-                yaw = 40.0 * self._look_sign
+            if "move" in names:
+                return self._reply(turn, "move", {"dyaw_deg": 45.0, "note": "no red ball in view; searching left"})
+            if "arm_path" in names:
+                yaw = 0.7 * self._look_sign
                 self._look_sign = -self._look_sign
-                return self._reply(turn, "look", {"yaw_deg": yaw, "note": "no red ball in view; glancing"})
+                return self._reply(turn, "arm_path", {"waypoints": [{"joints": {"waist_yaw": yaw}, "seconds": 1.5}],
+                                                      "note": "no red ball in view; glancing"})
             return self._reply(turn, "give_up", {"reason": "cannot search", "hindsight": ""})
         s = Sighting.from_blob(*blob, frame)
         b = math.degrees(s.bearing) - waist          # base-relative, + right
@@ -89,13 +90,15 @@ class RedBallDecider(Decider):
             return self._reply(turn, "done", {"summary": f"reached: {evidence}", "hindsight": ""})
         if abs(b) > 8:
             turn_deg = max(-68.0, min(68.0, -b))
-            if "turn" in names:
-                return self._reply(turn, "turn", {"angle_deg": turn_deg, "note": evidence + "; facing it"})
-            return self._reply(turn, "look", {"yaw_deg": max(-45.0, min(45.0, turn_deg)), "note": evidence})
-        if "walk_forward" in names and clear:
-            return self._reply(turn, "walk_forward", {"distance_m": 0.5, "note": evidence + "; floor clear"})
-        if "turn" in names:
-            return self._reply(turn, "turn", {"angle_deg": 45.0, "note": evidence + "; path blocked"})
+            if "move" in names:
+                return self._reply(turn, "move", {"dyaw_deg": turn_deg, "note": evidence + "; facing it"})
+            yaw = math.radians(max(-45.0, min(45.0, turn_deg)))
+            return self._reply(turn, "arm_path", {"waypoints": [{"joints": {"waist_yaw": yaw}, "seconds": 1.5}],
+                                                  "note": evidence})
+        if "move" in names and clear:
+            return self._reply(turn, "move", {"dx_m": 0.5, "note": evidence + "; floor clear"})
+        if "move" in names:
+            return self._reply(turn, "move", {"dyaw_deg": 45.0, "note": evidence + "; path blocked"})
         return self._reply(turn, "done", {"summary": "cannot approach: " + evidence, "hindsight": ""})
 
     def _reply(self, turn: AgentTurn, name: str, arguments: dict) -> Decision:

@@ -336,7 +336,8 @@ def chain_of(steps: list[StepRecord]) -> str:
         # one entry per skill: intermediate chunks are "running", only the last "completed"
         if s.outcome.get("status") != "completed":
             continue
-        args = ":".join(f"{k}={v}" for k, v in s.skill["args"].items() if k != "note")
+        args = ":".join(f"{k}={json.dumps(v, separators=(',', ':')) if isinstance(v, (dict, list)) else v}"
+                        for k, v in s.skill["args"].items() if k != "note")
         items.append(s.skill["name"] + (":" + args if args else ""))
     return ",".join(items)
 

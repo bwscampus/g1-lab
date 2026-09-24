@@ -153,7 +153,8 @@ class Nod(Skill):
 
 Add the entry to `configs/skills.json` and it is runnable on its own
 (`--policy nod`), with arguments (`--policy nod:3` or `nod:reps=3`), chained
-(`--policy tpose,nod:3`), and offered to the model in `search`. Every movement
+(`--policy tpose,nod:3`), and offered to the model in `search` (`"offer": false`
+keeps it a CLI preset; `"needs_loco": true` marks a robot-only onboard gesture). Every movement
 skill takes a `note` (the model's evidence and intent; required of the model,
 empty from code and the CLI). `--skills FILE` swaps the whole catalog — prompts
 and ranges — without touching code; the loader validates it. A **routine** wraps skills with the
@@ -285,7 +286,27 @@ validated against the catalog's schema; every movement skill carries a `note`
 `give_up(reason, hindsight)` end the run, and `check(skill, arguments)` dry-runs
 a skill through the joint monitor without moving. Errors are feedback, not
 retries: a rejected or invalid reply costs a decision and the model sees why on
-the next turn. The system prompt (conventions, the scene's hidden obstacles, the
+the next turn.
+
+**The menu maps onto the robot's controls.** The model picks a tool and its
+arguments; the host plans it, dry-runs it through the joint monitor (a plan
+that leaves the limits or moves too fast comes back as `motion_not_executed`
+and moves nothing), executes it, waits for the settle and reports. The tools:
+
+```
+move(dx_m, dy_m, dyaw_deg)       one relative base displacement -> LocoClient.Move (translate, then turn)
+arm_path(waypoints=[...])        joint-space waypoints over waist + arms -> arm_sdk targets
+hold(seconds)                    stand still
+check(skill, arguments)          dry-run without moving
+wave_hand / shake_hand           the onboard controller's own gestures (robot only)
+done / give_up                   the model's conclusion (a human assigns the label)
+```
+
+The prompt carries the joint table (names, limits, the stand pose) and the
+sign conventions. `walk_forward`, `turn`, `look`, `tpose` and `sixseven` remain
+as CLI presets (`"offer": false` in the catalog): chainable and replayable,
+never offered to the model. Nothing else on the SDK — FSM, damp, torque, sit —
+is reachable from a reply. The system prompt (conventions, the scene's hidden obstacles, the
 rules, the catalog as bullets and as JSON) is sent once; the conversation is the
 model's memory, and only the last `--live-image-window` (8) observations keep
 their image (`--fresh-turns` makes every decision a fresh chat). An overloaded
@@ -300,6 +321,7 @@ records. `--list` shows the menu. Chain them from the CLI, no model needed:
 ```
 python   run.py --env sim   --policy walk_forward:0.5,turn:45,tpose,sixseven:1 --headless
 mjpython run.py --env sim   --policy turn:-30,walk_forward:0.6,look:20,hold:1
+python   run.py --env sim   --policy 'move:1:0.3:-45,arm_path:waypoints=[{"joints":{"left_elbow":-0.4},"seconds":1.5}]' --headless
 ```
 
 **With the model**, in a real-looking room (real textures, real object meshes;

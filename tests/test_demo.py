@@ -78,7 +78,9 @@ def test_build_request(tmp_path):
 
 def recorded_run(tmp_path):
     pytest.importorskip("cv2")
-    dec = Sequence([("turn", {"angle_deg": 30}), ("tpose", {"hold": 1.0, "rise": 1.0}),
+    dec = Sequence([("move", {"dyaw_deg": 30}),
+                    ("arm_path", {"waypoints": [{"joints": {"left_elbow": 0.3}, "seconds": 1.5},
+                                                {"joints": {"left_elbow": 1.28}, "seconds": 1.5}]}),
                     ("done", {"summary": "s", "hindsight": "h"})])
     rec = EpisodeWriter(tmp_path / "runs", env="sim", goal="find the red ball", model=dec.model,
                         skills=list(SKILLS), threaded=False)
@@ -93,15 +95,15 @@ def test_recorded_run_becomes_a_bundle(tmp_path):
     b = compile_run(run_dir, "video", max_frames=3)
     assert b["mode"] == "video" and b["outcome"] == "success" and b["demonstrator"] == "policy_rollout"
     assert len(b["keyframes"]) == 3 and [k["label"]["index"] for k in b["keyframes"]] == [0, 1, 2]
-    assert b["keyframes"][0]["label"]["stage"] == "turn completed" and b["keyframes"][-1]["label"]["stage"] == "done done"
+    assert b["keyframes"][0]["label"]["stage"] == "move completed" and b["keyframes"][-1]["label"]["stage"] == "done done"
     assert all(Path(k["image"]).is_file() and "action" not in k for k in b["keyframes"])
     a = compile_run(run_dir, "video+action")
-    assert len(a["keyframes"]) == 3 and a["keyframes"][0]["action"]["skill"] == "turn"
+    assert len(a["keyframes"]) == 3 and a["keyframes"][0]["action"]["skill"] == "move"
     act = a["keyframes"][0]["action"]
-    assert act["arguments"]["angle_deg"] == 30.0 and act["outcome"] == "completed" and act["base_pose_cmd"] == [0.0, 0.0, 0.0]
+    assert act["arguments"]["dyaw_deg"] == 30.0 and act["outcome"] == "completed" and act["base_pose_cmd"] == [0.0, 0.0, 0.0]
     rows = act["joint_pos_samples"]
     assert rows[0]["q"][0] != "=" and len(rows) >= 2 and "=" in rows[1]["q"]      # 1 Hz, unchanged values as "="
-    assert a["keyframes"][1]["action"]["skill"] == "tpose" and a["keyframes"][2]["action"]["skill"] == "done"
+    assert a["keyframes"][1]["action"]["skill"] == "arm_path" and a["keyframes"][2]["action"]["skill"] == "done"
     out = write_bundle(a, tmp_path / "bundle")
     loaded = load_bundle(out)
     assert loaded["keyframes"][0]["image"] == str((tmp_path / "bundle" / "kf-000.png").resolve())
@@ -110,7 +112,7 @@ def test_recorded_run_becomes_a_bundle(tmp_path):
     assert parts[0] == TextPart(HISTORICAL + HISTORICAL_ACTION)
     assert parts[1].text.startswith("Demonstration: ") and "policy_rollout" in parts[1].text
     assert sum(isinstance(p, ImagePart) for p in parts) == 3 and parts[-1].text.endswith("END OF DEMONSTRATION.")
-    assert '"action":{"skill":"turn"' in parts[2].text and parts[3].label.startswith("keyframe 0, t=")
+    assert '"action":{"skill":"move"' in parts[2].text and parts[3].label.startswith("keyframe 0, t=")
     video_parts = bundle_parts(loaded, "video")
     assert video_parts[0].text.endswith(HISTORICAL_VIDEO) and "action" not in video_parts[2].text
 
@@ -135,7 +137,7 @@ def test_prepare_and_turn_zero(tmp_path):
     assert (tmp_path / "input" / "images").exists() is False            # images already lived under input/
     # turn 0 carries the demonstration, turn 1 does not; the session keeps the demo images
     calls = []
-    turn_json = '{"name": "turn", "arguments": {"angle_deg": 45, "note": "n"}}'
+    turn_json = '{"name": "move", "arguments": {"dyaw_deg": 45, "note": "n"}}'
     done_json = '{"name": "done", "arguments": {"summary": "s", "hindsight": "h"}}'
 
     def transport(url, headers, body, timeout):

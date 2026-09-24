@@ -80,7 +80,7 @@ class Agent(Policy):
                  step_timeout: float = 60.0, settle_min: float = 0.5, settle_tol: float = 0.03,
                  settle_vel_tol: float = 0.05, settle_samples: int = 10, settle_timeout: float = 3.0,
                  frame_max_age: float = 0.5, frame_timeout: float = 2.0, max_failures: int = 3,
-                 can_walk: bool = True, safety_notes: Sequence[str] = (), content: Sequence = (),
+                 can_walk: bool = True, has_loco: bool = False, safety_notes: Sequence[str] = (), content: Sequence = (),
                  verdict: Optional[Callable[[], Optional[str]]] = None, name: str = "search",
                  retry_delays: Sequence[float] = RETRY_DELAYS, recovery_timeout: float = RECOVERY_TIMEOUT) -> None:
         self.goal = goal
@@ -98,6 +98,7 @@ class Agent(Policy):
         self.frame_timeout = frame_timeout
         self.max_failures = max_failures
         self.can_walk = can_walk
+        self.has_loco = has_loco
         self.safety_notes = list(safety_notes)
         self.content = tuple(content)
         self.verdict = verdict
@@ -345,10 +346,10 @@ class Agent(Policy):
         self._previous = {"tool": p["name"], "result": {**result, "execution_feedback": view}}
 
     def _reject(self, t: float, obs: Obs, name: Optional[str], error: str, raw: str = "",
-                arguments: Optional[dict] = None) -> Action:
+                arguments: Optional[dict] = None, **details) -> Action:
         """A selection that ran nothing: feedback for the next turn, one decision spent."""
         self._say(f"decision {self._env_step}: {error}")
-        err = {"tool": name, "error": error}
+        err = {"tool": name, "error": error, **details}
         self._event("tool_error", {"step": self._env_step, **err})
         self._previous = err
         self._record("rejected", t, obs, {"name": name, "arguments": arguments or {}, "raw": raw, "error": error,
@@ -519,6 +520,15 @@ class Agent(Policy):
         if skill.needs_base and not self.can_walk:
             return self._reject(t, obs, d.name, "tool_rejected: the base cannot be driven in this run",
                                 raw=d.raw, arguments=d.arguments)
+        if skill.needs_loco and not self.has_loco:
+            return self._reject(t, obs, d.name, "tool_rejected: no onboard controller for gestures in this env",
+                                raw=d.raw, arguments=d.arguments)
+        # their IK check before submission: plan it from the commanded pose, reject on any violation
+        verdict = dry_run(skill, self._cmd, self.joints)
+        if verdict["status"] != "ok":
+            return self._reject(t, obs, d.name, "motion_not_executed", raw=d.raw, arguments=d.arguments,
+                                violations=verdict["violations"], n_violations=verdict["n_violations"],
+                                requested_motion={k: v for k, v in d.arguments.items() if k != "note"})
         self._decision, self._skill = d, skill
         self._chunks = max(1, math.ceil(skill.duration / STEP_MAX - 1e-9))
         self._chunk_t0 = t
@@ -553,7 +563,7 @@ def ask_verdict() -> Optional[str]:
             return "failed"
 
 
-def build_search(args, can_walk: bool) -> Agent:
+def build_search(args, can_walk: bool, has_loco: bool = False) -> Agent:
     from demo import DEFAULT_FRAMES, MAX_FRAMES, VideoPart, build_request, build_selector, prepare, save_input
     if not getattr(args, "goal", None) and not getattr(args, "input_json", None):
         raise ValueError("search needs --goal, e.g. --goal \"find the mug\" (or --input-json)")
@@ -567,7 +577,7 @@ def build_search(args, can_walk: bool) -> Agent:
     decider = HFDecider.from_env(getattr(args, "vision_model", None), on_text=echo,
                                  live_image_window=getattr(args, "live_image_window", 8),
                                  fresh_turns=getattr(args, "fresh_turns", False))
-    skills = menu(can_walk)
+    skills = menu(can_walk, has_loco)
     from scene import safety_notes
     notes = safety_notes(getattr(args, "scene", None)) + list(getattr(args, "safety_note", None) or [])
     recorder = None
@@ -600,11 +610,11 @@ def build_search(args, can_walk: bool) -> Agent:
                     recorder.usage(call)
     verdict = None if getattr(args, "no_verdict", False) else ask_verdict
     return Agent(args.goal, decider, skills, recorder=recorder, max_decisions=args.max_decisions,
-                 step_timeout=args.step_timeout, can_walk=can_walk, safety_notes=notes, verdict=verdict,
-                 content=content)
+                 step_timeout=args.step_timeout, can_walk=can_walk, has_loco=has_loco, safety_notes=notes,
+                 verdict=verdict, content=content)
 
 
-def build_replay(args, can_walk: bool) -> Policy:
+def build_replay(args, can_walk: bool, has_loco: bool = False) -> Policy:
     if not getattr(args, "episode", None):
         raise ValueError("replay needs --episode runs/<dir>")
     meta, steps = load_episode(args.episode, images=False)

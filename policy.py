@@ -34,7 +34,10 @@ class Action:
     base:   optional (vx, vy, vyaw) base velocity in m/s, m/s, rad/s (forward,
             left, counter-clockwise), or None for no base command. The robot
             walks it via LocoClient.Move (needs --walk), sim slides the pinned
-            base, check enforces config.BASE_VEL_MAX.
+            base, the monitor enforces config.BASE_VEL_MAX.
+    command: optional one-shot onboard call, ``("WaveHand", {"turn_flag": False})``:
+            the robot env calls that LocoClient method once (allow-listed in
+            skills.LOCO_METHODS); sim has no equivalent and aborts.
     """
 
     q: np.ndarray
@@ -43,6 +46,7 @@ class Action:
     kp: float = 60.0
     kd: float = 1.5
     base: Optional[tuple[float, float, float]] = None
+    command: Optional[tuple[str, dict]] = None
 
     def __post_init__(self) -> None:
         self.q = np.asarray(self.q, dtype=float)
@@ -118,9 +122,10 @@ class Policy:
         """Called once by the runner after the env is torn down (also on Ctrl-C)."""
 
     def action(self, q: np.ndarray, weight: float = 1.0,
-               base: Optional[tuple[float, float, float]] = None) -> Action:
+               base: Optional[tuple[float, float, float]] = None,
+               command: Optional[tuple[str, dict]] = None) -> Action:
         return Action(q=q, joints=list(self.joints), weight=weight, kp=self.kp, kd=self.kd,
-                      base=base)
+                      base=base, command=command)
 
 
 # --------------------------------------------------------------------------
@@ -145,6 +150,7 @@ class Segment:
     weight: WeightFn = field(default=lambda a: 1.0)
     label: str = ""
     base: Optional[tuple[float, float, float]] = None   # base velocity held for the whole segment
+    command: Optional[tuple[str, dict]] = None          # one-shot onboard call on the segment's first tick
 
 
 class SegmentPolicy(Policy):
@@ -190,9 +196,10 @@ class SegmentPolicy(Policy):
             t += seg.duration
         self.total_time = t
         self._last_label: str | None = None
+        self._commanded: set[int] = set()
 
     def step(self, t: float, obs: Obs) -> Optional[Action]:
-        for t0, t1, start, goal, seg in self._plan:
+        for i, (t0, t1, start, goal, seg) in enumerate(self._plan):
             if t < t1 - 1e-9:
                 a = ease((t - t0) / (t1 - t0))
                 if seg.label and seg.label != self._last_label:
@@ -201,7 +208,11 @@ class SegmentPolicy(Policy):
                 out = self._q0.copy()
                 for j in self.joints:
                     out[j] = start[j] + a * (goal[j] - start[j])
-                return self.action(out, weight=seg.weight(a), base=seg.base)
+                command = None
+                if seg.command is not None and i not in self._commanded:
+                    self._commanded.add(i)
+                    command = seg.command
+                return self.action(out, weight=seg.weight(a), base=seg.base, command=command)
         return None
 
 

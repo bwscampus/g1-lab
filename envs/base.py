@@ -48,6 +48,11 @@ class Env:
         """Whether this env accepts Action.base right now."""
         return False
 
+    @property
+    def has_loco(self) -> bool:
+        """Whether this env can run Action.command (onboard LocoClient gestures)."""
+        return False
+
     def base_pose(self):
         """The env's own (x, y, yaw) base estimate, or None."""
         return None
