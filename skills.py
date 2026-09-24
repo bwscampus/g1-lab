@@ -1,34 +1,37 @@
-"""Skills: the decision-level unit, and the one format for "walk forward" and
-"lift the arm".
+"""Skills: the one building block, and the only format a behaviour is made of.
 
-  Policy   the executor contract: reset/step at 50 Hz; the only thing an env runs
-  Motion   a scripted building block: pose segments, no sensing, no bookends
-  Skill    a name, a parameter schema (the menu a model chooses from), a hard
-           duration bound, and build(**args) -> Motion (walk, turn, arms up) or a
-           bounded Policy. Skill -> builds -> Motion -> runs as -> SegmentPolicy.
+  Policy   the executor contract: reset/step at 50 Hz. The only thing an env runs.
+  Skill    a name, a JSON-schema parameter menu, and ``segments()`` -> pose
+           segments. Never executed directly: ``skill_policy`` turns it into a
+           SegmentPolicy, and a Routine concatenates several with bookends.
 
-Locomotion is a Segment with a base velocity held for its duration, exactly as
-an arm move is a Segment with a pose. Every skill is bounded by STEP_MAX so the
-camera is re-read every step, and every skill except ``hold`` and ``look``
-ends at STAND, so skill boundaries are continuous by construction.
+"Walk forward" and "lift the arm" are the same format because a Segment may
+hold a base velocity for its duration as easily as a pose. A skill may be any
+length: the agent records a step every ``STEP_MAX`` seconds while one runs, so
+the camera and the joint angles are captured at that cadence regardless.
+
+Parameters are bound at construction (``Turn(angle_deg=45)``) and validated
+against ``params``, which is also the menu a vision model chooses from.
 """
 from __future__ import annotations
 
 import math
-from typing import Any, Optional, Sequence, Union
+from typing import Any, Optional, Sequence
 
 from config import CONTROL_DT, UPPER_BODY, joint_index
-from motions import SixSeven
-from motions.poses import ARMS_UP, STAND
-from policy import Motion, Policy, Segment, SegmentPolicy
+from poses import ARMS_UP, SIXSEVEN, STAND
+from policy import Policy, Segment, SegmentPolicy
 
-STEP_MAX = 3.0        # s: every skill's max_duration is at most this (enforced by a test)
-WALK_SPEED = 0.2      # m/s (< BASE_VEL_MAX[0]; the user's proven speed)
+STEP_MAX = 3.0        # s: how often a running skill is observed and recorded
+WALK_SPEED = 0.2      # m/s (< BASE_VEL_MAX[0]; the speed proven on the robot)
 TURN_RATE = 0.4       # rad/s (< BASE_VEL_MAX[2])
-WALK_MAX_M = 0.6      # = STEP_MAX * WALK_SPEED
-TURN_MAX_DEG = 68.0   # 1.19 rad = 2.97 s
-MIN_SEGMENT = 0.5     # s: a shorter first segment could recentre a held waist too fast
+WALK_MAX_M = 3.0      # one decision may cross a room; it is still watched every STEP_MAX
+TURN_MAX_DEG = 180.0
+MIN_SEGMENT = 0.5     # s: a shorter entry segment could recentre a held waist too fast
 WAIST_YAW = joint_index("waist_yaw")
+L_ELBOW, R_ELBOW = 18, 25
+ELBOW_REST = 0.0      # 90-degree bend, forearm horizontal
+ELBOW_UP = -0.45      # fingertips at shoulder height
 
 
 def _ticks(seconds: float) -> float:
@@ -37,134 +40,231 @@ def _ticks(seconds: float) -> float:
     return max(math.ceil(seconds / CONTROL_DT - 1e-9), round(MIN_SEGMENT / CONTROL_DT)) * CONTROL_DT
 
 
-class Segments(Motion):
-    """A Motion from a literal tuple of segments."""
-
-    def __init__(self, name: str, segments: Sequence[Segment]) -> None:
-        self.name = name
-        self._segments = tuple(segments)
-
-    def segments(self) -> tuple[Segment, ...]:
-        return self._segments
+def _num(desc: str, lo: float, hi: float, default: Optional[float] = None) -> dict:
+    spec = {"type": "number", "description": desc, "minimum": lo, "maximum": hi}
+    if default is not None:
+        spec["default"] = default
+    return spec
 
 
 class Skill:
+    """Subclass and implement ``segments()``; declare ``params`` for anything
+    tunable. Instances carry bound, validated arguments."""
+
     name: str = "skill"
     description: str = ""
     params: dict = {"type": "object", "properties": {}, "required": []}
-    needs_base: bool = False
-    terminal: bool = False
+    needs_base: bool = False        # hidden where the env cannot walk
+    terminal: bool = False          # ends an agent run (`done`)
+    internal: bool = False          # bookends: never in a menu, never CLI-chainable
+    allows_start: bool = False      # may use the reserved "start" goal
     joints: list[int] = UPPER_BODY
 
-    def build(self, **args) -> Union[Motion, Policy]:
+    def __init__(self, **args) -> None:
+        self.args, self.notes = validate_args(type(self), args)
+        for k, v in self.args.items():
+            setattr(self, k, v)
+
+    def segments(self) -> tuple[Segment, ...]:
         raise NotImplementedError
 
-    def max_duration(self, **args) -> float:
-        built = self.build(**args)
-        return built.duration if isinstance(built, Motion) else STEP_MAX
+    @property
+    def duration(self) -> float:
+        return sum(s.duration for s in self.segments())
 
-    def schema(self) -> dict:
-        return {"name": self.name, "description": self.description, "params": self.params}
+    @classmethod
+    def schema(cls) -> dict:
+        return {"name": cls.name, "description": cls.description, "params": cls.params}
+
+    def __repr__(self) -> str:
+        return f"{self.name}({', '.join(f'{k}={v!r}' for k, v in self.args.items())})"
 
 
-def _num(name: str, desc: str, lo: float, hi: float) -> dict:
-    return {"type": "number", "description": desc, "minimum": lo, "maximum": hi}
-
+# --------------------------------------------------------------------------
+# Locomotion: a segment holding a base velocity
+# --------------------------------------------------------------------------
 
 class WalkForward(Skill):
     name = "walk_forward"
     description = "Walk straight ahead by distance_m metres (at 0.2 m/s), then stand still."
-    params = {"type": "object", "properties": {"distance_m": _num("distance_m", "metres to walk", 0.1, WALK_MAX_M)},
-              "required": ["distance_m"]}
+    params = {"type": "object", "required": ["distance_m"],
+              "properties": {"distance_m": _num("metres to walk", 0.1, WALK_MAX_M)}}
     needs_base = True
 
-    def build(self, distance_m: float) -> Motion:
-        duration = _ticks(distance_m / WALK_SPEED)
-        v = distance_m / duration
-        return Segments("walk", (Segment(STAND, duration, base=(v, 0.0, 0.0), label=f"walk {distance_m:.2f} m"),))
+    def segments(self) -> tuple[Segment, ...]:
+        duration = _ticks(self.distance_m / WALK_SPEED)
+        v = self.distance_m / duration
+        return (Segment(STAND, duration, base=(v, 0.0, 0.0), label=f"walk {self.distance_m:.2f} m"),)
 
 
 class Turn(Skill):
     name = "turn"
     description = "Turn in place by angle_deg degrees: positive = LEFT (counter-clockwise), negative = RIGHT."
-    params = {"type": "object", "properties": {"angle_deg": _num("angle_deg", "degrees, + left / - right",
-                                                                  -TURN_MAX_DEG, TURN_MAX_DEG)},
-              "required": ["angle_deg"]}
+    params = {"type": "object", "required": ["angle_deg"],
+              "properties": {"angle_deg": _num("degrees, + left / - right", -TURN_MAX_DEG, TURN_MAX_DEG)}}
     needs_base = True
 
-    def build(self, angle_deg: float) -> Motion:
-        rad = math.radians(angle_deg)
+    def segments(self) -> tuple[Segment, ...]:
+        rad = math.radians(self.angle_deg)
         if abs(rad) < 1e-6:
-            return Segments("turn", (Segment(STAND, MIN_SEGMENT, label="turn 0"),))
+            return (Segment(STAND, MIN_SEGMENT, label="turn 0"),)
         duration = _ticks(abs(rad) / TURN_RATE)
-        return Segments("turn", (Segment(STAND, duration, base=(0.0, 0.0, rad / duration),
-                                         label=f"turn {angle_deg:+.0f} deg"),))
+        return (Segment(STAND, duration, base=(0.0, 0.0, rad / duration),
+                        label=f"turn {self.angle_deg:+.0f} deg"),)
 
+
+# --------------------------------------------------------------------------
+# Upper body
+# --------------------------------------------------------------------------
 
 class Look(Skill):
     name = "look"
     description = ("Turn only the waist (not the feet) by yaw_deg and hold it, so the next image looks "
                    "sideways: positive = LEFT, negative = RIGHT. The next skill recentres the waist.")
-    params = {"type": "object", "properties": {"yaw_deg": _num("yaw_deg", "degrees, + left / - right", -45.0, 45.0)},
-              "required": ["yaw_deg"]}
+    params = {"type": "object", "required": ["yaw_deg"],
+              "properties": {"yaw_deg": _num("degrees, + left / - right", -45.0, 45.0)}}
 
-    def build(self, yaw_deg: float) -> Motion:
-        return Segments("look", (Segment({**STAND, WAIST_YAW: math.radians(yaw_deg)}, 1.5,
-                                         label=f"look {yaw_deg:+.0f} deg"),))
+    def segments(self) -> tuple[Segment, ...]:
+        return (Segment({**STAND, WAIST_YAW: math.radians(self.yaw_deg)}, 1.5,
+                        label=f"look {self.yaw_deg:+.0f} deg"),)
 
 
-class HoldStill(Skill):
+class Hold(Skill):
     name = "hold"
-    description = "Stand still for seconds (keeps the current waist direction)."
-    params = {"type": "object", "properties": {"seconds": _num("seconds", "how long to wait", 0.5, STEP_MAX)},
-              "required": ["seconds"]}
+    description = "Stand still for seconds, keeping the current pose and waist direction."
+    params = {"type": "object", "required": [],
+              "properties": {"seconds": _num("how long to wait", 0.1, 30.0, default=1.0)}}
 
-    def build(self, seconds: float) -> Motion:
-        return Segments("hold", (Segment({}, seconds, label=f"hold {seconds:.1f} s"),))
-
-
-class ArmsUp(Skill):
-    name = "arms_up"
-    description = "Raise both arms straight out to the sides (T-pose), then lower them."
-
-    def build(self) -> Motion:
-        return Segments("arms_up", (Segment(ARMS_UP, 1.2, label="arms up"), Segment(ARMS_UP, 0.6, label="holding"),
-                                    Segment(STAND, 1.2, label="arms down")))
+    def segments(self) -> tuple[Segment, ...]:
+        return (Segment({}, self.seconds, label=f"hold {self.seconds:.1f} s"),)
 
 
-class Wave(Skill):
-    name = "wave"
-    description = "A short two-handed wave (palms up, forearms swing), then arms back down."
+class TPose(Skill):
+    name = "tpose"
+    description = "Raise both arms straight out to the sides (a T-pose), hold, then lower them."
+    params = {"type": "object", "required": [],
+              "properties": {"hold": _num("seconds to hold the pose", 0.5, 30.0, default=5.0),
+                             "rise": _num("seconds to raise and lower", 1.0, 10.0, default=3.0)}}
 
-    def build(self) -> Motion:
-        # SixSeven sized to the 3 s bound; every joint stays under check's 4 rad/s gate.
-        return Segments("wave", (*SixSeven(reps=1, swing_time=0.4, settle=0.7, hold=0.1).segments(),
-                                 Segment(STAND, 0.8, label="arms down")))
+    def segments(self) -> tuple[Segment, ...]:
+        return (Segment(ARMS_UP, self.rise, label="arms up"),
+                Segment(ARMS_UP, self.hold, label="holding T-pose"),
+                Segment(STAND, self.rise, label="arms down"))
+
+
+class SixSeven(Skill):
+    """Palms up, elbows bent 90 degrees, then the forearms see-saw: the left
+    swings up until the fingertips reach shoulder height, and as it starts back
+    down the right swings up, overlapping, for ``reps`` rounds each.
+
+    Joint conventions (verified by rendering the Menagerie model):
+      * elbow 0.0 is the 90-degree bend with the forearm forward; ~1.57 is a
+        straight arm; more negative bends the forearm up
+      * wrist roll -1.57 (left) / +1.57 (right) turns the palms up, thumbs outward
+    """
+
+    name = "sixseven"
+    description = "A two-handed see-saw wave: palms up, forearms swing up and down in turn, then arms down."
+    params = {"type": "object", "required": [],
+              "properties": {"reps": {"type": "integer", "description": "swings per hand",
+                                      "minimum": 1, "maximum": 10, "default": 3},
+                             "swing_time": _num("seconds per swing", 0.3, 2.0, default=0.8),
+                             "settle": _num("seconds to reach the palms-up pose", 0.5, 5.0, default=3.0),
+                             "hold": _num("seconds to hold before and after", 0.1, 5.0, default=1.0)}}
+
+    def _swings(self) -> tuple[Segment, ...]:
+        """Each segment raises one hand while lowering the other, so the next hand
+        starts up exactly when the previous one starts down."""
+        order = [("left", L_ELBOW), ("right", R_ELBOW)] * self.reps
+        out: list[Segment] = []
+        prev = None
+        for i, (side, joint) in enumerate(order):
+            goal = {joint: ELBOW_UP}
+            if prev is not None:
+                goal[prev] = ELBOW_REST
+            out.append(Segment(goal, self.swing_time, label=f"{side} hand up ({i // 2 + 1}/{self.reps})"))
+            prev = joint
+        if prev is not None:
+            out.append(Segment({prev: ELBOW_REST}, self.swing_time))   # last hand back down
+        return tuple(out)
+
+    def segments(self) -> tuple[Segment, ...]:
+        return (Segment(SIXSEVEN, self.settle, label="palms up, elbows 90"),
+                Segment(SIXSEVEN, self.hold, label="holding"),
+                *self._swings(),
+                Segment(SIXSEVEN, self.hold, label="holding"),
+                Segment(STAND, 1.2, label="arms down"))
 
 
 class Done(Skill):
     name = "done"
     description = "Stop: the goal is achieved (found=true) or cannot be achieved (found=false)."
-    params = {"type": "object", "properties": {"found": {"type": "boolean", "description": "goal achieved?"},
-                                               "note": {"type": "string", "description": "one short sentence"}},
-              "required": ["found"]}
+    params = {"type": "object", "required": ["found"],
+              "properties": {"found": {"type": "boolean", "description": "goal achieved?"},
+                             "note": {"type": "string", "description": "one short sentence", "default": ""}}}
     terminal = True
 
-    def build(self, found: bool, note: str = "") -> Motion:
-        return Segments("done", ())
+    def segments(self) -> tuple[Segment, ...]:
+        return ()
 
 
-SKILLS: dict[str, Skill] = {s.name: s for s in (WalkForward(), Turn(), Look(), HoldStill(), ArmsUp(), Wave(), Done())}
+# --------------------------------------------------------------------------
+# Bookends: internal skills a Routine or an agent wraps around the rest
+# --------------------------------------------------------------------------
+
+class Takeover(Skill):
+    """Ramp the arm_sdk weight 0->1 while holding the pose observed at reset
+    (nothing should move), then go to STAND."""
+
+    name = "takeover"
+    internal = True
+    allows_start = True
+    params = {"type": "object", "required": [],
+              "properties": {"ramp": _num("weight ramp seconds", 0.0, 10.0, default=2.0),
+                             "to_stand": _num("seconds to reach STAND", 0.0, 10.0, default=3.0)}}
+
+    def segments(self) -> tuple[Segment, ...]:
+        out = []
+        if self.ramp > 0:
+            out.append(Segment("start", self.ramp, weight=lambda a: a, label="taking over (hold)"))
+        if self.to_stand > 0:
+            out.append(Segment(STAND, self.to_stand, label="moving to stand"))
+        return tuple(out)
 
 
-def menu(allow_base: bool = True) -> list[Skill]:
-    """The skills a decider may choose from; base skills only where the env can walk."""
-    return [s for s in SKILLS.values() if allow_base or not s.needs_base]
+class Handback(Skill):
+    """Go to STAND, then hold it while ramping the weight 1->0 so the onboard
+    controller takes the arms back smoothly."""
+
+    name = "handback"
+    internal = True
+    params = {"type": "object", "required": [],
+              "properties": {"to_stand": _num("seconds to reach STAND", 0.0, 10.0, default=3.0),
+                             "ramp": _num("weight ramp seconds", 0.0, 10.0, default=2.0)}}
+
+    def segments(self) -> tuple[Segment, ...]:
+        out = []
+        if self.to_stand > 0:
+            out.append(Segment(STAND, self.to_stand, label="returning to stand"))
+        if self.ramp > 0:
+            out.append(Segment(STAND, self.ramp, weight=lambda a: 1.0 - a, label="handing back"))
+        return tuple(out)
 
 
-def validate_args(skill: Skill, args: dict) -> tuple[dict, list[str]]:
-    """Coerce and range-clamp ``args`` against the skill's schema. Unknown or
-    missing keys and wrong types raise ValueError; clamps are returned as notes."""
+SKILLS: dict[str, type[Skill]] = {s.name: s for s in
+                                  (WalkForward, Turn, Look, Hold, TPose, SixSeven, Done, Takeover, Handback)}
+
+
+def menu(allow_base: bool = True) -> list[type[Skill]]:
+    """The skills a decider may choose from; no bookends, and no walking where
+    the env cannot walk."""
+    return [s for s in SKILLS.values() if not s.internal and (allow_base or not s.needs_base)]
+
+
+def validate_args(skill: "type[Skill]", args: dict) -> tuple[dict, list[str]]:
+    """Coerce, default and range-clamp ``args`` against the skill's schema.
+    Unknown or missing required keys and wrong types raise ValueError; clamps
+    come back as notes."""
     props = skill.params.get("properties", {})
     out: dict[str, Any] = {}
     notes: list[str] = []
@@ -176,6 +276,8 @@ def validate_args(skill: Skill, args: dict) -> tuple[dict, list[str]]:
             raise ValueError(f"{skill.name}: missing argument {key!r}")
     for key, spec in props.items():
         if key not in args:
+            if "default" in spec:
+                out[key] = spec["default"]
             continue
         v = args[key]
         kind = spec.get("type")
@@ -185,7 +287,7 @@ def validate_args(skill: Skill, args: dict) -> tuple[dict, list[str]]:
             elif kind == "number":
                 v = float(v)
             elif kind == "integer":
-                v = int(v)
+                v = int(float(v))
             elif kind == "string":
                 v = str(v)
         except (TypeError, ValueError):
@@ -200,14 +302,14 @@ def validate_args(skill: Skill, args: dict) -> tuple[dict, list[str]]:
     return out, notes
 
 
-def parse_skill(item: str) -> tuple[Skill, dict]:
+def parse_skill(item: str) -> Skill:
     """``name[:arg[:arg…]]`` with args positional in schema order or ``k=v``."""
     parts = item.split(":")
     name = parts[0].strip()
     if name not in SKILLS:
         raise KeyError(name)
-    skill = SKILLS[name]
-    keys = list(skill.params.get("properties", {}))
+    cls = SKILLS[name]
+    keys = list(cls.params.get("properties", {}))
     args: dict = {}
     for i, raw in enumerate(p.strip() for p in parts[1:] if p.strip()):
         if "=" in raw:
@@ -217,22 +319,29 @@ def parse_skill(item: str) -> tuple[Skill, dict]:
             args[keys[i]] = raw
         else:
             raise ValueError(f"{name}: too many arguments in {item!r}")
-    validated, _ = validate_args(skill, args)
-    return skill, validated
+    return cls(**args)
 
 
-def skill_policy(skill: Skill, args: dict, joints: Optional[list[int]] = None,
+def skill_segments(skill: Skill) -> list[Segment]:
+    """A skill's segments with labels prefixed by its name. Only the Takeover
+    bookend may use the reserved "start" goal."""
+    out = []
+    for seg in skill.segments():
+        if seg.goal == "start" and not skill.allows_start:
+            raise ValueError(f"skill {skill.name!r} uses the reserved 'start' goal")
+        out.append(Segment(seg.goal, seg.duration, seg.weight,
+                           f"{skill.name}: {seg.label}" if seg.label else "", seg.base))
+    return out
+
+
+def skill_policy(skill: Skill, joints: Optional[list[int]] = None,
                  name: Optional[str] = None) -> Policy:
-    """A runnable policy for one skill (no bookends), labels prefixed by the skill name."""
-    built = skill.build(**args)
-    if isinstance(built, Policy):
-        return built
-    segs = [Segment(s.goal, s.duration, s.weight, f"{skill.name}: {s.label}" if s.label else "", s.base)
-            for s in built.segments()]
-    return SegmentPolicy(segs, joints=list(joints or skill.joints), name=name or skill.name)
+    """A runnable policy for one skill, with no bookends."""
+    return SegmentPolicy(skill_segments(skill), joints=list(joints or skill.joints),
+                         name=name or skill.name)
 
 
-def describe_menu(skills: Sequence[Skill]) -> str:
+def describe_menu(skills: Sequence[type[Skill]]) -> str:
     """One line per skill for --list."""
     lines = []
     for s in skills:

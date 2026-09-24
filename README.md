@@ -1,29 +1,28 @@
 # g1-lab
 
-Monorepo for Unitree G1 movement routines. Every routine goes through the same
-three stages, chosen with one flag on the run command:
+Monorepo for Unitree G1 movement routines. Every policy goes through the same
+two stages, chosen with one flag on the run command:
 
 | stage   | `--env` | what it does |
 |---------|---------|--------------|
-| 1 check | `check` | naive sanity check: joint bounds (with margin), command speed, arm_sdk weight range. No hardware, no GUI. |
-| 2 sim   | `sim`   | replays the policy in the MuJoCo viewer on the Menagerie `unitree_g1` model. |
-| 3 robot | `robot` | deploys live through `unitree_sdk2py`: high-level bring-up with `LocoClient`, then targets on `rt/arm_sdk`. |
+| 1 sim   | `sim`   | runs the policy on the Menagerie `unitree_g1` model in MuJoCo **and checks it**: every joint's measured angle, every commanded target, command speed, arm_sdk weight and base velocity are gated, and the run fails on a violation. `--headless` is the fast windowless pre-flight; without it you get the viewer. |
+| 2 robot | `robot` | deploys live through `unitree_sdk2py`: high-level bring-up with `LocoClient`, then targets on `rt/arm_sdk`; the same joint monitor reports (but never aborts) afterwards. |
 
 ```
-python   run.py --env check --policy tpose
-mjpython run.py --env sim   --policy tpose            # macOS needs mjpython for the viewer
+python   run.py --env sim   --policy tpose --headless   # checked, no window, ~1 s
+mjpython run.py --env sim   --policy tpose              # macOS needs mjpython for the viewer
 python   run.py --env robot --policy tpose --iface eth0 --mode gantry
 python   run.py --env robot --policy sixseven --iface eth0 --mode standing
 ```
 
 After `pip install -e .`, `g1` is a shortcut for `python run.py`. `--env` falls back to
 `$G1_ENV` and `--policy` to `$G1_POLICY`, so `G1_ENV=sim g1 -p tpose` also works.
-`g1 --list` prints the registered envs, routines and motions; `g1 --help` shows every
-env's flags.
+`g1 --list` prints the registered envs, routines, policies, agents and skills;
+`g1 --help` shows every env's flags.
 
 ## Setup
 
-Goal: from a fresh machine to the `check` and `sim` stages. Python 3.10+ on
+Goal: from a fresh machine to a checked sim run. Python 3.10+ on
 macOS or Linux; the robot stage needs more and is covered separately.
 
 **1. Python environment.** Any venv or conda env works; this repo was developed
@@ -59,18 +58,17 @@ export G1_MJCF=/path/to/mujoco_menagerie/unitree_g1/scene.xml
 **4. Check it works.**
 
 ```
-g1 --list                                        # envs, routines, policies, motions
-g1 --env check --policy tpose                    # stage 1: prints a joint table and PASS
-python   run.py --env sim --policy tpose --headless   # stage 2 without a window
-mjpython run.py --env sim --policy demo               # stage 2 in the viewer (macOS: mjpython; Linux: python)
-pytest                                           # 31 tests, sim ones run headless (~10 s)
+g1 --list                                        # envs, routines, policies, agents, skills
+g1 --env sim --policy tpose --headless           # checked run: prints the joint table and PASS
+mjpython run.py --env sim --policy demo               # the same, in the viewer (macOS: mjpython; Linux: python)
+pytest                                           # ~100 tests, all through headless sim (~100 s)
 ```
 
-The camera policies need nothing extra in these two stages: `check` feeds
-random or replayed frames and `sim` renders the head camera itself.
+The camera policies need nothing extra: sim renders the head camera itself, or
+feeds random / replayed frames with `--camera-noise` / `--camera-dir`.
 
 ```
-python   run.py --env check --policy look --camera-noise
+python   run.py --env sim   --policy look --camera-noise --headless
 mjpython run.py --env sim   --policy look --sim-target 1.0,0.5,0.6
 mjpython run.py --env sim   --policy wave_on_red --sim-target 1.0,0.5,0.6
 ```
@@ -84,18 +82,20 @@ Common problems:
 
 The robot stage (`--env robot`) additionally needs `unitree_sdk2py` and, for
 camera policies, `unitree_webrtc_connect` plus `pip install -e ".[camera]"`;
-neither is on PyPI and neither is needed for `check` or `sim`.
+neither is on PyPI and neither is needed for sim.
 
 ## Layout
 
 ```
 config.py           29-DoF joint table (DDS order), limits, groups, stand pose
 policy.py           Policy / Action / Obs interface, SegmentPolicy (scripted), ReactivePolicy (camera)
-camera.py           Frame sources: WebRTCCamera (robot), DirCamera / NoiseCamera (check); `python -m camera`
+camera.py           Frame sources: WebRTCCamera (robot), DirCamera / NoiseCamera (sim replay); `python -m camera`
 vision.py           pure detectors and image geometry: red_blob, bearing, elevation
 targets.py          Target / Sighting: what a policy looks for (RedDot, Labeled, Salient, Doorway stub)
 behaviors.py        Face(target) turns the waist toward it; GoTo(target) walks to it
-skills.py           Skill: the decision-level unit (walk_forward, turn, look, hold, arms_up, wave, done)
+skills.py           Skill, the one building block: walk_forward, turn, look, hold, tpose, sixseven, done
+                    (+ the internal bookends takeover / handback); SKILLS registry
+poses.py            shared pose dicts: STAND (baseline), ARMS_UP, SIXSEVEN
 agent.py            the decision step as a Policy: search (ask the model) and replay (a saved run)
 decider.py          Context -> Decision via the vision model; python -m decider tries one frame
 episode.py          per-step records (JSON + lossless PNG) under runs/; python -m episode inspects them
@@ -105,53 +105,53 @@ hf.py, worker.py    Hugging Face client (urllib, SSE); background worker with a 
 run.py              CLI and the single run loop shared by all envs
 envs/
   base.py           Env interface: setup / reset / step / teardown / report
-  check.py          stage 1
-  sim.py            stage 2
-  robot.py          stage 3 (ArmSdk publisher + LocoClient bring-up)
-motions/            reusable building blocks (no takeover/handback), MOTIONS registry
-  poses.py          shared pose dicts: STAND (baseline), ARMS_UP, SIXSEVEN
-  bookends.py       Takeover, Handback, Hold
-  tpose.py          TPose(hold, rise)
-  sixseven.py       SixSeven(reps, swing_time, ...)
-routines.py         Routine = Takeover + motions (+ pauses) + Handback; Selector (camera-triggered
-                    motion); ROUTINES and POLICIES registries
-tests/              pytest; the sim test runs headless
+  monitor.py        JointMonitor: measured + commanded joint bounds, speed, weight, base limits
+  sim.py            stage 1 (MuJoCo + the monitor; --headless = no window)
+  robot.py          stage 2 (ArmSdk publisher + LocoClient bring-up; monitor report-only)
+routines.py         Routine = Takeover + skills (+ pauses) + Handback; Selector (camera-triggered
+                    skill); ROUTINES and POLICIES registries
+tests/              pytest; everything runs through headless sim
 ```
 
-## Motions and routines
+## Skills and routines
 
-A **motion** is a reusable building block: a class returning a tuple of pose
-segments, with no takeover/handback. Its first segment should set its full entry
-pose so it works after any other motion; it may end anywhere. It must not use
-the `"start"` goal (reserved for the takeover bookend). Parameters go through
-`__init__`.
+A **skill** is the one building block — the same format for "lift the arm" and
+"walk forward". It has a name, a parameter schema (which is also the menu a
+vision model chooses from), and `segments()` returning pose segments; a walk is
+a segment holding a base velocity. Arguments are bound and validated at
+construction, defaults fill in, and the first segment should set the skill's
+full entry pose so it works after any other skill. It must not use the
+`"start"` goal (reserved for the takeover bookend).
 
 ```python
-from motions.poses import STAND
-from policy import Motion, Segment
+from poses import STAND
+from policy import Segment
+from skills import Skill
 
-class Wave(Motion):
-    name = "wave"
-
-    def __init__(self, reps: int = 2):
-        self.reps = reps
+class Nod(Skill):
+    name = "nod"
+    description = "Dip the elbows twice."
+    params = {"type": "object", "required": [],
+              "properties": {"reps": {"type": "integer", "minimum": 1, "maximum": 5, "default": 2}}}
 
     def segments(self):
         out = [Segment(STAND, 2.0, label="to stand")]
         for _ in range(self.reps):
-            out += [Segment({18: 0.5}, 0.8, label="elbow up"), Segment({18: 1.28}, 0.8)]
+            out += [Segment({18: 0.5, 25: 0.5}, 0.8, label="elbows up"), Segment(STAND, 0.8)]
         return tuple(out)
 ```
 
-Register it in `motions/__init__.py`, then it is runnable on its own
-(`--policy wave`) or chained (`--policy tpose,wave`). A **routine** wraps motions
-with the bookends exactly once: takeover, motion, pause, motion, ..., handback.
-The baseline both bookends go to is `STAND`, the Menagerie `stand` keyframe's relaxed
-hanging-arm pose, which is also what `check` and `sim` start from.
-Name a composition in `routines.py` (`ROUTINES["demo"]`) when it is worth keeping.
+Add it to `skills.SKILLS` and it is runnable on its own (`--policy nod`), with
+arguments (`--policy nod:3` or `nod:reps=3`), chained (`--policy tpose,nod:3`),
+and offered to the model in `search`. A **routine** wraps skills with the
+bookends exactly once: takeover, skill, pause, skill, ..., handback. The
+baseline both bookends go to is `STAND`, the Menagerie `stand` keyframe's
+relaxed hanging-arm pose, which is also what sim starts from. Name a
+composition in `routines.py` (`ROUTINES["demo"]`) when it is worth keeping.
 
-Composition happens at the segment level, so every transition between motions is
-one continuous command stream and the `check` env's velocity limit covers it.
+Composition happens at the segment level, so every transition between skills is
+one continuous command stream and the monitor's velocity limit covers it. A
+skill may be any length: the agent records a step every 3 s while one runs.
 
 For anything not expressible as pose segments, subclass `Policy` directly and
 implement `reset(obs)` and `step(t, obs)`. `obs.q` is the joint state; see below
@@ -171,8 +171,7 @@ Where frames come from:
 
 | env   | source                                                                    |
 |-------|---------------------------------------------------------------------------|
-| check | none by default; `--camera-dir DIR` replays image files, `--camera-noise` fuzzes |
-| sim   | a `head` camera rendered at the D435 mount every `--camera-every` ticks; `--sim-target x,y,z` adds a red sphere |
+| sim   | a `head` camera rendered at the D435 mount every `--camera-every` ticks; `--sim-target x,y,z` adds a red sphere. `--camera-dir DIR` replays image files and `--camera-noise` fuzzes instead of rendering |
 | robot | the head camera over WebRTC (`--camera-ip`, default `$UNITREE_ROBOT_IP`), connected before any FSM change; close the Unitree app first |
 
 Two ways to use them:
@@ -181,14 +180,14 @@ Two ways to use them:
   called once per new frame. It wraps the result in the takeover/handback
   bookends and a safety envelope (clip to the joint limits minus a margin,
   rate-limit from the last commanded pose, hold when the frame is stale) whose
-  defaults sit inside `check`'s gates, since `check` can only validate the
-  frames it is shown. `look` (`vision.py`) turns the waist toward a red blob.
-* **Triggers**: `Selector([(predicate, "motion"), ...])` idles at `STAND` until a
-  predicate on the frame fires, then runs that registered motion and hands back.
+  defaults sit inside the monitor's gates, since a run can only validate the
+  frames it is shown. `look` (`behaviors.py`) turns the waist toward a red blob.
+* **Triggers**: `Selector([(predicate, "skill"), ...])` idles at `STAND` until a
+  predicate on the frame fires, then runs that registered skill and hands back.
   `wave_on_red` runs `sixseven` when something red is in view.
 
 ```
-python   run.py --env check --policy look --camera-noise
+python   run.py --env sim   --policy look --camera-noise --headless
 mjpython run.py --env sim   --policy look --sim-target 1.0,0.5,0.6
 python -m camera --ip <robot-ip>                       # stream smoke test, no control: prints 1280x720, ~15 fps
 python   run.py --env robot --policy look --iface <iface> --mode standing --camera-ip <robot-ip>
@@ -213,7 +212,7 @@ verified live on the router); override with `--vision-model` or
 `Qwen/Qwen3-VL-30B-A3B-Instruct:deepinfra` when you need structured output.
 
 ```
-python   run.py --env check --policy describe --camera-noise        # offline: fake perceiver
+python   run.py --env sim   --policy describe --headless               # needs $HF_TOKEN
 export HF_TOKEN=hf_...
 python -m perception head.png                                       # one real request, prints the Percept + latency
 mjpython run.py --env sim --policy describe --sim-obstacle 1.2,0,0.225 --vision api --vision-echo
@@ -236,9 +235,9 @@ stub that can be faced but not walked to.
 target is lost, stop when `reached` says so. It drives the base through
 `Action.base = (vx, vy, vyaw)`:
 
-* **check** enforces `BASE_VEL_MAX` (0.3 m/s forward) and reports the path.
 * **sim** slides the pinned pelvis kinematically — the legs hold the stand
-  pose, so this rehearses the loop and the limits, not the gait.
+  pose, so this rehearses the loop and the limits, not the gait — and the
+  monitor enforces `BASE_VEL_MAX` (0.3 m/s forward) and reports the path.
 * **robot** walks for real with `LocoClient.Move`, only with `--walk`. Move is
   a 1 s dead-man command re-sent from a 10 Hz thread and stopped before the arms
   release; it works in FSM 200, so both `--mode`s apply. Pre-flight: on the
@@ -246,7 +245,7 @@ target is lost, stop when `reached` says so. It drives the base through
   spotter on the remote with L2+B.
 
 ```
-python   run.py --env check --policy goto_red --camera-noise
+python   run.py --env sim   --policy goto_red --camera-noise --headless
 mjpython run.py --env sim   --policy goto_red --sim-target 1.5,0.3,0.6     # slides ~1 m to the ball, "reached"
 python   run.py --env robot --policy goto_red --iface <iface> --mode standing --camera-ip <ip>          # refuses: needs --walk
 python   run.py --env robot --policy goto_red --iface <iface> --mode standing --camera-ip <ip> --walk   # walks to a red object
@@ -259,13 +258,13 @@ camera frame, asks the vision model what to do next (scene, is the path clear,
 which skill), runs that skill to its end, and records everything. The robot
 stands still while the model thinks; the 50 Hz loop never waits.
 
-**Skills** are the one format for "walk forward" and "lift the arm": a name, a
-parameter menu the model chooses from, a 3 s bound, and a build that returns
-pose segments (a walk is a segment holding a base velocity). `--list` shows them.
-Chain them from the CLI exactly like motions, no model needed:
+**Skills** are the one format for "walk forward" and "lift the arm" (see
+*Skills and routines* above). A skill may be longer than one step: the agent
+records a step every 3 s while it runs, so a 3 m walk is one decision and five
+records. `--list` shows the menu. Chain them from the CLI, no model needed:
 
 ```
-python   run.py --env check --policy walk_forward:0.5,turn:45,arms_up,wave
+python   run.py --env sim   --policy walk_forward:0.5,turn:45,tpose,sixseven:1 --headless
 mjpython run.py --env sim   --policy turn:-30,walk_forward:0.6,look:20,hold:1
 ```
 
@@ -285,15 +284,16 @@ facing +x; the room spans x −2..4, y −3..3, doorway in the +x wall).
 
 **Every step is recorded** under `runs/<timestamp>_<env>_<goal>/`: `step_NNNN.json`
 (times, joint angles at start and end, the decision with the model's raw reply,
-the skill, the outcome, base pose) and `step_NNNN.png` — the camera frame stored
-losslessly, so `load_episode()` gives back the exact RGB matrix. That is the
-dataset a learned policy trains on later.
+the skill and its chunk number, the outcome, base pose) and `step_NNNN.png` — the
+camera frame stored losslessly, so `load_episode()` gives back the exact RGB
+matrix. A long skill produces one record per 3 s chunk (`running`, then
+`completed`). That is the dataset a learned policy trains on later.
 
 **Replay a saved run** — no camera, no model, from the start pose:
 
 ```
 python -m episode runs/<dir>                                    # step table + the equivalent chain
-python run.py --env sim --policy replay --episode runs/<dir>   # or --env check / --env robot --walk
+python run.py --env sim --policy replay --episode runs/<dir>   # or --headless, or --env robot --walk
 ```
 
 On the robot: `--policy search --goal "find a pencil" --camera-ip <ip> --walk`

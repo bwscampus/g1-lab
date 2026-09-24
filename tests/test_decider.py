@@ -25,7 +25,7 @@ def ctx(image=None, allow_base=True, waist=0.0, note=""):
 def test_decision_from_json():
     d = Decision.from_json({"scene": "a mug", "path_clear": False, "found": True, "action": "turn",
                             "args": {"angle_deg": "200"}, "reason": "r"}, ctx(), raw="x")
-    assert d.action == "turn" and d.args == {"angle_deg": 68.0} and d.notes and d.path_clear is False
+    assert d.action == "turn" and d.args == {"angle_deg": 180.0} and d.notes and d.path_clear is False
     assert d.step == 3 and d.frame_seq == 9 and d.frame_stamp == 1.5 and d.raw == "x"
     with pytest.raises(ValueError):
         Decision.from_json({"action": "fly", "args": {}}, ctx())

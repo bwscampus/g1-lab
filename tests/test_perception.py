@@ -8,8 +8,7 @@ import pytest
 
 from camera import Frame
 from config import CONTROL_DT, STAND_Q, joint_index
-from envs import CheckEnv
-from motions import SixSeven
+from skills import SixSeven
 from perception import (DEFAULT_MODEL, Detected, HFPerceiver, Perceiver, Percept, RequestError,
                         VisionQuery, build_perceiver, extract_json)
 from tests.doubles import FakePerceiver
@@ -30,8 +29,7 @@ def frame(seq=1, color=(0, 0, 0), stamp=0.0):
     return Frame(solid(color), stamp, seq)
 
 
-def check_env(*extra):
-    return CheckEnv(build_parser().parse_args(["--env", "check", "--policy", "x", *extra]))
+from tests.doubles import sim_env as check_env
 
 
 # -- data -------------------------------------------------------------------------
@@ -268,7 +266,8 @@ def test_describe_passes_check_under_noise():
 def test_describe_holds_without_percepts():
     env = check_env("--camera-noise")
     assert run(Describe(duration=2.0), env) is True         # no perceiver at all
-    assert env.q_min[WAIST_YAW] == env.q_max[WAIST_YAW] == 0.0
+    assert env.cmd_min[WAIST_YAW] == env.cmd_max[WAIST_YAW] == 0.0
+    assert env.q_max[WAIST_YAW] == pytest.approx(0.0, abs=1e-3)
 
 
 def scripted(x, frame_seq=None):
@@ -328,7 +327,7 @@ def test_selector_rules_see_percepts_without_frames():
 # -- CLI ---------------------------------------------------------------------------------
 
 def test_build_perceiver_modes(monkeypatch, capsys):
-    parse = lambda *a: build_parser().parse_args(["--env", "check", "--policy", "x", *a])
+    parse = lambda *a: build_parser().parse_args(["--env", "sim", "--policy", "x", *a])
     monkeypatch.delenv("HF_TOKEN", raising=False)
     monkeypatch.delenv("G1_VISION_API_KEY", raising=False)
     assert build_perceiver(parse(), POLICIES["look"]()) is None              # no vision needed
@@ -338,7 +337,7 @@ def test_build_perceiver_modes(monkeypatch, capsys):
     with pytest.raises(RuntimeError):
         build_perceiver(parse("--vision", "api"), Describe())
     with pytest.raises(SystemExit):
-        main(["--env", "check", "--policy", "describe", "--vision", "api"])
+        main(["--env", "sim", "--headless", "--policy", "describe", "--vision", "api"])
     monkeypatch.setenv("HF_TOKEN", "hf_t")
     auto = build_perceiver(parse(), Describe())
     assert isinstance(auto, HFPerceiver) and auto.model == DEFAULT_MODEL

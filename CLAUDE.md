@@ -5,9 +5,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 Movement routines for the Unitree G1 (29-DoF). Every routine runs through the same three
-environments, selected with `--env` on the run command: `check` (bounds/velocity sanity
-check, no hardware), `sim` (MuJoCo viewer), `robot` (live via `unitree_sdk2py`). Run them in
-that order for any new motion or routine. The stages are not chained automatically.
+environments, selected with `--env`: `sim` (MuJoCo, and the checks that gate a run) and
+`robot` (live via `unitree_sdk2py`). Run sim before the robot for anything new; the stages are
+not chained automatically. There is no separate check env — every sim run is checked, and
+`--env sim --headless` is the fast windowless pre-flight.
 
 ## Commands
 
@@ -15,26 +16,26 @@ that order for any new motion or routine. The stages are not chained automatical
 pip install -e ".[sim,dev]"          # unitree_sdk2py is not on PyPI; install from its repo for --env robot
 pip install -e ".[camera]"           # aiortc/av/opencv; unitree_webrtc_connect comes from its repo too
 
-python   run.py --env check --policy tpose                 # single motion
-python   run.py --env check --policy tpose,sixseven        # ad hoc chain (--pause between)
-python   run.py --env check --policy demo                  # registered routine
+python   run.py --env sim --policy tpose --headless        # fast, windowless, fully checked
+python   run.py --env sim --policy tpose,turn:45 --headless   # ad hoc chain of skills (--pause between)
+python   run.py --env sim --policy demo --headless         # registered routine
 mjpython run.py --env sim   --policy demo         # macOS: the viewer only works under mjpython
 python   run.py --env sim   --policy tpose --headless
 python   run.py --env robot --policy tpose --iface <iface_or_ip> --mode gantry|standing   # --mode is required
 
-python   run.py --env check --policy look --camera-noise          # camera policy fuzzed with random frames
-python   run.py --env check --policy wave_on_red --camera-dir frames/   # replay recorded frames (sorted by name)
+python   run.py --env sim --policy look --camera-noise --headless        # fuzz a camera policy
+python   run.py --env sim --policy wave_on_red --camera-dir frames/ --headless   # replay recorded frames
 mjpython run.py --env sim   --policy look --sim-target 1.0,0.5,0.6      # red sphere for the head camera to find
 python   run.py --env robot --policy look --iface <iface> --mode standing --camera-ip <ip>  # + $UNITREE_AES_128_KEY
 python -m camera --ip <ip>           # head camera smoke test: fps and frame gaps, no robot control
 
-python   run.py --env check --policy describe --camera-noise      # vision policy with the offline fake perceiver
+python   run.py --env sim --policy describe --headless            # vision policy (needs $HF_TOKEN)
 HF_TOKEN=hf_... python -m perception head.png                     # one real model request: streams text, prints the Percept
 HF_TOKEN=hf_... mjpython run.py --env sim --policy describe --sim-obstacle 1.2,0,0.225 --vision api --vision-echo
 mjpython run.py --env sim   --policy goto_red --sim-target 1.5,0.3,0.6   # walk-to-target loop: base slides to the ball
 python   run.py --env robot --policy goto_red --iface <iface> --mode standing --camera-ip <ip> --walk  # real walking
 
-python   run.py --env check --policy walk_forward:0.5,turn:45,arms_up,wave   # a preset: skills chain like motions
+python   run.py --env sim --policy walk_forward:0.5,turn:45,tpose --headless  # a preset: skills chain
 python -m scene fetch                                                        # room assets (once, ~35 MB, git-ignored)
 HF_TOKEN=hf_... mjpython run.py --env sim --scene room --policy search --goal "find the mug" \
         --sim-objects mug@1.5,1.2 --camera-size 720x1280 --realtime 1 --max-time 600   # ask the model each step
@@ -46,7 +47,7 @@ g1 --list                            # `g1` == `python run.py`; --env/--policy f
 g1 --help                            # shows every env's flags (--margin, --max-vel, --free-base, --mode, ...)
 
 pytest                               # all tests; sim test runs headless
-pytest tests/test_check.py::test_out_of_bounds_fails
+pytest tests/test_monitor.py::test_out_of_bounds_fails_in_sim
 ```
 
 Modules live flat at the repo root with absolute imports (`from config import ...`,
@@ -84,8 +85,8 @@ env.report()
   `stamp`, `seq`); frames never queue behind a slow tick, and a policy keys per-frame work on
   `seq` because the same frame is seen every tick until a newer one lands. Sources: `WebRTCCamera`
   (robot, `unitree_webrtc_connect` on a daemon asyncio thread, stamped `time.monotonic()`),
-  `DirCamera` / `NoiseCamera` (check, driven by `poll(now)` on the check clock), and the sim's
-  own offscreen render of a `head` camera (stamped with sim time). The vision model runs **only
+  `DirCamera` / `NoiseCamera` (`--camera-dir` / `--camera-noise`, driven by `poll(now)` on the
+  sim clock, replacing the render), and the sim's own offscreen render of a `head` camera. The vision model runs **only
   on request**: `Perceiver` is a `worker.Worker` (latest-only result, `request()` ignored while
   one is in flight or within `--vision-interval`); `ReactivePolicy`/`Selector` ask through
   `VisionQuery` at `vision_refresh` (2 s); `--vision auto|off|api`. Measured on the G1: the
@@ -97,23 +98,27 @@ env.report()
   `track(t, obs) -> Pose`, called once per new fresh frame; it adds the Takeover/Handback phases
   and a safety envelope (clip to limits minus `margin`, rate-limit to `max_vel` from the last
   *commanded* q, hold when the frame is older than `stale_after`). The defaults sit inside
-  check's `--margin`/`--max-vel`, which matters because check can only validate the frames it is
-  shown. `Selector` (`routines.py`) is the trigger form: idle at STAND until a frame predicate
-  fires, then run one registered motion; it seeds each sub-policy from its own last commanded q
+  the monitor's `--margin`/`--max-vel`, which matters because a run can only validate the frames
+  it is shown. `Selector` (`routines.py`) is the trigger form: idle at STAND until a frame predicate
+  fires, then run one registered skill; it seeds each sub-policy from its own last commanded q
   (the chaining rule below); its rules take the whole `Obs` and re-run on a new frame *or* a new
   percept. Examples in `vision.py` (`look`, red-blob waist tracking; `describe`, vision-model
   narration) and `routines.POLICIES` (`wave_on_red`, `wave_on_person`). `build_policy` resolves
-  routine, then policy, then motions.
-- **Motion vs Policy vs Skill.** *Policy* is the executor contract (`reset/step` at 50 Hz; the
-  only thing an env runs). *Motion* is a scripted building block: pose segments, no sensing, no
-  bookends. *Skill* (`skills.py`) is the decision-level unit: a name, a JSON-schema parameter
-  menu, a duration bound (`STEP_MAX` 3 s) and `build() -> Motion` (or a bounded Policy).
-  `Skill -> builds -> Motion -> runs as -> SegmentPolicy`. "Walk forward" and "lift the arm" are
-  the same format because a `Segment` may hold a `base` velocity for its duration; locomotion
-  durations round up to whole ticks so `distance = v*t` is exact in check and sim. Every skill
-  except `hold`/`look` ends at STAND (boundaries continuous by construction; a test chains every
-  pair). Skills chain from the CLI like motions (`walk_forward:0.5,turn:45`); `menu(allow_base)`
-  hides base skills where the env cannot walk and the runner refuses such chains up front.
+  routine, then policy, then a chain of skills.
+- **Policy vs Skill.** *Policy* is the executor contract (`reset/step` at 50 Hz; the only thing
+  an env runs — the executor builds nothing else). *Skill* (`skills.py`) is the one building
+  block: a name, a JSON-schema parameter menu (also the menu a model picks from) and
+  `segments()` -> pose segments, with arguments bound and validated at construction
+  (`Turn(angle_deg=45)`). `Skill -> segments -> SegmentPolicy` via `skill_policy`, or several at
+  once via `Routine`. "Walk forward" and "lift the arm" are the same format because a `Segment`
+  may hold a `base` velocity for its duration as easily as a pose; locomotion durations round up
+  to whole ticks so `distance = v*t` is exact. A skill may be **any length** — the agent records
+  a step every `STEP_MAX` (3 s) while one runs — so `STEP_MAX` is an observation cadence, not a
+  cap. Every skill except `hold`/`look` ends at STAND (boundaries continuous by construction; a
+  test chains every pair). Bookends (`Takeover`, `Handback`) are `internal` skills: never in a
+  menu, never CLI-chainable. Skills chain from the CLI (`walk_forward:0.5,turn:45,tpose`);
+  `menu(allow_base)` hides base skills where the env cannot walk and the runner refuses such
+  chains up front.
 - **Two ways to drive the executor.** Either ask the vision model what to do next (`--policy
   search --goal …`) or run a preset: a skill chain, a registered routine, or `--policy replay
   --episode runs/<dir>` (rebuilds a saved run as a Routine; no camera, no model). Learning is
@@ -164,7 +169,7 @@ env.report()
   capture*, since sightings (and especially VLM percepts) land after their frame.
 - **Base velocity** (`Action.base = (vx, vy, vyaw)` or `None`; `config.BASE_VEL_MAX`):
   `ReactivePolicy.drive(t, obs)` supplies it every tracking tick and it is `None` in every other
-  phase, so the base always stops before the return-to-stand. check flags `base_*` violations
+  phase, so the base always stops before the return-to-stand. The monitor flags `base_*` violations
   and integrates a kinematic pose for the report; sim slides the pinned pelvis (legs hold the
   stand pose — a rehearsal of the loop, not gait; `--free-base` aborts on a base command); the
   robot needs `--walk`, which starts a `BaseCommander` thread (latest-only slot, `Move` re-sent
@@ -180,33 +185,39 @@ env.report()
   network backend: Hugging Face Inference Providers (`https://router.huggingface.co/v1`,
   `$HF_TOKEN`, model `$G1_VISION_MODEL` / `--vision-model`, default `perception.DEFAULT_MODEL`),
   stdlib `urllib`, streamed SSE, `response_format: json_object` dropped automatically on a 400.
-  `FakePerceiver` runs inline (no thread) off `vision.red_blob` so check and tests are
+  A rule-based perceiver double runs inline in `tests/doubles.py` so the tests are
   deterministic; `--vision auto` picks it for policies with `uses_vision`, `api` is always
   explicit. The runner starts the perceiver before the env and stops it after, so it never gates
   arm release. `ReactivePolicy.fresh(obs)` is the hook that keys `track` on `percept.seq`
   instead of `frame.seq`; `Describe` also remembers the commanded waist yaw per frame seq and
   aims relative to the yaw *at capture*, because the percept lands seconds after its frame.
   Check and headless sim outrun a real model: use the fake there, or `--realtime 1` in sim.
-- **Motion vs Routine**: a `Motion` (`motions/`) is a factory for segments with no bookends;
-  contract: no `"start"` goal, first segment sets its full entry pose, may end anywhere. A
-  `Routine` (`routines.py`) is one `SegmentPolicy` = `Takeover + m1 + Hold(pause) + m2 + ... +
-  Handback` (bookends in `motions/bookends.py`), labels prefixed with the motion name. Both
-  bookends go to `motions.poses.STAND`, the Menagerie `stand` keyframe arm pose (=
-  `config.STAND_Q`), so the sim takeover is a pure weight ramp with no visible motion.
+- **Routine**: one `SegmentPolicy` = `Takeover + s1 + Hold(pause) + s2 + ... + Handback`, labels
+  prefixed with the skill name. Both bookends go to `poses.STAND`, the Menagerie `stand` keyframe
+  arm pose (= `config.STAND_Q`), so the sim takeover is a pure weight ramp with no visible motion.
   Composition is at the segment level on purpose: chaining Policy objects would restart each one
   from the env's *measured* q, which on the robot lags the command by gravity sag and produces a
-  boundary jump the check stage cannot see. If a non-segment policy ever needs chaining, seed it
-  from the previous policy's last commanded q, never measured q.
+  boundary jump no gate can see. If a non-segment policy ever needs chaining, seed it from the
+  previous policy's last commanded q, never measured q.
 - **Env** (`envs/base.py`): `setup/reset/step/teardown/report`, plus a classmethod `add_args`
   that registers env-specific CLI flags on the shared parser. Raise `EnvAbort` to stop early
   while still getting `report()` called. Registries are plain dicts: `envs.ENVS`,
-  `motions.MOTIONS` (building blocks, chainable from the CLI) and `routines.ROUTINES` (named
-  compositions). `run.build_policy` resolves `--policy`: routine name first, else comma-separated
-  motions. A new motion must be added to `motions/__init__.py` to be runnable.
-- **Blend semantics are emulated everywhere**: `check` and `sim` both compute
-  `cmd = (1-w)*hold + w*target` so what you see in sim matches what arm_sdk does on the robot.
-  `hold` is the Menagerie `stand` keyframe (`config.STAND_Q`) in check/sim and the live pose on
-  the robot.
+  `skills.SKILLS` (building blocks, chainable from the CLI), `routines.ROUTINES` (named
+  compositions), `routines.POLICIES` and `agent.AGENTS`. `run.build_policy` resolves `--policy`:
+  routine, policy, then a comma-separated chain of skills. A new skill must be added to
+  `skills.SKILLS` to be runnable.
+- **The monitor** (`envs/monitor.py`) is the check that used to be its own env: per tick it
+  records the **measured** angle of every joint and the commanded target, and flags a measured
+  or commanded angle outside `JOINT_LO/HI ± --margin`, a blended-command speed over `--max-vel`,
+  a weight outside [0, 1] and a base velocity over `config.BASE_VEL_MAX`; it integrates the base
+  pose kinematically. `report()` prints the table (measured min/max, commanded min/max, peak
+  velocity, a `!` on any joint that left its bounds) and fails the run. Sim runs it strictly and
+  aborts after `--max-violations`; the robot runs it **report-only** over measured angles
+  (teardown already releases the arms, so stopping mid-run is its own risk). Measured angles are
+  the point: physics, contact or gravity can put a joint where no command asked.
+- **Blend semantics are emulated**: sim computes `cmd = (1-w)*hold + w*target` so what you see
+  matches what arm_sdk does on the robot. `hold` is the Menagerie `stand` keyframe
+  (`config.STAND_Q`) in sim and the live pose on the robot.
 - **Joint indexing** (`config.py`): DDS order of `LowCmd_.motor_cmd`, which is also the
   Menagerie `unitree_g1` actuator order. `tests/test_config.py` asserts the hardcoded limit table
   matches the model. Index 29 is the arm_sdk weight slot on the robot, not a joint.

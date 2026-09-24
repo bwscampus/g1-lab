@@ -1,20 +1,22 @@
-"""Run a routine in an environment.
+"""Run a policy in an environment.
 
-    python run.py --env check --policy tpose
-    python run.py --env check --policy tpose,sixseven   # ad hoc chain of motions
-    python run.py --env check --policy demo             # registered routine
-    mjpython run.py --env sim --policy demo             # macOS viewer
-    python run.py --env robot --policy demo --iface eth0 --mode standing
+    python   run.py --env sim --policy tpose --headless     # fast, windowless, fully checked
+    python   run.py --env sim --policy tpose,turn:45        # ad hoc chain of skills
+    mjpython run.py --env sim --policy demo                 # macOS viewer
+    python   run.py --env robot --policy demo --iface eth0 --mode standing
 
-``--policy`` is a registered routine or policy name, or a comma-separated list
-of motions. Policies that use the camera (``look``, ``wave_on_red``) get frames
-from the env: rendered in sim, replayed or random in check (``--camera-dir``,
-``--camera-noise``), the head camera on the robot (``--camera-ip``). Policies
-that use vision (``describe``, ``wave_on_person``) also get a scene description
-from ``--vision``: the offline fake by default, a Hugging Face model with
-``--vision api`` and ``$HF_TOKEN``. ``goto_red`` walks to its target: sim slides
-the base, the robot needs ``--walk``.
-``--env`` defaults to $G1_ENV, then "check", so ``G1_ENV=sim`` also works.
+``--policy`` is a registered routine, policy or agent name, or a comma-separated
+chain of skills. Every sim run is checked: the measured joint angles, the
+commanded targets, the command speed, the weight and any base velocity (see
+``envs/monitor.py``), so ``--headless`` is the pre-flight for a new policy.
+
+Policies that use the camera (``look``, ``wave_on_red``) get frames from the
+env: rendered in sim, or replayed / random with ``--camera-dir`` /
+``--camera-noise``, the head camera on the robot (``--camera-ip``). Policies
+that use vision (``describe``, ``search``) also get a scene description from the
+Hugging Face model (``$HF_TOKEN``). ``goto_red`` and the walking skills drive the
+base: sim slides it, the robot needs ``--walk``.
+``--env`` defaults to $G1_ENV, then "sim".
 """
 from __future__ import annotations
 
@@ -23,7 +25,6 @@ import os
 import sys
 
 from envs import ENVS, Env, EnvAbort
-from motions import MOTIONS
 from perception import VISION_MODES, build_perceiver
 from policy import Policy
 from routines import POLICIES, ROUTINES, build_policy
@@ -34,15 +35,15 @@ from agent import AGENTS
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="g1", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--env", "-e", choices=sorted(ENVS), default=os.environ.get("G1_ENV", "check"),
-                   help="where to run the policy (default: $G1_ENV or 'check')")
+    p.add_argument("--env", "-e", choices=sorted(ENVS), default=os.environ.get("G1_ENV", "sim"),
+                   help="where to run the policy (default: $G1_ENV or 'sim')")
     p.add_argument("--policy", "-p", default=os.environ.get("G1_POLICY"),
-                   help="routine name, or comma-separated motions e.g. tpose,sixseven "
+                   help="routine, policy or agent name, or comma-separated skills e.g. tpose,turn:45 "
                         "(default: $G1_POLICY)")
     p.add_argument("--pause", type=float, default=1.0,
-                   help="seconds to hold between chained motions (default 1.0)")
+                   help="seconds to hold between chained skills (default 1.0)")
     p.add_argument("--list", action="store_true",
-                   help="list envs, routines, policies and motions, then exit")
+                   help="list envs, routines, policies, agents and skills, then exit")
     p.add_argument("--camera", choices=("auto", "on", "off"), default="auto",
                    help="open the env's camera: auto = only if the policy uses it (default)")
     v = p.add_argument_group("vision")
@@ -126,10 +127,9 @@ def main(argv: list[str] | None = None) -> int:
         print("envs:     " + ", ".join(sorted(ENVS)))
         print("routines: " + ", ".join(sorted(ROUTINES)))
         print("policies: " + ", ".join(sorted(POLICIES)))
-        print("motions:  " + ", ".join(sorted(MOTIONS)))
         print("agents:   " + ", ".join(sorted(AGENTS)) + "   (search --goal ..., replay --episode DIR)")
-        print("skills:   (chain them like motions, e.g. --policy walk_forward:0.5,turn:45,arms_up)")
-        print(describe_menu(list(SKILLS.values())))
+        print("skills:   (chain them, e.g. --policy walk_forward:0.5,turn:45,tpose)")
+        print(describe_menu([s for s in SKILLS.values() if not s.internal]))
         return 0
     if args.policy is None:
         parser.error("--policy is required (or set $G1_POLICY)")
@@ -143,15 +143,14 @@ def main(argv: list[str] | None = None) -> int:
     except KeyError as e:
         parser.error(f"unknown policy {e}; routines: {', '.join(sorted(ROUTINES))}; "
                      f"agents: {', '.join(sorted(AGENTS))}; policies: {', '.join(sorted(POLICIES))}; "
-                     f"motions: {', '.join(sorted(MOTIONS))}; skills: {', '.join(SKILLS)}")
+                     f"skills: {', '.join(s for s in SKILLS if not SKILLS[s].internal)}")
     except (ValueError, RuntimeError) as e:
         parser.error(str(e))
     try:
         perceiver = build_perceiver(args, policy)
     except RuntimeError as e:
         parser.error(str(e))
-    if args.vision == "api" and (args.env == "check"
-                                 or (args.env == "sim" and args.headless and args.realtime is None)):
+    if args.vision == "api" and args.env == "sim" and args.headless and args.realtime is None:
         print("warning: this run is not paced to realtime, so vision-model results will describe "
               "frames from well before they arrive; use --vision fake here, or --realtime 1 in sim")
     segments = getattr(policy, "segments", ())

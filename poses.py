@@ -1,4 +1,4 @@
-"""Named upper-body poses shared by motions. Keys are DDS joint indices."""
+"""Named upper-body poses shared by skills. Keys are DDS joint indices."""
 
 from config import STAND_Q, UPPER_BODY
 

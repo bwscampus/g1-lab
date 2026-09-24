@@ -1,70 +1,60 @@
 """Routines and other runnable policies.
 
 A Routine is one SegmentPolicy whose segments are
-    Takeover + motion_1 + pause + motion_2 + ... + Handback
-so the arm_sdk bookends happen exactly once and every motion boundary is part
-of the same continuous command stream (the check env's velocity gate therefore
-covers every transition). Composition is deliberately done at the segment level
-rather than by chaining Policy objects: chaining would restart each policy from
-the env's *measured* state, which on the robot lags the command by gravity sag
-and would produce a target jump at each boundary that the check stage cannot see.
+    Takeover + skill_1 + pause + skill_2 + ... + Handback
+so the arm_sdk bookends happen exactly once and every skill boundary is part of
+the same continuous command stream (the monitor's velocity gate therefore covers
+every transition). Composition is deliberately done at the segment level rather
+than by chaining Policy objects: chaining would restart each policy from the
+env's *measured* state, which on the robot lags the command by gravity sag and
+would produce a target jump at each boundary that no gate can see.
 
 A Selector is the camera-triggered counterpart: it idles at STAND until a
 predicate on the observation (latest frame and/or vision-model percept) fires,
-then runs one registered motion. It does chain sub-policies, so it seeds each
-one from its own last *commanded* q.
+then runs one registered skill. It does chain sub-policies, so it seeds each one
+from its own last *commanded* q.
 
 Named routines live in ROUTINES, other named policies (camera examples) in
-POLICIES; ad hoc routines come from ``--policy tpose,sixseven``.
+POLICIES; ad hoc ones come from ``--policy tpose,turn:45,sixseven``.
 """
 from __future__ import annotations
 
-from dataclasses import replace
 from typing import Callable, Optional, Sequence
 
 from camera import Frame
-from motions import MOTIONS, Handback, Hold, SixSeven, Takeover, TPose
-from policy import Action, Motion, Obs, Policy, Segment, SegmentPolicy
+from policy import Action, Obs, Policy, Segment, SegmentPolicy
 from behaviors import Describe, Face, GoTo, Look
 from perception import VisionQuery
-from skills import SKILLS, parse_skill
+from skills import (SKILLS, Handback, Hold, SixSeven, Skill, Takeover, TPose, parse_skill,
+                    skill_segments)
 from targets import Doorway, Labeled, RedDot, seen
 
 
-def motion_segments(part: Motion) -> list[Segment]:
-    """A motion's segments with labels prefixed by its name. Only the Takeover
-    bookend may use the reserved "start" goal."""
-    out = []
-    for seg in part.segments():
-        if seg.goal == "start" and not isinstance(part, Takeover):
-            raise ValueError(f"motion {part.name!r} uses the reserved 'start' goal")
-        out.append(replace(seg, label=f"{part.name}: {seg.label}" if seg.label else ""))
-    return out
-
-
 class Routine(SegmentPolicy):
-    def __init__(self, *motions: Motion, pause: float = 1.0, name: str | None = None) -> None:
-        if not motions:
-            raise ValueError("Routine needs at least one motion")
-        parts: list[Motion] = [Takeover()]
-        for i, m in enumerate(motions):
+    """Bookends once, then the given skills in order with a pause between."""
+
+    def __init__(self, *skills: Skill, pause: float = 1.0, name: str | None = None) -> None:
+        if not skills:
+            raise ValueError("Routine needs at least one skill")
+        parts: list[Skill] = [Takeover()]
+        for i, s in enumerate(skills):
             if i > 0 and pause > 0:
-                parts.append(Hold(pause))
-            parts.append(m)
+                parts.append(Hold(seconds=pause))
+            parts.append(s)
         parts.append(Handback())
 
         segments: list[Segment] = []
         joints: set[int] = set()
         for part in parts:
             joints.update(part.joints)
-            segments.extend(motion_segments(part))
+            segments.extend(skill_segments(part))
 
-        self.motions = tuple(motions)
+        self.skills = tuple(skills)
         super().__init__(segments, joints=sorted(joints),
-                         name=name or "+".join(m.name for m in motions))
+                         name=name or "+".join(s.name for s in skills))
 
 
-Rule = tuple[Callable[[Obs], bool], "str | Motion"]
+Rule = tuple[Callable[[Obs], bool], "str | Skill"]
 
 
 class Selector(Policy):
@@ -86,7 +76,7 @@ class Selector(Policy):
     def __init__(self, rules: Sequence[Rule], *, timeout: float = 30.0, once: bool = True,
                  cooldown: float = 1.0, uses_vision: bool = False, vision_refresh: float = 2.0,
                  name: str | None = None) -> None:
-        self.rules = [(pred, MOTIONS[m]() if isinstance(m, str) else m) for pred, m in rules]
+        self.rules = [(pred, SKILLS[m]() if isinstance(m, str) else m) for pred, m in rules]
         self.timeout = timeout
         self.once = once
         self.cooldown = cooldown
@@ -107,14 +97,14 @@ class Selector(Policy):
         self._sub: SegmentPolicy | None = None
         self._enter("takeover", 0.0, Takeover())
 
-    def _enter(self, state: str, t: float, part: Motion | None = None) -> None:
+    def _enter(self, state: str, t: float, part: Skill | None = None) -> None:
         self._state, self._t0 = state, t
         if part is None:
             self._sub = None
             return
-        segs = motion_segments(part)
+        segs = skill_segments(part)
         if state == "motion" and not self.once and self.cooldown > 0:
-            segs.extend(motion_segments(Hold(self.cooldown)))
+            segs.extend(skill_segments(Hold(seconds=self.cooldown)))
         self._sub = SegmentPolicy(segs, joints=self.joints, name=self.name)
         # Seed from the last *commanded* pose, never the measured one.
         self._sub.reset(Obs(self._cmd))
@@ -169,8 +159,8 @@ POLICIES: dict[str, Callable[[], Policy]] = {
 
 def build_policy(spec: str, pause: float = 1.0) -> Policy:
     """A registered routine or policy by name, or a comma-separated chain of
-    motions and skills (``walk_forward:0.5,turn:45,arms_up``), run as one
-    Routine from the start pose with the bookends once."""
+    skills (``walk_forward:0.5,turn:45,tpose``), run as one Routine from the
+    start pose with the bookends once."""
     if spec in ROUTINES:
         return ROUTINES[spec]()
     if spec in POLICIES:
@@ -178,19 +168,10 @@ def build_policy(spec: str, pause: float = 1.0) -> Policy:
     items = [n.strip() for n in spec.split(",") if n.strip()]
     if not items:
         raise KeyError(spec)
-    motions = []
+    parts = []
     for item in items:
-        name = item.split(":")[0]
-        if name in MOTIONS and ":" not in item:
-            motions.append(MOTIONS[name]())
-        elif name in SKILLS:
-            skill, args = parse_skill(item)
-            if skill.terminal:
-                raise ValueError(f"{name} is not a motion; it only ends an agent run")
-            built = skill.build(**args)
-            if not isinstance(built, Motion):
-                raise ValueError(f"{name} is a closed-loop skill and cannot be chained")
-            motions.append(built)
-        else:
-            raise KeyError(name)
-    return Routine(*motions, pause=pause)
+        skill = parse_skill(item)
+        if skill.terminal or skill.internal:
+            raise ValueError(f"{skill.name} cannot be chained; it is not a movement")
+        parts.append(skill)
+    return Routine(*parts, pause=pause)

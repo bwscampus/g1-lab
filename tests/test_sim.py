@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from envs import SimEnv
-from motions import TPose
+from skills import TPose
 from routines import Routine
 from run import build_parser, run
 

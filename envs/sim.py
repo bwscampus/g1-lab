@@ -1,4 +1,11 @@
-"""Stage 2: MuJoCo replay in the interactive viewer.
+"""MuJoCo: the stage that both runs a policy and checks it.
+
+Every run is watched by a ``JointMonitor`` (``envs/monitor.py``): the measured
+angle of every joint must stay inside its limits, as must every commanded
+target, the blended command's speed, the arm_sdk weight and any base velocity.
+``report()`` prints the table and fails the run on any violation, so
+``--env sim --headless`` is the fast pre-flight for a new policy and the viewer
+run is the same check with a window.
 
 Loads the Menagerie ``unitree_g1`` scene (position actuators, kp=500), starts
 at the ``stand`` keyframe and drives the actuators with the policy's targets,
@@ -31,6 +38,7 @@ Pass ``--headless`` to run the physics without a window (e.g. in CI).
 from __future__ import annotations
 
 import argparse
+import functools
 import math
 import os
 import sys
@@ -39,11 +47,12 @@ from pathlib import Path
 
 import numpy as np
 
-from camera import Camera
+from camera import Camera, DirCamera, NoiseCamera
 from config import (CONTROL_DT, HEAD_CAMERA_FOVY, HEAD_CAMERA_PITCH, HEAD_CAMERA_POS,
                     HEAD_CAMERA_SIZE, NUM_JOINTS)
 from policy import Action
 from envs.base import Env, EnvAbort
+from envs.monitor import JointMonitor, TooManyViolations
 
 _LOCAL_MENAGERIE = Path.home() / "Robotics" / "mujoco_menagerie" / "unitree_g1" / "scene.xml"
 HEAD_CAMERA = "head"
@@ -78,6 +87,13 @@ def _size(text: str) -> tuple[int, int]:
 def load_model(target: tuple[float, float, float] | None = None,
                obstacle: tuple[float, float, float] | None = None, *,
                scene: str = "none", objects=(), camera_size: tuple[int, int] | None = None):
+    """Compiled models are cached: a test suite that builds dozens of envs pays
+    the MJCF compile once per distinct scene. Nothing mutates the model."""
+    return _load_model(target, obstacle, scene, tuple(tuple(o) for o in objects), camera_size)
+
+
+@functools.lru_cache(maxsize=8)
+def _load_model(target, obstacle, scene, objects, camera_size):
     """Compile the G1 scene with the head camera added on torso_link (pose from
     the URDF's d435_joint; MuJoCo cameras look along -z with y up, hence the
     xyaxes) and, optionally, a red sphere at ``target`` for camera policies and
@@ -143,6 +159,19 @@ class SimEnv(Env):
                        help="objects to place in the room, e.g. mug@1.5,1.2 pencil@1.0,0.3 (z: on the floor)")
         g.add_argument("--camera-size", type=_size, default=None, metavar="HxW",
                        help="head camera render size (default 480x640; the robot streams 720x1280)")
+        g.add_argument("--camera-dir", type=Path, default=None, metavar="DIR",
+                       help="feed the image files in DIR (sorted by name) instead of rendering")
+        g.add_argument("--camera-noise", action="store_true",
+                       help="feed random frames instead of rendering, to fuzz a camera policy")
+        g.add_argument("--camera-fps", type=float, default=15.0,
+                       help="frame rate of --camera-dir / --camera-noise (default 15)")
+        c = parser.add_argument_group("checks (sim)")
+        c.add_argument("--margin", type=float, default=0.05,
+                       help="safety margin inside the joint limits, rad (default 0.05)")
+        c.add_argument("--max-vel", type=float, default=4.0,
+                       help="max allowed joint speed of the effective command, rad/s (default 4.0)")
+        c.add_argument("--max-violations", type=int, default=20,
+                       help="stop the run after this many violations (default 20)")
 
     def setup(self) -> None:
         import mujoco
@@ -170,11 +199,21 @@ class SimEnv(Env):
                                  "    mjpython run.py --env sim ...\n"
                                  "or pass --headless.")
             self.viewer = mujoco.viewer.launch_passive(self.model, self.data)
+        self.monitor = JointMonitor(margin=self.args.margin, max_vel=self.args.max_vel,
+                                    max_violations=self.args.max_violations)
         self.camera = Camera()
+        self.replay = None
         self.renderer = None
         self._tick = 0
         if self.use_camera:
-            self.renderer = mujoco.Renderer(self.model, *self.camera_size)
+            if self.args.camera_dir is not None:
+                self.replay = DirCamera(self.args.camera_dir, fps=self.args.camera_fps)
+            elif self.args.camera_noise:
+                self.replay = NoiseCamera(fps=self.args.camera_fps)
+            if self.replay is not None:
+                self.replay.start()          # a recorded or fuzzed feed replaces the render
+            else:
+                self.renderer = mujoco.Renderer(self.model, *self.camera_size)
 
     def teardown(self) -> None:
         if self.viewer is not None:
@@ -196,6 +235,7 @@ class SimEnv(Env):
         self._base_pose = np.zeros(3)      # x, y, yaw of the slid base
         self._base_moved = False
         self.hold = d.qpos[self.qpos_idx].copy()
+        self.monitor.reset(hold=self.hold)
         d.ctrl[:] = self.hold
         self.mujoco.mj_forward(m, d)
         if self.viewer is not None:
@@ -241,6 +281,8 @@ class SimEnv(Env):
         self.camera.publish(self.renderer.render(), self.data.time)
 
     def frame(self):
+        if self.replay is not None:
+            return self.replay.poll(self.clock())
         return self.camera.latest()
 
     def clock(self) -> float:
@@ -280,14 +322,62 @@ class SimEnv(Env):
             lag = self._wall - time.time()
             if lag > 0:
                 time.sleep(lag)
-        return self._q()
+        q = self._q()
+        try:
+            self.monitor.observe(q, action)
+        except TooManyViolations as e:
+            raise EnvAbort(str(e)) from None
+        return q
+
+    # the monitor is the run's verdict; forward what callers and tests read
+    @property
+    def violations(self):
+        return self.monitor.violations
+
+    @property
+    def ticks(self) -> int:
+        return self.monitor.ticks
+
+    @property
+    def q_min(self):
+        return self.monitor.q_min
+
+    @property
+    def q_max(self):
+        return self.monitor.q_max
+
+    @property
+    def cmd_min(self):
+        return self.monitor.cmd_min
+
+    @property
+    def cmd_max(self):
+        return self.monitor.cmd_max
+
+    @property
+    def peak_vel(self):
+        return self.monitor.peak_vel
+
+    @property
+    def base_path(self) -> float:
+        return self.monitor.base_path
+
+    @property
+    def base_ticks(self) -> int:
+        return self.monitor.base_ticks
+
+    @property
+    def base_peak(self):
+        return self.monitor.base_peak
 
     def report(self) -> bool:
         q = self._q()
         x, y, yaw = self._base_pose
-        print(f"sim: finished at sim time {self.data.time:.2f} s; "
+        frames = self.camera.count if self.renderer is not None else (
+            self.replay.count if self.replay is not None else 0)
+        print(f"\nsim: finished at sim time {self.data.time:.2f} s; "
               f"pelvis z = {self.data.qpos[2]:.3f} m"
-              + (f"; {self.camera.count} camera frames" if self.renderer is not None else "")
+              + (f"; {frames} camera frames" if frames else "")
               + (f"; base slid to ({x:+.2f}, {y:+.2f}) m yaw {math.degrees(yaw):+.0f} deg"
                  if self._base_moved else ""))
-        return bool(np.all(np.isfinite(q)))
+        return self.monitor.report("sim") and bool(np.all(np.isfinite(q)))

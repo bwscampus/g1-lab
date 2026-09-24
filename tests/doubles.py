@@ -87,3 +87,28 @@ class RedBallDecider(Decider):
                                 "args": args, "reason": "rule"}, ctx, raw="rule")
         self.calls.append(d)
         return d
+
+
+def sim_env(*extra, cls=None):
+    """A headless sim env: the fast, fully checked stage the tests run in."""
+    from envs import SimEnv
+    from run import build_parser
+    args = build_parser().parse_args(["--env", "sim", "--policy", "x", "--headless", *extra])
+    return (cls or SimEnv)(args)
+
+
+def scripted_sim(camera, *extra):
+    """A headless sim whose camera feed is scripted, recording every action."""
+    from envs import SimEnv
+
+    class ScriptedSim(SimEnv):
+        def setup(self):
+            super().setup()
+            self.replay = camera           # replaces the rendered feed (see SimEnv.frame)
+            self.actions = []
+
+        def step(self, action):
+            self.actions.append(action)
+            return super().step(action)
+
+    return sim_env(*extra, cls=ScriptedSim)

@@ -7,7 +7,7 @@ import pytest
 from behaviors import Face, GoTo, Look
 from camera import ClockedCamera, Frame
 from config import BASE_VEL_MAX, CONTROL_DT, STAND_Q, UPPER_BODY, joint_index
-from envs import CheckEnv, RobotEnv
+from envs import RobotEnv
 from envs.robot import BaseCommander
 from perception import Detected, Percept
 from policy import Action, Obs, ReactivePolicy
@@ -34,8 +34,7 @@ def red_square(cx, cy, side, h=48, w=64):
     return img
 
 
-def check_env(*extra):
-    return CheckEnv(build_parser().parse_args(["--env", "check", "--policy", "x", *extra]))
+from tests.doubles import scripted_sim, sim_env as check_env
 
 
 # -- Sighting / Target --------------------------------------------------------------
@@ -144,24 +143,12 @@ class Scripted(ClockedCamera):
         return self.images[min(i, len(self.images) - 1)]
 
 
-class ScriptedCheck(CheckEnv):
-    def __init__(self, args, cam):
-        super().__init__(args)
-        self._cam = cam
-
-    def setup(self):
-        super().setup()
-        self.camera = self._cam
-
-    def step(self, action):
-        self.bases.append(action.base)
-        return super().step(action)
-
-
 def scripted_env(images, fps=10.0):
-    env = ScriptedCheck(build_parser().parse_args(["--env", "check", "--policy", "x"]), Scripted(images, fps))
-    env.bases = []
-    return env
+    return scripted_sim(Scripted(images, fps))
+
+
+def bases(env):
+    return [a.base for a in env.actions]
 
 
 def test_goto_reaches_and_stops():
@@ -171,13 +158,14 @@ def test_goto_reaches_and_stops():
     p = GoTo(RedDot(), timeout=20.0, ramp=0.2, to_stand=0.2)
     assert run(p, env) is True
     assert env.violations == [] and p.reached
-    cmds = [b for b in env.bases if b is not None]
+    cmds = [b for b in bases(env) if b is not None]
     assert cmds and all(abs(b[i]) <= BASE_VEL_MAX[i] + 1e-9 for b in cmds for i in range(3))
     assert any(b[0] == 0 and b[2] < 0 for b in cmds)   # turned right first, without walking
     assert any(b[0] > 0.15 for b in cmds)              # then walked
     assert env.base_path > 0 and env.base_pose()[2] < 0
-    last = max(i for i, b in enumerate(env.bases) if b is not None)
-    assert all(b is None for b in env.bases[last + 1:]) and len(env.bases) - last > 0.4 / CONTROL_DT
+    last = max(i for i, b in enumerate(bases(env)) if b is not None)
+    assert all(b is None for b in bases(env)[last + 1:])          # base stopped before handback
+    assert len(bases(env)) - last > 0.4 / CONTROL_DT
     assert env.ticks < (20.0 + 0.8) / CONTROL_DT          # finished early
 
 
@@ -187,7 +175,7 @@ def test_goto_holds_when_lost_then_times_out():
     p = GoTo(RedDot(), timeout=4.0, ramp=0.2, to_stand=0.2, lost_after=0.5)
     assert run(p, env) is True
     assert env.violations == [] and not p.reached and env.base_path > 0
-    drive = [b for b in env.bases if b is not None]
+    drive = [b for b in bases(env) if b is not None]
     assert drive[-1] == (0.0, 0.0, 0.0)                    # decayed to a stop before timeout
     assert env.ticks == round((4.0 + 0.8) / CONTROL_DT)
 
@@ -214,7 +202,7 @@ def test_check_flags_base_over_limit(capsys):
     assert kinds == {"base_vx"}
     out = capsys.readouterr().out
     assert "base:" in out
-    lines = [l for l in out.splitlines() if "base_vx" in l]
+    lines = [l for l in out.splitlines() if "base_vx" in l and "t=" in l]
     assert lines and all(" -  " in l for l in lines)
 
 

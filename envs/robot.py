@@ -48,6 +48,7 @@ from camera import WebRTCCamera
 from config import ARM_SDK_WEIGHT_IDX, BASE_VEL_MAX, CONTROL_DT, NUM_JOINTS, UPPER_BODY
 from policy import Action
 from envs.base import Env
+from envs.monitor import JointMonitor
 
 
 FSM_LOCKED_STAND = 4
@@ -196,6 +197,7 @@ class BaseCommander:
 
 class RobotEnv(Env):
     name = "robot"
+    monitor = None        # created in setup(); report-only
 
     @classmethod
     def add_args(cls, parser: argparse.ArgumentParser) -> None:
@@ -256,6 +258,9 @@ class RobotEnv(Env):
             print(f"Taking over arms in {s}...")
             time.sleep(1.0)
         self.arm = ArmSdk()
+        # report-only: flag any joint that left its bounds, but never stop a live run
+        self.monitor = JointMonitor(strict=False, gate_targets=False, gate_velocity=False,
+                                    gate_base=False)
         self.base = None
         if self.args.walk:
             print("WALKING ENABLED: the policy may drive the base (Move, <= "
@@ -337,9 +342,15 @@ class RobotEnv(Env):
             time.sleep(lag)
         elif lag < -CONTROL_DT:
             self.overruns += 1          # the policy step took longer than a tick
-        return np.array([m.q for m in self.arm.state.motor_state[:NUM_JOINTS]])
+        q = np.array([m.q for m in self.arm.state.motor_state[:NUM_JOINTS]])
+        if self.monitor is not None:
+            self.monitor.observe(q)
+        return q
 
     def report(self) -> bool:
+        monitor = getattr(self, "monitor", None)
+        if monitor is not None and monitor.ticks:
+            monitor.report("robot")
         base = getattr(self, "base", None)
         if base is not None:
             print(base.summary())

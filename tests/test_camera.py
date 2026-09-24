@@ -5,9 +5,8 @@ import pytest
 
 from camera import Camera, DirCamera, Frame, NoiseCamera
 from config import CONTROL_DT, STAND_Q, UPPER_BODY, joint_index
-from envs import CheckEnv
 from envs.base import Env
-from motions import SixSeven
+from skills import SixSeven
 from policy import Obs, ReactivePolicy
 from routines import Selector
 from run import build_parser, run
@@ -21,8 +20,7 @@ def solid(color, h=48, w=64):
     return np.full((h, w, 3), color, dtype=np.uint8)
 
 
-def check_env(*extra):
-    return CheckEnv(build_parser().parse_args(["--env", "check", "--policy", "x", *extra]))
+from tests.doubles import sim_env as check_env
 
 
 def write_frames(path, colors):
@@ -135,13 +133,14 @@ def test_look_passes_check_under_noise():
     assert run(p, env) is True
     assert env.violations == []
     assert env.ticks == round(p.duration / CONTROL_DT)
-    assert env.camera.count > 30                      # frames were actually fed
+    assert env.replay.count > 30                      # the fuzzed feed replaced the render
 
 
 def test_look_holds_without_frames():
     env = check_env()
     assert run(Look(duration=2.0), env) is True
-    assert env.q_min[WAIST_YAW] == env.q_max[WAIST_YAW] == 0.0
+    assert env.cmd_min[WAIST_YAW] == env.cmd_max[WAIST_YAW] == 0.0      # never commanded away
+    assert env.q_max[WAIST_YAW] == pytest.approx(0.0, abs=1e-3)         # and physics held it
 
 
 def test_selector_triggers_motion_then_hands_back(tmp_path):
@@ -157,8 +156,8 @@ def test_selector_triggers_motion_then_hands_back(tmp_path):
 
 def test_selector_times_out_without_trigger():
     env = check_env()
-    p = Selector([(lambda o: True, "tpose")], timeout=1.0)
+    p = Selector([(lambda o: False, "tpose")], timeout=1.0)   # sim always has frames; nothing matches
     assert run(p, env) is True
     assert env.ticks == round(11.0 / CONTROL_DT)
-    assert env.q_max[16] == pytest.approx(0.2)        # never left STAND
+    assert env.q_max[16] == pytest.approx(0.2, abs=0.01)   # never left STAND
     assert p.joints == sorted(UPPER_BODY)

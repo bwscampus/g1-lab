@@ -200,30 +200,6 @@ class SegmentPolicy(Policy):
         return None
 
 
-class Motion:
-    """A reusable building block: a factory for a tuple of Segments, with NO
-    takeover/handback bookends. Routines (see routines.py) concatenate motions
-    and add the bookends once.
-
-    Contract:
-      * never use the "start" goal (reserved for the Takeover bookend)
-      * the first segment should specify the motion's full entry pose so it is
-        robust to whatever motion preceded it
-      * a motion may end anywhere; the Handback bookend returns to STAND
-    Parametrise via __init__ (e.g. ``TPose(hold=5.0)``, ``SixSeven(reps=3)``).
-    """
-
-    name: str = "motion"
-    joints: list[int] = UPPER_BODY
-
-    def segments(self) -> tuple[Segment, ...]:
-        raise NotImplementedError
-
-    @property
-    def duration(self) -> float:
-        return sum(seg.duration for seg in self.segments())
-
-
 # --------------------------------------------------------------------------
 # Closed-loop helper: a policy driven by the camera, with the bookends and a
 # safety envelope built in.
@@ -233,11 +209,11 @@ class Motion:
 class ReactivePolicy(Policy):
     """A closed-loop policy: implement ``track(t, obs) -> Pose``.
 
-    The check env can only validate the frames it is shown, so a reactive
-    policy never trusts ``track``: every target is clipped to the joint limits
-    minus ``margin`` and rate-limited to ``max_vel`` rad/s from the *last
-    commanded* pose. The defaults sit inside check's ``--margin`` / ``--max-vel``
-    so whatever ``track`` returns becomes a command check accepts.
+    A run can only validate the frames it is shown, so a reactive policy never
+    trusts ``track``: every target is clipped to the joint limits minus
+    ``margin`` and rate-limited to ``max_vel`` rad/s from the *last commanded*
+    pose. The defaults sit inside the sim monitor's ``--margin`` / ``--max-vel``
+    so whatever ``track`` returns becomes a command the monitor accepts.
 
     ``track`` runs once per new input, keyed on ``fresh(obs)``: by default the
     frame's seq while the frame is younger than ``stale_after`` (override

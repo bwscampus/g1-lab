@@ -29,7 +29,7 @@ from typing import Any, Optional
 
 import numpy as np
 
-OUTCOMES = ("completed", "cutoff", "done", "timeout", "no_decision", "no_frame")
+OUTCOMES = ("completed", "running", "done", "timeout", "no_decision", "no_frame")
 
 
 @dataclass
@@ -166,7 +166,8 @@ def chain_of(steps: list[StepRecord]) -> str:
     """The ``--policy`` chain string that replays the skills that ran."""
     items = []
     for s in steps:
-        if s.outcome.get("status") not in ("completed", "cutoff"):
+        # one entry per skill: intermediate chunks are "running", only the last "completed"
+        if s.outcome.get("status") != "completed":
             continue
         args = ":".join(f"{k}={v}" for k, v in s.skill["args"].items())
         items.append(s.skill["name"] + (":" + args if args else ""))
