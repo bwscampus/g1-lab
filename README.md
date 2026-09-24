@@ -103,6 +103,8 @@ decider.py          the model I/O contract (observation JSON, system prompt, out
                     persistent HF session; python -m decider tries one frame
 episode.py          the run recorder: step records (JSON + lossless PNG) plus events.jsonl, transcript,
                     protocol, states, usage, status under runs/; python -m episode inspects a run
+demo.py             demonstrations on turn 0: a recorded run, a video (ffmpeg + model-picked keyframes)
+                    or a goal image, compiled into a portable demo.json; python -m demo prepare/show
 scene.py            the sim room: textures, furniture, real object meshes; python -m scene fetch
 perception.py       Percept / Perceiver: describe a frame with the vision model, on request only
 hf.py, worker.py    Hugging Face client (urllib, SSE); background worker with a latest-only result
@@ -344,6 +346,36 @@ On the robot: `--policy search --goal "find a pencil" --camera-ip <ip> --walk`
 (without `--walk` the walking skills are simply not offered to the model), and
 `--safety-note "a table 1 m behind the robot"` for what the camera cannot see.
 Try one decision on a saved frame first: `python -m decider runs/<dir>/step_0003.png --goal "..."`.
+
+**Demonstrations on turn 0** (GPT-Policy's context compiler). Before the first
+observation the model can be shown a previous episode, prefixed `HISTORICAL
+DEMONSTRATION` so it is read as reference, never as pending commands:
+
+```
+--demo runs/<earlier run>               # its step PNGs are the keyframes; video+action by default:
+                                        #   the skill picked on each frame, joint angles at 1 Hz, base pose
+--demo walk_to_mug.mp4                  # a phone video: ffmpeg samples 2 fps, the vision model picks
+                                        #   <=8 keyframes per 30 s window with a stage and a reason
+                                        #   (--demo-select uniform: evenly spaced, no model call)
+--demo out/demo.json                    # a bundle compiled once with python -m demo prepare
+--ref mug.png                           # a goal photo, labelled; repeatable
+--input-json task.json                  # {"instruction", "content": ["text", {"image": p, "label": l},
+                                        #                            {"video": p, "mode": "video"}]}
+```
+
+`--demo-mode video` sends images only; `video+action` (recorded runs and
+bundles only) adds the actions. `--demo-frames` caps the keyframes (12, max
+24); demo images are never pruned from the conversation. Video keyframes are
+cached by content hash under `runs/.cache/video`. The exact request is archived
+in the run as `input/input.json` with the images beside it, so a good run is the
+next run's demonstration:
+
+```
+python -m demo prepare --goal "find the mug" --demo runs/<good run> out/    # compile once
+python -m demo show out/demo.json                                          # what the model gets
+mjpython run.py --env sim --scene room --policy search --goal "find the mug" \
+        --sim-objects mug@1.5,1.2 --demo out/demo.json --realtime 1 --max-time 600
+```
 
 ### Vision-model cost and pacing
 

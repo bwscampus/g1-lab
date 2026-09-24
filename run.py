@@ -59,6 +59,21 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--vision-echo", action="store_true", help="print the model's streamed text live")
     a = p.add_argument_group("agent (--policy search / replay)")
     a.add_argument("--goal", default=None, help="what search should look for, e.g. \"find the mug\"")
+    a.add_argument("--input-json", default=None, metavar="FILE",
+                   help="a manifest: {\"instruction\", \"content\": [text, {\"image\"}, {\"video\", \"mode\"}]} "
+                        "(--goal may then be omitted)")
+    a.add_argument("--demo", default=None, metavar="PATH",
+                   help="a demonstration shown to the model on turn 0: a video file, a recorded runs/<dir>, "
+                        "or a demo.json bundle (python -m demo prepare)")
+    a.add_argument("--demo-mode", choices=("video", "video+action"), default=None,
+                   help="video: images only (default for video files); video+action: also the skills, joint "
+                        "angles and base poses (default for recorded runs)")
+    a.add_argument("--demo-select", choices=("auto", "model", "uniform"), default="auto",
+                   help="how keyframes are picked from a video file: the vision model (default with $HF_TOKEN) "
+                        "or evenly spaced")
+    a.add_argument("--demo-frames", type=int, default=12, help="keyframes to keep per demonstration (default 12, max 24)")
+    a.add_argument("--ref", action="append", default=None, metavar="IMAGE",
+                   help="a reference image (a photo of the goal) shown on turn 0; repeatable")
     a.add_argument("--episode", default=None, metavar="DIR", help="recorded run to replay (--policy replay)")
     a.add_argument("--max-decisions", type=int, default=30,
                    help="model decisions per run, rejected replies included (default 30)")

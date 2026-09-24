@@ -319,15 +319,19 @@ class HFDecider(Decider):
             blocks.append(image_part(image, self.max_width))
         return {"role": "user", "content": blocks}, image_at
 
-    def _prune(self) -> None:
+    def _prune(self, incoming: int = 0) -> None:
+        """Keep the newest ``live_image_window`` observation images, counting
+        the ``incoming`` turn about to be sent (their refresh happens before a
+        turn, so what is sent never carries more than the window)."""
         if self.live_image_window is None:
             return
         live = [t for t in self._turns if t["image_at"] is not None]
-        for t in live[:max(0, len(live) - self.live_image_window)]:
+        for t in live[:max(0, len(live) + incoming - self.live_image_window)]:
             i = t["image_at"]
-            content = t["user"]["content"]
+            content = list(t["user"]["content"])
             del content[i - 1:i + 1]         # the "Camera image:" label and the image itself
             content.append({"type": "text", "text": "(camera image omitted from history)"})
+            t["user"] = {"role": "user", "content": content}    # a new message: what was sent stays as sent
             t["image_at"] = None
 
     def messages(self, turn: Optional[AgentTurn] = None) -> list[dict]:
@@ -354,13 +358,14 @@ class HFDecider(Decider):
     def decide(self, turn: AgentTurn) -> Decision:
         assert self.context is not None
         user, image_at = self._user_message(turn)
+        if not self.fresh_turns:
+            self._prune(incoming=1 if image_at is not None else 0)
         msgs = self.messages()
         msgs.append(user)
         text = self.client.complete(msgs, max_tokens=MAX_TOKENS, schema=self.context.output_schema)
         entry = {"user": user, "assistant": {"role": "assistant", "content": text}, "image_at": image_at}
         if not self.fresh_turns:
             self._turns.append(entry)
-            self._prune()
         return Decision.parse(text, turn, self.context)
 
     def _call_details(self) -> dict:

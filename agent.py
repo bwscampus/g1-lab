@@ -301,7 +301,8 @@ class Agent(Policy):
         self._observe_prep = time.perf_counter() - t0
         self._event("observation", {"step": self._env_step, "input_json": text, "state": self._state_payload(obs),
                                     "images": [{**m, "path": f"step_{self._step:04d}.png"} for m in images_meta],
-                                    **({"attempt": self._attempt} if self._attempt else {})})
+                                    **({"attempt": self._attempt} if self._attempt else {}),
+                                    **({"content": _content_records(self._turn.content)} if self._turn.content else {})})
         self._wall0 = time.monotonic()
         if not self.decider.request(self._turn):
             self._say("decider busy; will retry")
@@ -530,6 +531,11 @@ class Agent(Policy):
         return self.step(t, obs)
 
 
+def _content_records(parts) -> list:
+    from demo import content_records
+    return content_records(parts)
+
+
 # --------------------------------------------------------------------------
 # CLI builders
 # --------------------------------------------------------------------------
@@ -548,8 +554,13 @@ def ask_verdict() -> Optional[str]:
 
 
 def build_search(args, can_walk: bool) -> Agent:
-    if not getattr(args, "goal", None):
-        raise ValueError("search needs --goal, e.g. --goal \"find the mug\"")
+    from demo import DEFAULT_FRAMES, MAX_FRAMES, VideoPart, build_request, build_selector, prepare, save_input
+    if not getattr(args, "goal", None) and not getattr(args, "input_json", None):
+        raise ValueError("search needs --goal, e.g. --goal \"find the mug\" (or --input-json)")
+    request = build_request(getattr(args, "goal", None), manifest=getattr(args, "input_json", None),
+                            demo=getattr(args, "demo", None), mode=getattr(args, "demo_mode", None),
+                            refs=getattr(args, "ref", None) or [])
+    args.goal = request.instruction
     if getattr(args, "skills", None):
         use_catalog(args.skills)
     echo = (lambda s: print(s, end="", flush=True)) if getattr(args, "vision_echo", False) else None
@@ -565,11 +576,32 @@ def build_search(args, can_walk: bool) -> Agent:
                                  skills=[s.name for s in skills], allow_base=can_walk,
                                  extra={"max_decisions": args.max_decisions, "step_timeout": args.step_timeout,
                                         "live_image_window": decider.live_image_window,
-                                        "fresh_turns": decider.fresh_turns, "safety_notes": notes})
+                                        "fresh_turns": decider.fresh_turns, "safety_notes": notes,
+                                        "request": request.record()})
         print(f"recording to {recorder.dir}")
+    # demonstrations and reference images: compiled before any device opens, archived with the run
+    content = ()
+    if request.content:
+        import tempfile
+        frames = max(1, min(MAX_FRAMES, getattr(args, "demo_frames", DEFAULT_FRAMES)))
+        selector = None
+        if any(isinstance(p, VideoPart) for p in request.content):
+            selector = build_selector(getattr(args, "demo_select", "auto"), frames, getattr(args, "vision_model", None))
+        where = recorder.dir / "input" if recorder is not None else Path(tempfile.mkdtemp(prefix="g1-demo-"))
+        prepared, reports = prepare(request, where, selector=selector, max_frames=frames)
+        content = prepared.content
+        for r in reports:
+            print(f"demonstration {r['source']}: {r['keyframes']} keyframe(s), {r['mode']}; {r['summary'][:160]}")
+        if recorder is not None:
+            save_input(prepared, where)
+            recorder.event("input_manifest", {**prepared.record(), "reports": reports})
+            if selector is not None:
+                for call in getattr(selector, "calls", []):
+                    recorder.usage(call)
     verdict = None if getattr(args, "no_verdict", False) else ask_verdict
     return Agent(args.goal, decider, skills, recorder=recorder, max_decisions=args.max_decisions,
-                 step_timeout=args.step_timeout, can_walk=can_walk, safety_notes=notes, verdict=verdict)
+                 step_timeout=args.step_timeout, can_walk=can_walk, safety_notes=notes, verdict=verdict,
+                 content=content)
 
 
 def build_replay(args, can_walk: bool) -> Policy:

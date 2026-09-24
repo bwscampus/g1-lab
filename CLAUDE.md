@@ -40,6 +40,8 @@ python -m scene fetch                                                        # r
 HF_TOKEN=hf_... mjpython run.py --env sim --scene room --policy search --goal "find the mug" \
         --sim-objects mug@1.5,1.2 --camera-size 720x1280 --realtime 1 --max-time 600   # ask the model each decision
 python   run.py ... --policy search --max-decisions 20 --live-image-window 8 --skills my_catalog.json --no-verdict
+python   run.py ... --policy search --goal "find the mug" --demo runs/<earlier run>   # demonstration on turn 0
+python -m demo prepare --goal "find the mug" --demo walk_to_mug.mp4 out/ && python -m demo show out/demo.json
 python   run.py --env sim --policy replay --episode runs/<dir> --headless    # a saved run, no camera or model
 python -m episode runs/<dir>            # step table + the --policy chain that replays it
 HF_TOKEN=hf_... python -m decider runs/<dir>/step_0003.png --goal "find the mug"   # one real decision from a frame
@@ -162,6 +164,22 @@ env.report()
   `fresh_turns` is the stateless mode. It asks the router for `json_schema` output and steps
   down to `json_object`, then none, on a 400. **Fakes are test doubles only**
   (`tests/doubles.py`): `search` always uses the real model; no `--decider fake`.
+- **Demonstrations** (`demo.py`), their context compiler: a request is an instruction plus
+  content parts (`TextPart`, `ImagePart(path, label, detail)`, `VideoPart(path, label, detail,
+  mode)`) from `--demo` / `--ref` / `--input-json` (`load_manifest` enforces their rules).
+  `prepare` replaces every video part in place with text + images before the session starts:
+  a recorded run (`compile_run`: the step PNGs are the keyframes, thinned to `--demo-frames`
+  keeping first and last; `video+action` adds the decided skill, 1 Hz joint samples with `=`
+  for unchanged values from `states.jsonl`, and the base pose), a video file (`compile_video`:
+  ffprobe/ffmpeg via argument arrays, 2 fps candidates, ≤ 24 per 30 s window, `ModelSelector`
+  = one HF call per window with a `select_video_frames` schema + a review call across windows,
+  or `UniformSelector`; cached by content hash under `runs/.cache/video` with an atomic
+  publish), or a `demo.json` bundle (`write_bundle`/`load_bundle`, relative image paths). The
+  parts go at the head of the turn-0 user message (`AgentTurn.content`; `HISTORICAL` preamble +
+  a mode sentence, per keyframe a JSON label line and the image, a summary) and are never
+  pruned; `input/input.json` archives the exact request (`save_input`), the `input_manifest`
+  event and the turn-0 `observation` event record it. `video+action` on a bare video is an
+  error; ffmpeg is required only for video files.
 - **Records** (`episode.py`): `runs/<ts>_<env>_<goal>_<outcome>/` with `episode.json` +
   `step_NNNN.json` + `step_NNNN.png` (the frame losslessly; `load_episode` returns the exact
   RGB array, never JPEG) plus their run trace: `config.json`, `events.jsonl` (append-only,
