@@ -93,12 +93,16 @@ camera.py           Frame sources: WebRTCCamera (robot), DirCamera / NoiseCamera
 vision.py           pure detectors and image geometry: red_blob, bearing, elevation
 targets.py          Target / Sighting: what a policy looks for (RedDot, Labeled, Salient, Doorway stub)
 behaviors.py        Face(target) turns the waist toward it; GoTo(target) walks to it
-skills.py           Skill, the one building block: walk_forward, turn, look, hold, tpose, sixseven, done
-                    (+ the internal bookends takeover / handback); SKILLS registry
+skills.py           Skill, the one building block (segments() only); the catalog loader and its three
+                    model-facing renderings; SKILLS, menu(), parse_skill()
+configs/skills.json the skill catalog: name, class, flags, description, prompt, JSON-schema parameters
+                    (walk_forward, turn, look, hold, tpose, sixseven, check, done, give_up + bookends)
 poses.py            shared pose dicts: STAND (baseline), ARMS_UP, SIXSEVEN
-agent.py            the decision step as a Policy: search (ask the model) and replay (a saved run)
-decider.py          Context -> Decision via the vision model; python -m decider tries one frame
-episode.py          per-step records (JSON + lossless PNG) under runs/; python -m episode inspects them
+agent.py            the decision step as a Policy: search (ask the model, feed back, record) and replay
+decider.py          the model I/O contract (observation JSON, system prompt, output schema) and the
+                    persistent HF session; python -m decider tries one frame
+episode.py          the run recorder: step records (JSON + lossless PNG) plus events.jsonl, transcript,
+                    protocol, states, usage, status under runs/; python -m episode inspects a run
 scene.py            the sim room: textures, furniture, real object meshes; python -m scene fetch
 perception.py       Percept / Perceiver: describe a frame with the vision model, on request only
 hf.py, worker.py    Hugging Face client (urllib, SSE); background worker with a latest-only result
@@ -116,24 +120,18 @@ tests/              pytest; everything runs through headless sim
 ## Skills and routines
 
 A **skill** is the one building block — the same format for "lift the arm" and
-"walk forward". It has a name, a parameter schema (which is also the menu a
-vision model chooses from), and `segments()` returning pose segments; a walk is
-a segment holding a base velocity. Arguments are bound and validated at
-construction, defaults fill in, and the first segment should set the skill's
-full entry pose so it works after any other skill. It must not use the
-`"start"` goal (reserved for the takeover bookend).
+"walk forward". The class holds only the motion, `segments()` returning pose
+segments (a walk is a segment holding a base velocity); everything a model reads
+lives in the catalog, `configs/skills.json`: the name, the class, whether it is
+enabled / terminal / internal / needs the base, a one-line `description`, the
+longer `prompt`, and `parameters` as a JSON schema. Arguments are bound and
+validated at construction, defaults fill in, and the first segment should set
+the skill's full entry pose so it works after any other skill. It must not use
+the `"start"` goal (reserved for the takeover bookend).
 
 ```python
-from poses import STAND
-from policy import Segment
-from skills import Skill
-
+# skills.py (or any importable module)
 class Nod(Skill):
-    name = "nod"
-    description = "Dip the elbows twice."
-    params = {"type": "object", "required": [],
-              "properties": {"reps": {"type": "integer", "minimum": 1, "maximum": 5, "default": 2}}}
-
     def segments(self):
         out = [Segment(STAND, 2.0, label="to stand")]
         for _ in range(self.reps):
@@ -141,9 +139,22 @@ class Nod(Skill):
         return tuple(out)
 ```
 
-Add it to `skills.SKILLS` and it is runnable on its own (`--policy nod`), with
-arguments (`--policy nod:3` or `nod:reps=3`), chained (`--policy tpose,nod:3`),
-and offered to the model in `search`. A **routine** wraps skills with the
+```json
+{"name": "nod", "skill": "skills.Nod", "enabled": true, "needs_base": false,
+ "description": "Dip the elbows reps times.",
+ "prompt": "Dip both elbows reps times (1-5, default 2). A gesture toward a person; not a search move.",
+ "parameters": {"type": "object",
+                "properties": {"reps": {"type": "integer", "minimum": 1, "maximum": 5, "default": 2},
+                               "note": {"$schema": "note"}},
+                "required": ["note"], "additionalProperties": false}}
+```
+
+Add the entry to `configs/skills.json` and it is runnable on its own
+(`--policy nod`), with arguments (`--policy nod:3` or `nod:reps=3`), chained
+(`--policy tpose,nod:3`), and offered to the model in `search`. Every movement
+skill takes a `note` (the model's evidence and intent; required of the model,
+empty from code and the CLI). `--skills FILE` swaps the whole catalog — prompts
+and ranges — without touching code; the loader validates it. A **routine** wraps skills with the
 bookends exactly once: takeover, skill, pause, skill, ..., handback. The
 baseline both bookends go to is `STAND`, the Menagerie `stand` keyframe's
 relaxed hanging-arm pose, which is also what sim starts from. Name a
@@ -253,10 +264,31 @@ python   run.py --env robot --policy goto_red --iface <iface> --mode standing --
 
 ### Search: a decision loop over skills
 
-`search` is the top-level behaviour: a **step** reads the joint angles and a fresh
-camera frame, asks the vision model what to do next (scene, is the path clear,
-which skill), runs that skill to its end, and records everything. The robot
-stands still while the model thinks; the 50 Hz loop never waits.
+`search` is the top-level behaviour, GPT-Policy's closed loop on this executor:
+each **decision** reads a fresh camera frame and the measured joint state
+(standing still, once the joints have measurably settled), sends the model one
+JSON observation, runs the skill it picks to its end, waits for the joints to
+settle again, and feeds back what happened. The robot stands still while the
+model thinks; the 50 Hz loop never waits.
+
+The observation is one JSON object — `instruction`, `images` (name, size, age),
+`state` (measured `joint_pos` / `joint_vel` / `joint_torque`, waist yaw, the
+commanded and measured base pose), `extra` (`env_step`, `decisions_left`,
+`can_walk`) and, from the second decision on, `previous_result`: the last
+skill's `execution_feedback` (per-joint residual, target vs measured base pose,
+a measured settle report) or, when nothing ran, why (`tool_rejected: …`,
+`invalid_selection: …`). The reply is one skill selection, `{"name", "arguments"}`,
+validated against the catalog's schema; every movement skill carries a `note`
+(the evidence and the purpose), `done(summary, hindsight)` and
+`give_up(reason, hindsight)` end the run, and `check(skill, arguments)` dry-runs
+a skill through the joint monitor without moving. Errors are feedback, not
+retries: a rejected or invalid reply costs a decision and the model sees why on
+the next turn. The system prompt (conventions, the scene's hidden obstacles, the
+rules, the catalog as bullets and as JSON) is sent once; the conversation is the
+model's memory, and only the last `--live-image-window` (8) observations keep
+their image (`--fresh-turns` makes every decision a fresh chat). An overloaded
+model is retried with backoff, re-observing each time; a decision budget
+(`--max-decisions`, 30) ends the run as `budget_exhausted`.
 
 **Skills** are the one format for "walk forward" and "lift the arm" (see
 *Skills and routines* above). A skill may be longer than one step: the agent
@@ -282,12 +314,24 @@ Objects: `mug`, `marker`, `cracker_box`, `mustard` (YCB scans) and `pencil`
 (primitives), placed with `name@x,y` on the floor (the robot starts at the origin
 facing +x; the room spans x −2..4, y −3..3, doorway in the +x wall).
 
-**Every step is recorded** under `runs/<timestamp>_<env>_<goal>/`: `step_NNNN.json`
-(times, joint angles at start and end, the decision with the model's raw reply,
-the skill and its chunk number, the outcome, base pose) and `step_NNNN.png` — the
-camera frame stored losslessly, so `load_episode()` gives back the exact RGB
-matrix. A long skill produces one record per 3 s chunk (`running`, then
-`completed`). That is the dataset a learned policy trains on later.
+**Every step is recorded** under `runs/<timestamp>_<env>_<goal>_<outcome>/`:
+`step_NNNN.json` (times, joint angles at start and end, the decision with the
+model's raw reply, the skill and its chunk number, the outcome, base pose) and
+`step_NNNN.png` — the camera frame stored losslessly, so `load_episode()` gives
+back the exact RGB matrix. A long skill produces one record per 3 s chunk
+(`running`, then `completed`). That is the dataset a learned policy trains on
+later. Beside them, the run trace: `events.jsonl` (every observation with the
+exact `input_json`, decision, timing, result, error, retry, verdict),
+`transcript.json` (the conversation), `protocol.json` (the system prompt and
+schemas), `states.jsonl` (measured joints at 20 Hz), `usage.jsonl` / `usage.json`
+(tokens per model call), `config.json` and `status.json`.
+
+**The label is yours.** When the run ends the terminal asks
+`Task result [s success / f failed]`; `done` is the model's conclusion, not a
+success label. The directory is named by the outcome: `_success` / `_failed`
+from your answer, `_unreviewed` when you skip it (Ctrl-C/EOF, or `--no-verdict`),
+`_interrupted` / `_failed` for runtime failures; `episode.json` keeps
+`model_outcome` and `human_outcome` apart.
 
 **Replay a saved run** — no camera, no model, from the start pose:
 
@@ -297,7 +341,8 @@ python run.py --env sim --policy replay --episode runs/<dir>   # or --headless, 
 ```
 
 On the robot: `--policy search --goal "find a pencil" --camera-ip <ip> --walk`
-(without `--walk` the walking skills are simply not offered to the model).
+(without `--walk` the walking skills are simply not offered to the model), and
+`--safety-note "a table 1 m behind the robot"` for what the camera cannot see.
 Try one decision on a saved frame first: `python -m decider runs/<dir>/step_0003.png --goal "..."`.
 
 ### Vision-model cost and pacing

@@ -51,6 +51,23 @@ DOOR_Y = (0.5, 1.4)          # gap in the +x wall
 DOOR_H = 2.0
 TABLE = (2.2, -1.5)           # centre; 1.2 x 0.7 m top at 0.75 m
 
+# Persistent physical facts a head camera cannot see: their "scene.safety_notes",
+# rendered as the hidden-obstacles block of the agent's system prompt.
+SAFETY_NOTES = {
+    "none": [],
+    "room": [
+        "The robot starts at the room's origin facing +x. Walls stand 2 m behind it (x = -2), 4 m "
+        "ahead (x = +4) and 3 m to each side (y = +/-3); a walk_forward cannot pass through them.",
+        "A table (1.2 x 0.7 m, 0.75 m high) with two chairs stands 2.2 m ahead and 1.5 m to the right "
+        "of the start (x = 2.2, y = -1.5); it is hidden when the robot faces away from it.",
+        "The doorway is in the far wall (x = +4) between y = 0.5 and 1.4 m; do not walk through it.",
+    ],
+}
+
+
+def safety_notes(scene: str | None) -> list[str]:
+    return list(SAFETY_NOTES.get(scene or "none", []))
+
 
 # --------------------------------------------------------------------------
 # Assets

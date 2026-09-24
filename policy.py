@@ -71,8 +71,11 @@ class Obs:
                includes the model's latency (inf when there is no percept).
     perceiver: the vision model handle, or None. Percepts are produced only on
                request (non-blocking; the result lands in a later obs).
-    base_pose: the env's own (x, y, yaw) base estimate (check/sim integrate the
+    base_pose: the env's own (x, y, yaw) base estimate (sim integrates the
                commanded velocity; the robot has none yet).
+    qd, tau:   measured joint velocity (rad/s) and torque (N m), or None when
+               the env cannot measure them. Sim reads qvel / actuator_force,
+               the robot LowState dq / tau_est. Read them; never gate on them.
     """
 
     q: np.ndarray
@@ -82,6 +85,8 @@ class Obs:
     percept_age: float = math.inf           # age of the frame it describes (latency included)
     perceiver: Optional["Perceiver"] = None # ask for a fresh percept with .request(frame)
     base_pose: Optional[tuple[float, float, float]] = None   # env's (x, y, yaw) estimate, if any
+    qd: Optional[np.ndarray] = None          # measured joint velocity, if the env has it
+    tau: Optional[np.ndarray] = None         # measured joint torque, if the env has it
 
     def __post_init__(self) -> None:
         self.q = np.asarray(self.q, dtype=float)

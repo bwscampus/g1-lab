@@ -1,0 +1,209 @@
+{
+  "version": 1,
+  "selection_description": "One skill selection for a Unitree G1 humanoid with {n_joints} joints. The host runs the whole skill (arm_sdk joint targets; LocoClient velocity commands for walking skills), waits for the joints to settle, then supplies a fresh observation with the result.",
+  "schemas": {
+    "note": {
+      "type": "string",
+      "minLength": 1,
+      "description": "1-2 short sentences: the current visual evidence and the purpose of this action."
+    }
+  },
+  "skills": [
+    {
+      "name": "walk_forward",
+      "skill": "skills.WalkForward",
+      "enabled": true,
+      "needs_base": true,
+      "description": "Walk straight ahead by distance_m metres at 0.2 m/s, then stand still.",
+      "prompt": "Walk straight ahead by distance_m metres (0.1 to 3.0) at 0.2 m/s; a 3 m walk takes 15 s and is observed every 3 s but not re-decided. Only when the note states that the floor ahead is clear for that distance. The head camera looks 47 degrees down, so the floor 1-3 m ahead fills the lower half of the image. Walk when the goal is centred and far; turn first when it is off-centre.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "distance_m": {"type": "number", "minimum": 0.1, "maximum": 3.0, "description": "metres to walk"},
+          "note": {"$schema": "note"}
+        },
+        "required": ["distance_m", "note"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "turn",
+      "skill": "skills.Turn",
+      "enabled": true,
+      "needs_base": true,
+      "description": "Turn in place by angle_deg degrees at 0.4 rad/s: positive = LEFT (counter-clockwise), negative = RIGHT.",
+      "prompt": "Turn in place by angle_deg degrees (-180 to 180); positive turns LEFT, negative RIGHT. To face a visible goal, turn by its bearing (the image spans about 77 degrees horizontally). To search, turn LEFT in steps of 45-60 degrees and observe between turns; after a full circle without seeing the goal, walk 0.5 m into clear space and search again.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "angle_deg": {"type": "number", "minimum": -180.0, "maximum": 180.0, "description": "degrees, + left / - right"},
+          "note": {"$schema": "note"}
+        },
+        "required": ["angle_deg", "note"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "look",
+      "skill": "skills.Look",
+      "enabled": true,
+      "needs_base": false,
+      "description": "Turn only the waist (not the feet) by yaw_deg and hold it, so the next image looks sideways: positive = LEFT, negative = RIGHT. The next skill recentres the waist.",
+      "prompt": "Turn only the waist by yaw_deg degrees (-45 to 45), positive LEFT, and hold it so the next image looks sideways; the feet do not move and the next skill recentres the waist. Use it to glance around when turning is not offered, or to inspect something beside the robot.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "yaw_deg": {"type": "number", "minimum": -45.0, "maximum": 45.0, "description": "degrees, + left / - right"},
+          "note": {"$schema": "note"}
+        },
+        "required": ["yaw_deg", "note"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "hold",
+      "skill": "skills.Hold",
+      "enabled": true,
+      "needs_base": false,
+      "description": "Stand still for seconds, keeping the current pose and waist direction.",
+      "prompt": "Stand still for seconds (0.1 to 30, default 1) keeping the current pose. Use it to wait for a moving obstacle or a person to clear, or to observe again without moving.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "seconds": {"type": "number", "minimum": 0.1, "maximum": 30.0, "default": 1.0, "description": "how long to wait"},
+          "note": {"$schema": "note"}
+        },
+        "required": ["note"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "tpose",
+      "skill": "skills.TPose",
+      "enabled": true,
+      "needs_base": false,
+      "description": "Raise both arms straight out to the sides (a T-pose), hold, then lower them.",
+      "prompt": "Raise both arms straight out to the sides, hold for hold seconds, then lower them (rise seconds each way). A gesture, not a search move; needs clear space to both sides at shoulder height.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "hold": {"type": "number", "minimum": 0.5, "maximum": 30.0, "default": 5.0, "description": "seconds to hold the pose"},
+          "rise": {"type": "number", "minimum": 1.0, "maximum": 10.0, "default": 3.0, "description": "seconds to raise and lower"},
+          "note": {"$schema": "note"}
+        },
+        "required": ["note"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "sixseven",
+      "skill": "skills.SixSeven",
+      "enabled": true,
+      "needs_base": false,
+      "description": "A two-handed see-saw wave: palms up, forearms swing up and down in turn, then arms down.",
+      "prompt": "A two-handed see-saw wave with the palms up: reps swings per hand of swing_time seconds each, after settle seconds to reach the palms-up pose and hold seconds before and after. A gesture toward a person; not a search move.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "reps": {"type": "integer", "minimum": 1, "maximum": 10, "default": 3, "description": "swings per hand"},
+          "swing_time": {"type": "number", "minimum": 0.3, "maximum": 2.0, "default": 0.8, "description": "seconds per swing"},
+          "settle": {"type": "number", "minimum": 0.5, "maximum": 5.0, "default": 3.0, "description": "seconds to reach the palms-up pose"},
+          "hold": {"type": "number", "minimum": 0.1, "maximum": 5.0, "default": 1.0, "description": "seconds to hold before and after"},
+          "note": {"$schema": "note"}
+        },
+        "required": ["note"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "check",
+      "skill": "skills.Check",
+      "enabled": true,
+      "needs_base": false,
+      "description": "Dry-run a skill with the given arguments from the current commanded pose without moving: joint limits, command speed, base velocity limits, duration and the resulting base displacement. No physics or contact check.",
+      "prompt": "Check a skill and its arguments without moving: the host plans it from the current commanded pose and reports joint-limit, command-speed and base-velocity violations, its duration and the base displacement it would produce. It does not simulate contact or prove the path is clear; judge that from the image. Use it for an uncertain long walk or turn before committing.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {"$template": "skill_name"},
+          "arguments": {"type": "object", "description": "the arguments that skill would run with (its note may be omitted)"},
+          "note": {"$schema": "note"}
+        },
+        "required": ["skill", "arguments", "note"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "done",
+      "skill": "skills.Done",
+      "enabled": true,
+      "terminal": true,
+      "needs_base": false,
+      "description": "Request task completion only when fresh observations establish the outcome. This is the model's conclusion; a human assigns the final success/failure label after the run.",
+      "prompt": "End the task only when the current image establishes the goal: for a search, the goal object is clearly visible and near (large, or in the lower third of the image). done is not a success label; a human assigns that after the run. In summary, give the direct evidence and any remaining uncertainty; in hindsight, what would have made this run shorter or surer.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "summary": {"type": "string", "minLength": 1, "description": "direct current evidence of the requested outcome and any remaining uncertainty"},
+          "hindsight": {"type": "string", "description": "lessons from this attempt"}
+        },
+        "required": ["summary", "hindsight"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "give_up",
+      "skill": "skills.GiveUp",
+      "enabled": true,
+      "terminal": true,
+      "needs_base": false,
+      "description": "End the task when it cannot be completed.",
+      "prompt": "End when evidence shows the task cannot be completed safely within the decision budget. One failed action, blocked path or unseen goal does not establish impossibility: search from another spot first. In reason, list the strategies tried and the evidence that no reasonable safe continuation remains; hindsight records lessons from this attempt.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "reason": {"type": "string", "minLength": 1},
+          "hindsight": {"type": "string"}
+        },
+        "required": ["reason", "hindsight"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "takeover",
+      "skill": "skills.Takeover",
+      "enabled": true,
+      "internal": true,
+      "needs_base": false,
+      "description": "Bookend: ramp the arm_sdk weight 0 to 1 while holding the pose observed at reset, then go to STAND.",
+      "prompt": "internal",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "ramp": {"type": "number", "minimum": 0.0, "maximum": 10.0, "default": 2.0, "description": "weight ramp seconds"},
+          "to_stand": {"type": "number", "minimum": 0.0, "maximum": 10.0, "default": 3.0, "description": "seconds to reach STAND"}
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "handback",
+      "skill": "skills.Handback",
+      "enabled": true,
+      "internal": true,
+      "needs_base": false,
+      "description": "Bookend: go to STAND, then hold it while ramping the weight 1 to 0 so the onboard controller takes the arms back smoothly.",
+      "prompt": "internal",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "to_stand": {"type": "number", "minimum": 0.0, "maximum": 10.0, "default": 3.0, "description": "seconds to reach STAND"},
+          "ramp": {"type": "number", "minimum": 0.0, "maximum": 10.0, "default": 2.0, "description": "weight ramp seconds"}
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

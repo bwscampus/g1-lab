@@ -52,6 +52,14 @@ class Env:
         """The env's own (x, y, yaw) base estimate, or None."""
         return None
 
+    def joint_vel(self):
+        """Measured joint velocities (29,) rad/s, or None."""
+        return None
+
+    def joint_torque(self):
+        """Measured joint torques (29,) N m, or None."""
+        return None
+
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
 
@@ -100,4 +108,4 @@ class Env:
                 self.perceiver.offer(f)
             p = self.perceiver.latest()
         p_age = math.inf if p is None else max(0.0, now - p.frame_stamp)
-        return Obs(q, f, age, p, p_age, self.perceiver, self.base_pose())
+        return Obs(q, f, age, p, p_age, self.perceiver, self.base_pose(), self.joint_vel(), self.joint_torque())

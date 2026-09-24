@@ -38,7 +38,8 @@ python   run.py --env robot --policy goto_red --iface <iface> --mode standing --
 python   run.py --env sim --policy walk_forward:0.5,turn:45,tpose --headless  # a preset: skills chain
 python -m scene fetch                                                        # room assets (once, ~35 MB, git-ignored)
 HF_TOKEN=hf_... mjpython run.py --env sim --scene room --policy search --goal "find the mug" \
-        --sim-objects mug@1.5,1.2 --camera-size 720x1280 --realtime 1 --max-time 600   # ask the model each step
+        --sim-objects mug@1.5,1.2 --camera-size 720x1280 --realtime 1 --max-time 600   # ask the model each decision
+python   run.py ... --policy search --max-decisions 20 --live-image-window 8 --skills my_catalog.json --no-verdict
 python   run.py --env sim --policy replay --episode runs/<dir> --headless    # a saved run, no camera or model
 python -m episode runs/<dir>            # step table + the --policy chain that replays it
 HF_TOKEN=hf_... python -m decider runs/<dir>/step_0003.png --goal "find the mug"   # one real decision from a frame
@@ -107,9 +108,17 @@ env.report()
   routine, then policy, then a chain of skills.
 - **Policy vs Skill.** *Policy* is the executor contract (`reset/step` at 50 Hz; the only thing
   an env runs — the executor builds nothing else). *Skill* (`skills.py`) is the one building
-  block: a name, a JSON-schema parameter menu (also the menu a model picks from) and
-  `segments()` -> pose segments, with arguments bound and validated at construction
-  (`Turn(angle_deg=45)`). `Skill -> segments -> SegmentPolicy` via `skill_policy`, or several at
+  block: `segments()` -> pose segments, with arguments bound and validated at construction
+  (`Turn(angle_deg=45)`). **Everything a model reads is in `configs/skills.json`** (the layout of
+  GPT-Policy's `tools.json`): per skill the name, the implementing class (`"skill":
+  "skills.Turn"`), `enabled` / `terminal` / `internal` / `needs_base`, `description`, `prompt`
+  and `parameters` (JSON schema; `{"$schema": "note"}` fragments, `{"$template": "skill_name"}`
+  for the menu-dependent enum). `load_catalog` validates the file and binds that metadata onto
+  the classes; `SKILLS`, `menu()`, `parse_skill()` come from it, `--skills FILE` swaps it.
+  Three renderings: `prompt_catalog` (bullets), `function_schemas` (OpenAI-style), `output_schema`
+  (what one reply must match; `strict=True` makes every property required/nullable for the
+  provider's structured output). Every movement skill has a required `note` — required of the
+  model (the jsonschema check), defaulted to "" for code and the CLI. `Skill -> segments -> SegmentPolicy` via `skill_policy`, or several at
   once via `Routine`. "Walk forward" and "lift the arm" are the same format because a `Segment`
   may hold a `base` velocity for its duration as easily as a pose; locomotion durations round up
   to whole ticks so `distance = v*t` is exact. A skill may be **any length** — the agent records
@@ -123,24 +132,48 @@ env.report()
   search --goal …`) or run a preset: a skill chain, a registered routine, or `--policy replay
   --episode runs/<dir>` (rebuilds a saved run as a Routine; no camera, no model). Learning is
   deferred; its seam is the `Decider` interface and the step records.
-- **The decision step** (`agent.py`, `Agent(Policy)`): *observe* (a fresh frame, the joint
-  angles, standing still after a 0.5 s settle so `StopMove` has landed) -> *decide* (a background
-  `Decider.request`; the loop never waits) -> *act* (the skill to its end or its cap) ->
-  *record*. Sub-policies are seeded from the agent's last commanded q. Rejected replies are
-  re-asked with a note (`max_retries`), a wall-clock `step_timeout` and `max_failures` end the
-  run cleanly, `close()` stops the decider and flushes the recorder on Ctrl-C. No pipelining:
-  a request issued before the skill ends would decide on a stale image.
-- **Decider** (`decider.py`): `Context` (goal, step, frame, q, waist yaw, base delta, history,
-  skill menu) -> `Decision` (scene, path_clear, found, action, args, reason). Obstacles are
-  judged in the same call. `HFDecider` shares `hf.HFClient` with the perceiver; the action must
-  be in the menu and the args validate against its schema. **Fakes are test doubles only**
+- **The decision step** (`agent.py`, `Agent(Policy)`) is GPT-Policy's loop on this executor:
+  *settle* (hold until measured joint velocity and command error are under tolerance —
+  0.05 rad/s, 0.03 rad, N consecutive ticks, 3 s timeout, at least 0.5 s so `StopMove` has
+  landed — and report it) -> *snapshot* (a fresh frame) -> *think* (a background
+  `Decider.request`; the loop never waits) -> *act* (the whole skill; a record every 3 s) ->
+  settle again -> the next observation carries `previous_result`. Sub-policies are seeded from
+  the agent's last commanded q. **Errors are feedback**: a reply that fails the schema, names an
+  unknown skill, or picks a skill the env refuses becomes `previous_result = {"tool", "error"}`
+  and costs a decision; there is no re-ask loop. An overloaded model is retried with their
+  backoff (`min(2·2^k, 8) s`, 20 tries, 300 s deadline), **re-observing every time**; a quota
+  error or a `step_timeout` fails the run. `env_step` counts decisions (`--max-decisions`,
+  ends as `budget_exhausted`); `check` dry-runs a skill through a `JointMonitor` from the
+  commanded pose (`dry_run`) and its verdict flows back like any result; `done`/`give_up` end
+  the run with the model's conclusion. `close()` stops the decider, asks the human verdict
+  (`verdict` callable; `--no-verdict`), then closes the recorder — also on Ctrl-C. No
+  pipelining: a request issued before the skill ends would decide on a stale image.
+- **Decider** (`decider.py`), their `AgentSession`: `start(AgentContext)` once (the system
+  prompt with conventions, `scene.safety_notes`, the rules, the catalog as bullets and JSON;
+  the function schemas; the output schema), then `decide(AgentTurn)` per decision. The
+  observation is one JSON object (`observation()`: instruction, images, state with
+  joint_pos/vel/torque + waist yaw + base_pose_cmd/env, extra, previous_result; floats rounded
+  to 1e-6, compact separators). `Decision.parse` = a whole JSON object (a complete fence is
+  fine, a fragment in prose is not) -> menu name -> `validate_args` (coerce, clamp with notes)
+  -> jsonschema Draft 2020-12 against the skill's parameters; failures raise `ProtocolError`
+  with the raw text. `HFDecider` keeps one conversation per run (system once; per turn the
+  observation text + image, then its own reply verbatim); only the last `live_image_window`
+  (8) observations keep their image, text is never pruned, demo content on turn 0 never is;
+  `fresh_turns` is the stateless mode. It asks the router for `json_schema` output and steps
+  down to `json_object`, then none, on a 400. **Fakes are test doubles only**
   (`tests/doubles.py`): `search` always uses the real model; no `--decider fake`.
-- **Records** (`episode.py`): `runs/<ts>_<env>_<goal>/episode.json` + `step_NNNN.json` +
-  `step_NNNN.png`. The frame is stored losslessly (PNG; `load_episode` returns the exact RGB
-  array, tested with `np.array_equal`), never JPEG. Fields: times (policy/wall/env clock),
-  q/cmd at start and end, the frame, the decision (raw + parsed + latency), the skill, the
-  outcome, base pose (commanded dead-reckoning; env estimate where one exists). PNG encoding
-  runs on a writer thread. `runs/` is git-ignored.
+- **Records** (`episode.py`): `runs/<ts>_<env>_<goal>_<outcome>/` with `episode.json` +
+  `step_NNNN.json` + `step_NNNN.png` (the frame losslessly; `load_episode` returns the exact
+  RGB array, never JPEG) plus their run trace: `config.json`, `events.jsonl` (append-only,
+  every event with `at_s`: observation with the verbatim `input_json`, decision_timing,
+  model_decision, tool_timing, execution_result (the full feedback incl. `motion_progress`,
+  which the model view omits), tool_error, model_retry, terminal, return_home,
+  execution_finished, human_evaluation, run_finished), `transcript.json`, `protocol.json`,
+  `states.jsonl` (20 Hz), `usage.jsonl`/`usage.json` (tokens per call; no pricing),
+  `status.json`. `close(status, human)` settles the outcome their way — the human's answer
+  wins, a model conclusion without one is `unreviewed`, else the runtime status — and renames
+  the directory. PNGs and states go through a writer thread; events are written inline, in
+  order. `runs/` is git-ignored.
 - **Room scene** (`scene.py`): `--scene room` adds a textured floor and walls (Poly Haven, CC0),
   a table and chairs, a doorway, lights, and `--sim-objects name@x,y[,z]` places real YCB
   meshes (CC-BY 4.0) or a primitives pencil, so the real model sees a real-looking scene.

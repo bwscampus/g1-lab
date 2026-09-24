@@ -326,6 +326,18 @@ class RobotEnv(Env):
     def can_walk(self) -> bool:
         return bool(self.args.walk)
 
+    def _motor(self, attr: str):
+        arm = getattr(self, "arm", None)
+        if arm is None or arm.state is None:
+            return None
+        return np.array([getattr(m, attr) for m in arm.state.motor_state[:NUM_JOINTS]], dtype=float)
+
+    def joint_vel(self):
+        return self._motor("dq")
+
+    def joint_torque(self):
+        return self._motor("tau_est")
+
     def step(self, action: Action) -> np.ndarray:
         bad = [j for j in action.joints if j not in UPPER_BODY]
         if bad:

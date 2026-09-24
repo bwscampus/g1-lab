@@ -7,6 +7,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from typing import Callable, Iterator, Optional
@@ -25,6 +26,25 @@ class RequestError(RuntimeError):
         super().__init__(f"HTTP {status}: {body}")
         self.status = status
         self.body = body
+
+
+class Overloaded(RequestError):
+    """The provider is busy (429/503/529 or says so): worth retrying with backoff."""
+
+
+class QuotaExceeded(RequestError):
+    """Credits or quota are gone (402, or the body says so): retrying will not help."""
+
+
+def classify(status: int, body: str) -> RequestError:
+    """The right error class for an HTTP failure, judged like their overload
+    detection: by status and by what the body says."""
+    text = body.lower()
+    if status == 402 or "quota" in text or "credits" in text or "exceeded your monthly" in text:
+        return QuotaExceeded(status, body)
+    if status in (429, 502, 503, 529) or "overloaded" in text or "rate limit" in text or "try again" in text:
+        return Overloaded(status, body)
+    return RequestError(status, body)
 
 
 def encode_jpeg(image_rgb: np.ndarray, max_width: int = 640, quality: int = 80) -> bytes:
@@ -68,7 +88,7 @@ def _sse_post(url: str, headers: dict, body: dict, timeout: float) -> Iterator[s
     try:
         resp = urllib.request.urlopen(req, timeout=timeout)
     except urllib.error.HTTPError as e:
-        raise RequestError(e.code, e.read().decode("utf-8", "replace")[:200]) from None
+        raise classify(e.code, e.read().decode("utf-8", "replace")[:300]) from None
     with resp:
         if not body.get("stream"):
             yield resp.read().decode("utf-8", "replace")
@@ -87,20 +107,33 @@ def _sse_post(url: str, headers: dict, body: dict, timeout: float) -> Iterator[s
 
 
 class HFClient:
-    """One chat completion at a time. ``transport`` is injectable for tests."""
+    """One chat completion at a time. ``transport`` is injectable for tests.
+
+    Structured output is asked for in three steps, each dropped for the rest
+    of the session on a 400 that names it: a ``json_schema`` response format
+    when the caller passes a schema, then ``json_object``, then nothing (the
+    prompt alone). ``response_mode`` says which one the last call used; the
+    caller validates the reply itself either way. ``last_usage`` holds the
+    provider's token counts for the last call, ``last_elapsed`` its wall time."""
 
     def __init__(self, model: str = DEFAULT_MODEL, token: Optional[str] = None, *,
                  base_url: str = HF_BASE_URL, stream: bool = True, json_mode: bool = True,
-                 timeout: float = 30.0, on_text: Optional[Callable[[str], None]] = None,
+                 json_schema: bool = True, timeout: float = 30.0,
+                 on_text: Optional[Callable[[str], None]] = None,
                  transport: Optional[Callable[[str, dict, dict, float], Iterator[str]]] = None) -> None:
         self.model = model
         self.token = token or ""
         self.base_url = base_url.rstrip("/")
         self.stream = stream
         self.json_mode = json_mode
+        self.json_schema = json_schema
         self.timeout = timeout
         self.on_text = on_text
         self.transport = transport or _sse_post
+        self.response_mode = "none"
+        self.last_usage: Optional[dict] = None
+        self.last_elapsed = 0.0
+        self.calls = 0
 
     @classmethod
     def from_env(cls, model: Optional[str] = None, **kw) -> "HFClient":
@@ -110,35 +143,57 @@ class HFClient:
         return cls(model or os.environ.get("G1_VISION_MODEL") or DEFAULT_MODEL, token, **kw)
 
     def complete(self, messages: list[dict], *, max_tokens: int = 400,
-                 temperature: float = 0.0) -> str:
+                 temperature: float = 0.0, schema: Optional[dict] = None) -> str:
         body = {"model": self.model, "stream": self.stream, "temperature": temperature,
                 "max_tokens": max_tokens, "messages": messages}
-        if self.json_mode:
-            body["response_format"] = {"type": "json_object"}
-        try:
-            return self._send(body)
-        except RequestError as e:
-            # JSON mode is provider-dependent on the HF router: drop it and rely on the prompt.
-            if self.json_mode and e.status == 400 and "response_format" in e.body:
-                self.json_mode = False
-                body.pop("response_format", None)
-                return self._send(body)
-            raise
+        if self.stream:
+            body["stream_options"] = {"include_usage": True}
+        while True:
+            attempt = dict(body)               # a fresh body per attempt, so records see what was sent
+            if schema is not None and self.json_schema:
+                self.response_mode = "json_schema"
+                attempt["response_format"] = {"type": "json_schema",
+                                              "json_schema": {"name": "selection", "schema": schema, "strict": True}}
+            elif self.json_mode:
+                self.response_mode = "json_object"
+                attempt["response_format"] = {"type": "json_object"}
+            else:
+                self.response_mode = "none"
+            try:
+                return self._send(attempt)
+            except RequestError as e:
+                # Structured output is provider-dependent on the HF router: step down and retry.
+                mentions = e.status == 400 and any(k in e.body for k in ("response_format", "json_schema", "schema"))
+                if mentions and self.response_mode == "json_schema":
+                    self.json_schema = False
+                    continue
+                if mentions and self.response_mode == "json_object":
+                    self.json_mode = False
+                    continue
+                raise
 
     def _send(self, body: dict) -> str:
         headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
         parts: list[str] = []
-        for payload in self.transport(self.base_url + "/chat/completions", headers, body, self.timeout):
-            if payload.strip() == "[DONE]":
-                break
-            chunk = json.loads(payload)
-            choices = chunk.get("choices") or []
-            if not choices:
-                continue
-            c = choices[0]
-            delta = (c.get("delta") or {}).get("content") or (c.get("message") or {}).get("content") or ""
-            if delta:
-                parts.append(delta)
-                if self.on_text is not None:
-                    self.on_text(delta)
+        self.last_usage = None
+        self.calls += 1
+        t0 = time.monotonic()
+        try:
+            for payload in self.transport(self.base_url + "/chat/completions", headers, body, self.timeout):
+                if payload.strip() == "[DONE]":
+                    break
+                chunk = json.loads(payload)
+                if isinstance(chunk.get("usage"), dict):
+                    self.last_usage = chunk["usage"]
+                choices = chunk.get("choices") or []
+                if not choices:
+                    continue
+                c = choices[0]
+                delta = (c.get("delta") or {}).get("content") or (c.get("message") or {}).get("content") or ""
+                if delta:
+                    parts.append(delta)
+                    if self.on_text is not None:
+                        self.on_text(delta)
+        finally:
+            self.last_elapsed = time.monotonic() - t0
         return "".join(parts)

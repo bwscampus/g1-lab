@@ -12,10 +12,11 @@ commanded targets, the command speed, the weight and any base velocity (see
 
 Policies that use the camera (``look``, ``wave_on_red``) get frames from the
 env: rendered in sim, or replayed / random with ``--camera-dir`` /
-``--camera-noise``, the head camera on the robot (``--camera-ip``). Policies
-that use vision (``describe``, ``search``) also get a scene description from the
-Hugging Face model (``$HF_TOKEN``). ``goto_red`` and the walking skills drive the
-base: sim slides it, the robot needs ``--walk``.
+``--camera-noise``, the head camera on the robot (``--camera-ip``). ``describe``
+asks the Hugging Face model (``$HF_TOKEN``) for a scene description; ``search``
+asks it for the next skill every decision, feeds back what happened, records
+everything under ``runs/`` and asks you for the verdict at the end. ``goto_red``
+and the walking skills drive the base: sim slides it, the robot needs ``--walk``.
 ``--env`` defaults to $G1_ENV, then "sim".
 """
 from __future__ import annotations
@@ -28,7 +29,7 @@ from envs import ENVS, Env, EnvAbort
 from perception import VISION_MODES, build_perceiver
 from policy import Policy
 from routines import POLICIES, ROUTINES, build_policy
-from skills import SKILLS, describe_menu
+from skills import SKILLS, describe_menu, use_catalog
 from agent import AGENTS
 
 
@@ -59,9 +60,20 @@ def build_parser() -> argparse.ArgumentParser:
     a = p.add_argument_group("agent (--policy search / replay)")
     a.add_argument("--goal", default=None, help="what search should look for, e.g. \"find the mug\"")
     a.add_argument("--episode", default=None, metavar="DIR", help="recorded run to replay (--policy replay)")
-    a.add_argument("--max-steps", type=int, default=30, help="decision steps before giving up (default 30)")
-    a.add_argument("--step-timeout", type=float, default=30.0,
-                   help="wall seconds to wait for a decision (default 30)")
+    a.add_argument("--max-decisions", type=int, default=30,
+                   help="model decisions per run, rejected replies included (default 30)")
+    a.add_argument("--step-timeout", type=float, default=60.0,
+                   help="wall seconds to wait for one decision before the run fails (default 60)")
+    a.add_argument("--skills", default=None, metavar="FILE",
+                   help="skill catalog JSON to use instead of configs/skills.json (prompts, ranges)")
+    a.add_argument("--live-image-window", type=int, default=8,
+                   help="observation images kept in the conversation; older turns keep their text (default 8)")
+    a.add_argument("--fresh-turns", action="store_true",
+                   help="no conversation memory: every decision is a fresh chat with only the current observation")
+    a.add_argument("--safety-note", action="append", default=None, metavar="TEXT",
+                   help="a persistent physical fact the camera cannot see, added to the prompt (repeatable)")
+    a.add_argument("--no-verdict", action="store_true",
+                   help="do not ask for the human success/failed verdict after the run")
     a.add_argument("--log", default="runs", metavar="DIR", help="where search records its steps (default runs/)")
     a.add_argument("--no-log", action="store_true", help="do not record the run")
     p.add_argument("--max-time", type=float, default=120.0,
@@ -123,6 +135,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    if args.skills:
+        try:
+            use_catalog(args.skills)
+        except ValueError as e:
+            parser.error(str(e))
     if args.list:
         print("envs:     " + ", ".join(sorted(ENVS)))
         print("routines: " + ", ".join(sorted(ROUTINES)))
@@ -160,7 +177,7 @@ def main(argv: list[str] | None = None) -> int:
                         else " (drop --free-base)" if args.env == "sim" else ""))
     print(f"== {policy.name} @ {env.name} ==")
     if args.policy == "search" and args.max_time <= 120.0:
-        print("hint: search is open-ended (6-10 s per step); raise --max-time, e.g. --max-time 600")
+        print("hint: search is open-ended (6-10 s per decision); raise --max-time, e.g. --max-time 600")
     ok = run(policy, env, max_time=args.max_time, perceiver=perceiver)
     return 0 if ok else 1
 

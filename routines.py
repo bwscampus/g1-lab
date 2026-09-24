@@ -171,7 +171,7 @@ def build_policy(spec: str, pause: float = 1.0) -> Policy:
     parts = []
     for item in items:
         skill = parse_skill(item)
-        if skill.terminal or skill.internal:
+        if skill.terminal or skill.internal or not skill.segments():
             raise ValueError(f"{skill.name} cannot be chained; it is not a movement")
         parts.append(skill)
     return Routine(*parts, pause=pause)

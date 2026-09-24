@@ -295,6 +295,12 @@ class SimEnv(Env):
     def base_pose(self):
         return tuple(float(v) for v in self._base_pose)
 
+    def joint_vel(self):
+        return self.data.qvel[self.qvel_idx].copy()
+
+    def joint_torque(self):
+        return self.data.actuator_force.copy()
+
     def step(self, action: Action) -> np.ndarray:
         if self.viewer is not None and not self.viewer.is_running():
             raise KeyboardInterrupt("viewer closed")

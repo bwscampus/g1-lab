@@ -37,8 +37,15 @@ class FakePerceiver(Perceiver):
                        frame.seq, frame.stamp)
 
 
-from decider import Context, Decider, Decision   # noqa: E402
+import json                                      # noqa: E402
+
+from decider import AgentTurn, Decider, Decision   # noqa: E402
 from targets import RedDot, Sighting             # noqa: E402
+
+
+def select(decider: Decider, turn: AgentTurn, name: str, arguments: dict) -> Decision:
+    """A test decider's reply, validated exactly like a model's."""
+    return Decision.parse(json.dumps({"name": name, "arguments": arguments}), turn, decider.context)
 
 
 class RedBallDecider(Decider):
@@ -52,39 +59,47 @@ class RedBallDecider(Decider):
         super().__init__(threaded=False)
         self._look_sign = 1.0
         self.calls: list[Decision] = []
+        self.turns: list[AgentTurn] = []
 
-    def decide(self, ctx: Context) -> Decision:
-        names = {s.name for s in ctx.skills}
-        image = ctx.frame.image
+    def decide(self, turn: AgentTurn) -> Decision:
+        self.turns.append(turn)
+        names = {s.name for s in self.context.menu}
+        obs = json.loads(turn.observation)
+        waist = obs["state"]["waist_yaw_deg"]
+        image = turn.images.get("head")
+        if image is None:
+            return self._reply(turn, "hold", {"seconds": 0.5, "note": "no image; waiting"})
+        frame = Frame(image, turn.frame_stamp or 0.0, turn.frame_seq or 0)
         if image.shape[1] > 800:
             image = image[::2, ::2]
         blob = red_blob(image)
         if blob is None:
-            scene, found, clear = "no red ball in view", False, True
             if "turn" in names:
-                action, args = "turn", {"angle_deg": 45.0}
-            elif "look" in names:
-                action, args = "look", {"yaw_deg": 40.0 * self._look_sign}
+                return self._reply(turn, "turn", {"angle_deg": 45.0, "note": "no red ball in view; searching left"})
+            if "look" in names:
+                yaw = 40.0 * self._look_sign
                 self._look_sign = -self._look_sign
-            else:
-                action, args = "done", {"found": False, "note": "cannot search"}
-        else:
-            s = Sighting.from_blob(*blob, ctx.frame)
-            b = math.degrees(s.bearing) - ctx.waist_yaw_deg      # base-relative, + right
-            scene, found, clear = f"a red ball at {b:+.0f} deg", True, blob[2] < 0.2
-            if RedDot().reached(s):
-                action, args = "done", {"found": True, "note": "reached"}
-            elif abs(b) > 8:
-                turn = max(-68.0, min(68.0, -b))
-                action, args = ("turn", {"angle_deg": turn}) if "turn" in names else ("look", {"yaw_deg": max(-45.0, min(45.0, turn))})
-            elif "walk_forward" in names and clear:
-                action, args = "walk_forward", {"distance_m": 0.5}
-            elif "turn" in names:
-                action, args = "turn", {"angle_deg": 45.0}
-            else:
-                action, args = "done", {"found": True, "note": "cannot approach"}
-        d = Decision.from_json({"scene": scene, "path_clear": clear, "found": found, "action": action,
-                                "args": args, "reason": "rule"}, ctx, raw="rule")
+                return self._reply(turn, "look", {"yaw_deg": yaw, "note": "no red ball in view; glancing"})
+            return self._reply(turn, "give_up", {"reason": "cannot search", "hindsight": ""})
+        s = Sighting.from_blob(*blob, frame)
+        b = math.degrees(s.bearing) - waist          # base-relative, + right
+        clear = blob[2] < 0.2
+        evidence = f"a red ball at {b:+.0f} deg"
+        if RedDot().reached(s):
+            return self._reply(turn, "done", {"summary": f"reached: {evidence}", "hindsight": ""})
+        if abs(b) > 8:
+            turn_deg = max(-68.0, min(68.0, -b))
+            if "turn" in names:
+                return self._reply(turn, "turn", {"angle_deg": turn_deg, "note": evidence + "; facing it"})
+            return self._reply(turn, "look", {"yaw_deg": max(-45.0, min(45.0, turn_deg)), "note": evidence})
+        if "walk_forward" in names and clear:
+            return self._reply(turn, "walk_forward", {"distance_m": 0.5, "note": evidence + "; floor clear"})
+        if "turn" in names:
+            return self._reply(turn, "turn", {"angle_deg": 45.0, "note": evidence + "; path blocked"})
+        return self._reply(turn, "done", {"summary": "cannot approach: " + evidence, "hindsight": ""})
+
+    def _reply(self, turn: AgentTurn, name: str, arguments: dict) -> Decision:
+        d = select(self, turn, name, arguments)
         self.calls.append(d)
         return d
 

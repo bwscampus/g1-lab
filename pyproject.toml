@@ -9,6 +9,7 @@ description = "Policies for the Unitree G1 and the check / sim / robot environme
 requires-python = ">=3.10"
 dependencies = [
     "numpy",
+    "jsonschema>=4",
 ]
 
 [project.optional-dependencies]
@@ -25,7 +26,7 @@ g1 = "run:main"
 
 [tool.setuptools]
 py-modules = ["agent", "behaviors", "camera", "config", "decider", "episode", "hf", "perception", "policy", "run", "routines", "scene", "skills", "targets", "vision", "worker"]
-packages = ["envs", "motions"]
+packages = ["envs"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
