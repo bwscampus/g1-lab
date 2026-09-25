@@ -7,7 +7,7 @@ watches the *measured* joint angles as well as the commands.
 """
 from __future__ import annotations
 
-from envs.base import Env, EnvAbort
+from envs.base import Env, EnvAbort, shield_sigint
 from envs.monitor import JointMonitor, Violation
 from envs.robot import RobotEnv
 from envs.sim import SimEnv

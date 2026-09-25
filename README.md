@@ -278,6 +278,13 @@ target is lost, stop when `reached` says so. It drives the base through
   floor or hoisted with feet touching, ~2 m clear all round, no tether to snag,
   spotter on the remote with L2+B.
 
+**Ctrl-C is safe.** An interrupted run (Ctrl-C, `--max-time`, an error) does not
+release the arms where they are: the runner first brings them from the last
+commanded pose to the stand pose over 3 s, then fades the arm_sdk weight to 0
+over 2 s so the onboard controller takes over smoothly, with the base stopped
+from the first tick. Further Ctrl-Cs during that return, and during the robot's
+teardown, are ignored — there is no forced release.
+
 ```
 python   run.py --env sim   --policy goto_red --camera-noise --headless
 mjpython run.py --env sim   --policy goto_red --sim-target 1.5,0.3,0.6     # slides ~1 m to the ball, "reached"

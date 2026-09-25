@@ -22,7 +22,9 @@ from __future__ import annotations
 
 import argparse
 import math
+import signal
 import time
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, ClassVar
 
 import numpy as np
@@ -36,6 +38,24 @@ if TYPE_CHECKING:
 
 class EnvAbort(Exception):
     """Raised by an env to stop the run early; the runner still calls report()."""
+
+
+@contextmanager
+def shield_sigint(message: str):
+    """Ignore Ctrl-C for the duration (it only prints ``message``), so the safe
+    return and the robot's hand-over can never be cut short by a key press.
+    There is deliberately no escape hatch. No-op off the main thread."""
+    def handler(signum, frame):
+        print(f"\n{message}", flush=True)
+    try:
+        previous = signal.signal(signal.SIGINT, handler)
+    except ValueError:                 # not the main thread: signals are not ours to handle
+        previous = None
+    try:
+        yield
+    finally:
+        if previous is not None:
+            signal.signal(signal.SIGINT, previous)
 
 
 class Env:

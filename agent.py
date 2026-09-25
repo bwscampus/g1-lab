@@ -144,6 +144,14 @@ class Agent(Policy):
         self._event("protocol", self.context.record())
         self._enter_sub("takeover", 0.0, Takeover())
 
+    def on_interrupt(self, reason: str, detail: str = "") -> None:
+        self.error = self.error or (detail or reason)
+        self._event("interrupted", {"trigger": reason, "step": self._env_step, "detail": detail})
+        self._event("return_home_started", {"trigger": reason})
+
+    def on_returned(self, outcome: str) -> None:
+        self._event("return_home", {"trigger": "interrupt", "status": outcome})
+
     def close(self) -> None:
         """Stop the model, ask the human, settle the record. Also the Ctrl-C path."""
         if self._closed:

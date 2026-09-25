@@ -307,9 +307,16 @@ env.report()
   published on `rt/arm_sdk`. `--mode gantry` does Damp -> FSM 4 -> FSM 200, runs, releases the
   arms, Damps. `--mode standing` records the current FSM (no check), goes to FSM 200, runs,
   releases the arms and returns to the recorded FSM (never damps). It refuses any joint outside
-  `UPPER_BODY` (waist + arms) and always releases the arms in `teardown`, including on Ctrl-C.
-  Walking is high-level only (`LocoClient.Move` behind `--walk`); do not add low-level leg
-  control through this path.
+  `UPPER_BODY` (waist + arms). **An interrupted run never drops the arms**: on Ctrl-C,
+  `--max-time` or any exception, `run.py` first runs `safe_return` — from the last *commanded*
+  pose to STAND over 3 s, then the arm_sdk weight from where it was to 0 over 2 s, base stopped
+  from the first tick, all at 50 Hz with no gap — and only then leaves the env; teardown's
+  release is then a no-op. SIGINT is ignored (`envs.base.shield_sigint`) during the return and
+  during the robot's teardown; there is deliberately no second-Ctrl-C escape (an accidental key
+  press must never cause an unsafe manoeuvre). Policies get `on_interrupt` / `on_returned`
+  hooks; the Agent records `interrupted`, `return_home_started`, `return_home`. Walking is
+  high-level only (`LocoClient.Move` behind `--walk`); do not add low-level leg control through
+  this path.
 - **Sim env** pins the pelvis by overwriting the free-joint state each substep;
   `--free-base` disables that. The scene path is resolved from `$G1_MJCF`, then the
   `mujoco-menagerie` pip package, then `~/Robotics/mujoco_menagerie`, and loaded through

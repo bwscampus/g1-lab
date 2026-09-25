@@ -25,10 +25,12 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from typing import Optional
 
 from envs import ENVS, Env, EnvAbort
+from envs.base import shield_sigint
 from perception import VISION_MODES, build_perceiver
-from policy import Policy
+from policy import Action, Obs, Policy, Segment, SegmentPolicy
 from routines import POLICIES, ROUTINES, build_policy
 from skills import SKILLS, describe_menu, use_catalog
 from vlm import PROVIDERS
@@ -103,6 +105,47 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+TO_STAND = 3.0      # s: the safe return's move to STAND
+RAMP = 2.0          # s: then the weight fades to 0 (the onboard controller takes the arms)
+RELEASED = 0.2      # s: held at exactly weight 0 before the env is left
+
+
+def safe_return(env: Env, last: Action, obs: Obs) -> str:
+    """Bring the robot to a safe state after an interrupted run, at 50 Hz with
+    no gap: from the last *commanded* pose (never the measured one) to STAND
+    over TO_STAND, then the arm_sdk weight from where it was to 0 over RAMP,
+    base stopped from the first tick. Ctrl-C is ignored until it is done."""
+    from config import STAND_Q
+    joints = list(last.joints)
+    stand = {j: float(STAND_Q[j]) for j in joints}
+    w0 = float(last.weight)
+    segs = [Segment(stand, TO_STAND, weight=lambda a, w=w0: w, label="returning to stand"),
+            Segment(stand, RAMP, weight=lambda a, w=w0: w * (1.0 - a), label="handing back"),
+            Segment(stand, RELEASED, weight=lambda a: 0.0, label="released")]
+    ret = SegmentPolicy(segs, joints=joints, name="safe-return")
+    ret.reset(Obs(last.q))
+    with shield_sigint("interrupt ignored: returning to a safe state, wait for the hand-over"):
+        n = 0
+        while (a := ret.step(n * ret.dt, obs)) is not None:
+            obs = env.observe(env.step(a))
+            n += 1
+    return "completed"
+
+
+def _return_to_safety(policy: Policy, env: Env, last: Optional[Action], obs: Obs, reason: str,
+                      detail: str = "") -> None:
+    if last is None:
+        return                                  # nothing was commanded yet
+    policy.on_interrupt(reason, detail)
+    print(f"returning to a safe state ({TO_STAND:.0f} s to stand, {RAMP:.0f} s hand-over)...")
+    try:
+        outcome = safe_return(env, last, obs)
+    except Exception as e:                      # never mask the original failure
+        print(f"safe return failed: {e}")
+        outcome = "failed"
+    policy.on_returned(outcome)
+
+
 def run(policy: Policy, env: Env, max_time: float = 120.0, perceiver=None) -> bool:
     """The one loop every stage shares. ``perceiver`` (or a pre-set
     ``env.perceiver``) runs the vision model beside the loop; it is started
@@ -127,22 +170,30 @@ def run(policy: Policy, env: Env, max_time: float = 120.0, perceiver=None) -> bo
             obs = env.observe(env.reset())
             policy.reset(obs)
             n = 0
+            last: Optional[Action] = None
             try:
                 while True:
                     t = n * policy.dt
                     if t > max_time:
                         print(f"aborted: policy exceeded --max-time {max_time}s")
+                        _return_to_safety(policy, env, last, obs, "max_time")
                         return False
                     action = policy.step(t, obs)
                     if action is None:
                         break
+                    last = action
                     obs = env.observe(env.step(action))
                     n += 1
             except EnvAbort as e:
                 print(f"\n{env.name}: {e}")
             except KeyboardInterrupt:
                 print("\ninterrupted")
+                _return_to_safety(policy, env, last, obs, "ctrl_c")
                 return False
+            except Exception as e:
+                print(f"\nerror: {e}")
+                _return_to_safety(policy, env, last, obs, "error", repr(e))
+                raise
     finally:
         if perceiver is not None:
             perceiver.stop()

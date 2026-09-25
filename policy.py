@@ -121,6 +121,13 @@ class Policy:
     def close(self) -> None:
         """Called once by the runner after the env is torn down (also on Ctrl-C)."""
 
+    def on_interrupt(self, reason: str, detail: str = "") -> None:
+        """The runner is about to return the robot to a safe state because of
+        ``reason`` (ctrl_c | max_time | error). Record it; do not act."""
+
+    def on_returned(self, outcome: str) -> None:
+        """The safe return finished with ``outcome`` (completed | failed)."""
+
     def action(self, q: np.ndarray, weight: float = 1.0,
                base: Optional[tuple[float, float, float]] = None,
                command: Optional[tuple[str, dict]] = None) -> Action:

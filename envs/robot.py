@@ -48,6 +48,7 @@ from camera import WebRTCCamera
 from config import ARM_SDK_WEIGHT_IDX, BASE_VEL_MAX, CONTROL_DT, NUM_JOINTS, UPPER_BODY
 from policy import Action
 from envs.base import Env
+from envs.base import shield_sigint
 from envs.monitor import JointMonitor
 from skills import LOCO_METHODS
 
@@ -280,12 +281,13 @@ class RobotEnv(Env):
         # Whatever happened (normal end, Ctrl-C, exception): release the arms,
         # then Damp (gantry) or return to the FSM the robot was in (standing).
         # The camera is closed last; it never gates the arm release.
-        try:
-            self._teardown_robot()
-        finally:
-            camera = getattr(self, "camera", None)
-            if camera is not None:
-                camera.stop()
+        with shield_sigint("interrupt ignored: finishing the hand-over to the onboard controller"):
+            try:
+                self._teardown_robot()
+            finally:
+                camera = getattr(self, "camera", None)
+                if camera is not None:
+                    camera.stop()
 
     def _teardown_robot(self) -> None:
         base = getattr(self, "base", None)
