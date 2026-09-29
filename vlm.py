@@ -1,21 +1,22 @@
-"""The vision-language model client: any OpenAI-compatible chat-completions
-API, with image input, stdlib urllib, streamed SSE and structured output with
-a step-down. Shared by the perceiver (describe a frame), the decider (choose a
-skill) and the demo keyframe selector.
+"""The vision-language model client: Hugging Face Inference Providers over
+their OpenAI-compatible chat-completions endpoint, with image input, stdlib
+urllib, streamed SSE and structured output with a step-down. Shared by the
+perceiver (describe a frame), the decider (choose a skill) and the demo
+keyframe selector.
 
-The endpoint is chosen by environment:
+Configured by environment:
 
-    VLM_PROVIDER   one of PROVIDERS (default huggingface); sets the base URL and
-                   which key variable is read
-    VLM_MODEL      the model id to query (required unless the provider has a default)
-    VLM_BASE_URL   overrides the provider's base URL (required for VLM_PROVIDER=custom)
-    VLM_API_KEY    overrides the provider's key variable (HF_TOKEN, OPENAI_API_KEY, ...)
+    HF_TOKEN       the key (a fine-grained token with "Make calls to Inference Providers")
+    VLM_MODEL      the model id to query (default: DEFAULT_MODEL); a suffix such as
+                   ":deepinfra" pins one of the router's providers
+    VLM_BASE_URL   another Hugging Face endpoint, e.g. a dedicated Inference Endpoint
+                   (default: the router)
+    VLM_MAX_TOKENS the reply budget, reasoning included (default: MAX_TOKENS)
 
 A ``.env`` file in the repo root (copy ``.env.example``) is read on first use;
 exported variables win over it.
 
-    VLM_PROVIDER=openai VLM_MODEL=gpt-4o-mini OPENAI_API_KEY=... python -m decider frame.png --goal ...
-    VLM_PROVIDER=ollama VLM_MODEL=qwen2.5vl python -m perception head.png
+    HF_TOKEN=hf_... python -m decider frame.png --goal "find the mug"
 """
 from __future__ import annotations
 
@@ -25,39 +26,23 @@ import os
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator, Optional
 
 import numpy as np
 
+import limits
 
-@dataclass(frozen=True)
-class Provider:
-    name: str
-    base_url: Optional[str]           # None: VLM_BASE_URL is required
-    key_var: Optional[str]            # None: no key needed (a local server)
-    default_model: Optional[str] = None
-
-
-PROVIDERS = {p.name: p for p in (
-    # Verified live on the HF router (2026-09): image input, structured output on its
-    # providers, a small active-parameter MoE that answers fast; ":deepinfra" etc. pins a provider.
-    Provider("huggingface", "https://router.huggingface.co/v1", "HF_TOKEN", "Qwen/Qwen3-VL-30B-A3B-Instruct"),
-    Provider("openai", "https://api.openai.com/v1", "OPENAI_API_KEY"),
-    Provider("openrouter", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
-    Provider("groq", "https://api.groq.com/openai/v1", "GROQ_API_KEY"),
-    Provider("together", "https://api.together.xyz/v1", "TOGETHER_API_KEY"),
-    Provider("deepinfra", "https://api.deepinfra.com/v1/openai", "DEEPINFRA_API_KEY"),
-    Provider("mistral", "https://api.mistral.ai/v1", "MISTRAL_API_KEY"),
-    Provider("xai", "https://api.x.ai/v1", "XAI_API_KEY"),
-    Provider("gemini", "https://generativelanguage.googleapis.com/v1beta/openai", "GEMINI_API_KEY"),
-    Provider("ollama", "http://localhost:11434/v1", None),
-    Provider("custom", None, None),
-)}
-DEFAULT_PROVIDER = "huggingface"
-DEFAULT_MODEL = PROVIDERS[DEFAULT_PROVIDER].default_model
-HF_BASE_URL = PROVIDERS[DEFAULT_PROVIDER].base_url
+PROVIDER = "huggingface"
+HF_BASE_URL = "https://router.huggingface.co/v1"
+# Verified live on the HF router (2026-09): image input, structured output on its
+# providers, a small active-parameter MoE that answers fast; ":deepinfra" etc. pins a provider.
+DEFAULT_MODEL = "Qwen/Qwen3-VL-30B-A3B-Instruct"
+# The reply budget, reasoning included. A reasoning model thinks before it answers and the
+# thinking counts: at 400 it never reached the answer. The numbers are in configs/limits.json.
+MAX_TOKENS = int(limits.get("max_tokens"))
+IMAGE_WIDTH = int(limits.get("image_width_px"))
+JPEG_QUALITY = int(limits.get("jpeg_quality"))
 
 
 DOTENV = Path(__file__).parent / ".env"
@@ -78,38 +63,24 @@ def load_dotenv(path: Optional[Path] = None, env: Optional[dict] = None) -> dict
             continue
         key, _, value = line.partition("=")
         key = key.strip().removeprefix("export ").strip()
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-            value = value[1:-1]
+        value = value.strip().strip("\"'")     # quoted or not; a stray quote is a typo, not data
         if key and key not in env:
             env[key] = value
             loaded[key] = value
     return loaded
 
 
-def resolve(model: Optional[str] = None, provider: Optional[str] = None,
-            env: Optional[dict] = None) -> tuple[Provider, str, str, Optional[str]]:
-    """(provider, base_url, model, key) from the environment (``.env`` in the
-    repo root is read first); every failure names the variable to set."""
+def resolve(model: Optional[str] = None, env: Optional[dict] = None) -> tuple[str, str, str]:
+    """(base_url, model, key) from the environment (``.env`` in the repo root
+    is read first)."""
     if env is None:
         load_dotenv()
     env = os.environ if env is None else env
-    name = (provider or env.get("VLM_PROVIDER") or DEFAULT_PROVIDER).strip().lower()
-    if name not in PROVIDERS:
-        raise RuntimeError(f"unknown VLM_PROVIDER {name!r}; one of {', '.join(PROVIDERS)}")
-    p = PROVIDERS[name]
-    base_url = env.get("VLM_BASE_URL") or p.base_url
-    if not base_url:
-        raise RuntimeError(f"VLM_PROVIDER={name} needs VLM_BASE_URL (an OpenAI-compatible /v1 endpoint)")
-    model = model or env.get("VLM_MODEL") or p.default_model
-    if not model:
-        raise RuntimeError(f"no model for provider {name}: set VLM_MODEL (or --vision-model)")
-    key = env.get("VLM_API_KEY")
-    if not key and p.key_var:
-        key = env.get(p.key_var)
-        if not key:
-            raise RuntimeError(f"no API key for provider {name}: set {p.key_var} (or VLM_API_KEY)")
-    return p, base_url.rstrip("/"), model, key or None
+    key = env.get("HF_TOKEN")
+    if not key:
+        raise RuntimeError("no Hugging Face token: set HF_TOKEN (in .env or the environment)")
+    base_url = (env.get("VLM_BASE_URL") or HF_BASE_URL).rstrip("/")
+    return base_url, model or env.get("VLM_MODEL") or DEFAULT_MODEL, key
 
 
 class RequestError(RuntimeError):
@@ -127,6 +98,16 @@ class QuotaExceeded(RequestError):
     """Credits or quota are gone (402, or the body says so): retrying will not help."""
 
 
+class TruncatedReply(RequestError):
+    """The reply hit ``max_tokens`` before it finished (``finish_reason: length``)."""
+
+    def __init__(self, max_tokens, reasoning_tokens, text: str = "") -> None:
+        spent = f", {reasoning_tokens} of them on reasoning" if reasoning_tokens else ""
+        super().__init__(200, f"the reply was cut off at max_tokens={max_tokens}{spent}; "
+                              f"raise VLM_MAX_TOKENS (now {max_tokens})")
+        self.text = text
+
+
 def classify(status: int, body: str) -> RequestError:
     """The right error class for an HTTP failure, judged like their overload
     detection: by status and by what the body says."""
@@ -138,21 +119,13 @@ def classify(status: int, body: str) -> RequestError:
     return RequestError(status, body)
 
 
-def encode_jpeg(image_rgb: np.ndarray, max_width: int = 640, quality: int = 80) -> bytes:
-    """JPEG bytes of an RGB frame, downscaled to ``max_width``. OpenCV thinks in
-    BGR, so the conversion happens here and nowhere else."""
-    import cv2
-    h, w = image_rgb.shape[:2]
-    bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
-    if w > max_width:
-        bgr = cv2.resize(bgr, (max_width, int(round(h * max_width / w))), interpolation=cv2.INTER_AREA)
-    ok, buf = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, quality])
-    if not ok:
-        raise RuntimeError("JPEG encoding failed")
-    return buf.tobytes()
+def encode_jpeg(image_rgb: np.ndarray, max_width: int = IMAGE_WIDTH, quality: int = JPEG_QUALITY) -> bytes:
+    """JPEG bytes of an RGB frame, downscaled to ``max_width`` (``images.py``)."""
+    import images
+    return images.encode_jpeg(image_rgb, max_width, quality)
 
 
-def image_part(image_rgb: np.ndarray, max_width: int = 640) -> dict:
+def image_part(image_rgb: np.ndarray, max_width: int = IMAGE_WIDTH) -> dict:
     """An ``image_url`` content block carrying the frame as a data URL."""
     data = base64.b64encode(encode_jpeg(image_rgb, max_width)).decode("ascii")
     return {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + data}}
@@ -198,7 +171,7 @@ def _sse_post(url: str, headers: dict, body: dict, timeout: float) -> Iterator[s
 
 
 class VLMClient:
-    """One chat completion at a time against an OpenAI-compatible endpoint.
+    """One chat completion at a time against the Hugging Face endpoint.
     ``transport`` is injectable for tests.
 
     Structured output is asked for in three steps, each dropped for the rest
@@ -210,14 +183,15 @@ class VLMClient:
     token counts for the last call, ``last_elapsed`` its wall time."""
 
     def __init__(self, model: str = DEFAULT_MODEL, token: Optional[str] = None, *,
-                 base_url: str = HF_BASE_URL, provider: str = DEFAULT_PROVIDER, stream: bool = True,
-                 json_mode: bool = True, json_schema: bool = True, timeout: float = 30.0,
+                 base_url: str = HF_BASE_URL, stream: bool = True,
+                 json_mode: bool = True, json_schema: bool = True,
+                 timeout: float = limits.get("request_timeout_s"),
                  on_text: Optional[Callable[[str], None]] = None,
                  transport: Optional[Callable[[str, dict, dict, float], Iterator[str]]] = None) -> None:
         self.model = model
         self.token = token or ""
         self.base_url = base_url.rstrip("/")
-        self.provider = provider
+        self.provider = PROVIDER
         self.stream = stream
         self.json_mode = json_mode
         self.json_schema = json_schema
@@ -229,16 +203,24 @@ class VLMClient:
         self.last_usage: Optional[dict] = None
         self.last_elapsed = 0.0
         self.calls = 0
+        self.max_tokens = MAX_TOKENS
 
     @classmethod
-    def from_env(cls, model: Optional[str] = None, *, provider: Optional[str] = None, **kw) -> "VLMClient":
-        p, base_url, model, key = resolve(model, provider)
-        return cls(model, key, base_url=base_url, provider=p.name, **kw)
+    def from_env(cls, model: Optional[str] = None, **kw) -> "VLMClient":
+        base_url, model, key = resolve(model)
+        client = cls(model, key, base_url=base_url, **kw)
+        raw = os.environ.get("VLM_MAX_TOKENS")
+        if raw:
+            try:
+                client.max_tokens = max(1, int(raw))
+            except ValueError:
+                raise RuntimeError(f"VLM_MAX_TOKENS must be a whole number, got {raw!r}") from None
+        return client
 
-    def complete(self, messages: list[dict], *, max_tokens: int = 400,
+    def complete(self, messages: list[dict], *, max_tokens: Optional[int] = None,
                  temperature: float = 0.0, schema: Optional[dict] = None) -> str:
         body = {"model": self.model, "stream": self.stream, "temperature": temperature,
-                "max_tokens": max_tokens, "messages": messages}
+                "max_tokens": max_tokens or self.max_tokens, "messages": messages}
         while True:
             attempt = dict(body)               # a fresh body per attempt, so records see what was sent
             if self.stream and self.stream_options:
@@ -273,6 +255,7 @@ class VLMClient:
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         parts: list[str] = []
+        finish = None
         self.last_usage = None
         self.calls += 1
         t0 = time.monotonic()
@@ -281,12 +264,19 @@ class VLMClient:
                 if payload.strip() == "[DONE]":
                     break
                 chunk = json.loads(payload)
+                if isinstance(chunk, dict) and chunk.get("error"):
+                    # some servers answer HTTP 200 and put the failure in the stream
+                    err = chunk["error"] if isinstance(chunk["error"], dict) else {"message": str(chunk["error"])}
+                    code = err.get("code")
+                    status = code if isinstance(code, int) and 400 <= code < 600 else 500
+                    raise classify(status, f"{err.get('message', '')} ({err.get('type') or code})")
                 if isinstance(chunk.get("usage"), dict):
                     self.last_usage = chunk["usage"]
                 choices = chunk.get("choices") or []
                 if not choices:
                     continue
                 c = choices[0]
+                finish = c.get("finish_reason") or finish
                 delta = (c.get("delta") or {}).get("content") or (c.get("message") or {}).get("content") or ""
                 if delta:
                     parts.append(delta)
@@ -294,4 +284,9 @@ class VLMClient:
                         self.on_text(delta)
         finally:
             self.last_elapsed = time.monotonic() - t0
+        if finish == "length":
+            # A reasoning model thinks first and the thinking counts against max_tokens:
+            # a small budget is spent before the answer starts, and the reply comes back empty.
+            details = (self.last_usage or {}).get("completion_tokens_details") or {}
+            raise TruncatedReply(body.get("max_tokens"), details.get("reasoning_tokens"), "".join(parts))
         return "".join(parts)

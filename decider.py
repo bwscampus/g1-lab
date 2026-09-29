@@ -21,7 +21,7 @@ each observation and the model's own reply, so the model has its history.
 Only the last ``live_image_window`` observations keep their image (their
 ``live_image_window``); demonstration images are never dropped.
 
-    HF_TOKEN=hf_... python -m decider step_0003.png --goal "find the mug"    # one real decision (or VLM_PROVIDER=...)
+    HF_TOKEN=hf_... python -m decider step_0003.png --goal "find the mug"    # one real decision
 """
 from __future__ import annotations
 
@@ -36,11 +36,11 @@ import numpy as np
 from jsonschema import Draft202012Validator, ValidationError
 
 from config import HEAD_CAMERA_FOVY, NUM_JOINTS
-from vlm import DEFAULT_MODEL, VLMClient, image_part
+import limits
+from vlm import DEFAULT_MODEL, IMAGE_WIDTH, RequestError, VLMClient, image_part
 from skills import CATALOG, Catalog, Skill, menu
 from worker import Worker
 
-MAX_TOKENS = 400
 
 
 class ProtocolError(ValueError):
@@ -286,10 +286,11 @@ class Decider(Worker[AgentTurn, Decision]):
 
 
 class VLMDecider(Decider):
-    """Asks the vision-language model (any OpenAI-compatible endpoint, see
-    ``vlm.py``), keeping the conversation."""
+    """Asks the vision-language model (Hugging Face, see ``vlm.py``), keeping
+    the conversation."""
 
-    def __init__(self, client: VLMClient, *, max_width: int = 640, live_image_window: Optional[int] = 8,
+    def __init__(self, client: VLMClient, *, max_width: int = IMAGE_WIDTH,
+                 live_image_window: Optional[int] = limits.get("live_image_window"),
                  fresh_turns: bool = False, min_interval: float = 0.0) -> None:
         super().__init__(min_interval=min_interval)
         if live_image_window is not None and live_image_window < 1:
@@ -301,7 +302,8 @@ class VLMDecider(Decider):
         self._turns: list[dict] = []          # {"user": msg, "assistant": msg | None, "image_at": int | None}
 
     @classmethod
-    def from_env(cls, model: Optional[str] = None, *, live_image_window: Optional[int] = 8,
+    def from_env(cls, model: Optional[str] = None, *,
+                 live_image_window: Optional[int] = limits.get("live_image_window"),
                  fresh_turns: bool = False, **client_kw) -> "VLMDecider":
         return cls(VLMClient.from_env(model, **client_kw), live_image_window=live_image_window,
                    fresh_turns=fresh_turns)
@@ -374,7 +376,7 @@ class VLMDecider(Decider):
             self._prune(incoming=1 if image_at is not None else 0)
         msgs = self.messages()
         msgs.append(user)
-        text = self.client.complete(msgs, max_tokens=MAX_TOKENS, schema=self.context.output_schema)
+        text = self.client.complete(msgs, schema=self.context.output_schema)
         entry = {"user": user, "assistant": {"role": "assistant", "content": text}, "image_at": image_at}
         if not self.fresh_turns:
             self._turns.append(entry)
@@ -391,21 +393,19 @@ class VLMDecider(Decider):
 
 def _main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="python -m decider",
-                                description="one real decision from a saved frame (needs the provider's key, "
-                                            "see vlm.py: VLM_PROVIDER / VLM_MODEL / VLM_BASE_URL)")
+                                description="one real decision from a saved frame (needs $HF_TOKEN)")
     p.add_argument("image", help="png/jpg, e.g. a step_NNNN.png from runs/")
     p.add_argument("--goal", required=True)
-    p.add_argument("--model", default=None, help="model id (default: $VLM_MODEL, or the provider's default)")
-    p.add_argument("--provider", default=None, help="VLM provider (default: $VLM_PROVIDER or huggingface)")
+    p.add_argument("--model", default=None, help=f"model id (default: $VLM_MODEL or {DEFAULT_MODEL})")
     p.add_argument("--no-base", action="store_true", help="hide the walking skills, as on a robot without --walk")
     args = p.parse_args(argv)
-    import cv2
-    bgr = cv2.imread(args.image, cv2.IMREAD_COLOR)
-    if bgr is None:
-        p.error(f"could not read {args.image}")
-    image = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+    import images
     try:
-        dec = VLMDecider.from_env(args.model, provider=args.provider, on_text=lambda s: print(s, end="", flush=True))
+        image = images.read_rgb(args.image)
+    except IOError as e:
+        p.error(str(e))
+    try:
+        dec = VLMDecider.from_env(args.model, on_text=lambda s: print(s, end="", flush=True))
     except RuntimeError as e:
         p.error(str(e))
     context = build_context(menu(not args.no_base), can_walk=not args.no_base, max_decisions=30)
@@ -421,6 +421,9 @@ def _main(argv: list[str] | None = None) -> int:
         d = dec.decide(AgentTurn(obs, {"head": image}))
     except ProtocolError as e:
         print(f"\n-- rejected after {time.monotonic() - t0:.2f}s: {e}")
+        return 1
+    except RequestError as e:
+        print(f"\n-- request failed after {time.monotonic() - t0:.2f}s ({type(e).__name__}): {e}")
         return 1
     print(f"\n-- {time.monotonic() - t0:.2f}s ({dec.client.response_mode}, usage {dec.client.last_usage})")
     print(f"skill:  {d.name}({ {k: v for k, v in d.arguments.items() if k != 'note'} })  {' '.join(d.notes)}")

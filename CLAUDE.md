@@ -14,7 +14,7 @@ not chained automatically. There is no separate check env — every sim run is c
 
 ```
 pip install -e ".[sim,dev]"          # unitree_sdk2py is not on PyPI; install from its repo for --env robot
-pip install -e ".[camera]"           # aiortc/av/opencv; unitree_webrtc_connect comes from its repo too
+pip install -e ".[camera]"           # aiortc/av; unitree_webrtc_connect comes from its repo too
 
 python   run.py --env sim --policy tpose --headless        # fast, windowless, fully checked
 python   run.py --env sim --policy tpose,turn:45 --headless   # ad hoc chain of skills (--pause between)
@@ -29,9 +29,8 @@ mjpython run.py --env sim   --policy look --sim-target 1.0,0.5,0.6      # red sp
 python   run.py --env robot --policy look --iface <iface> --mode standing --camera-ip <ip>  # + $UNITREE_AES_128_KEY
 python -m camera --ip <ip>           # head camera smoke test: fps and frame gaps, no robot control
 
-python   run.py --env sim --policy describe --headless            # vision policy (needs the provider's key)
+python   run.py --env sim --policy describe --headless            # vision policy (needs $HF_TOKEN, e.g. in .env)
 HF_TOKEN=hf_... python -m perception head.png                     # one real model request: streams text, prints the Percept
-VLM_PROVIDER=openai VLM_MODEL=gpt-4o-mini OPENAI_API_KEY=... python -m perception head.png   # any OpenAI-compatible API
 HF_TOKEN=hf_... mjpython run.py --env sim --policy describe --sim-obstacle 1.2,0,0.225 --vision api --vision-echo
 mjpython run.py --env sim   --policy goto_red --sim-target 1.5,0.3,0.6   # walk-to-target loop: base slides to the ball
 python   run.py --env robot --policy goto_red --iface <iface> --mode standing --camera-ip <ip> --walk  # real walking
@@ -81,11 +80,13 @@ env.report()
   `joints` raises at reset.
 - **Colour convention: frames are RGB everywhere**, `image[row, col, channel]` with row 0 at
   the top. WebRTC is decoded with `to_ndarray(format="rgb24")`, the sim renderer is RGB, and
-  every detector indexes `r, g, b`. OpenCV thinks in BGR, so it only ever sees data through an
-  explicit `cv2.cvtColor` at the boundary (`encode_jpeg`, `DirCamera`, `python -m perception`);
-  never pass a frame to `cv2.imwrite`/`imshow` raw, and never request `bgr24`. Verified on a
-  live robot frame: `rgb[..., ::-1] == bgr` exactly, and the correctly converted PNG shows the
-  blue floor tape as blue.
+  every detector indexes `r, g, b`. **All image I/O goes through `images.py` (Pillow)**, which
+  is RGB end to end, so there is no channel swap anywhere: `read_rgb`, `write_png` (lossless),
+  `encode_jpeg`, `decode`. **OpenCV is not used and must not be imported**: its wheel bundles
+  its own ffmpeg and so does PyAV (which decodes the robot's video); loading both in one
+  process on macOS makes the ObjC runtime warn that `AVFFrameReceiver` is implemented twice
+  ("spurious casting failures and mysterious crashes"). Never request `bgr24`. Verified on a
+  live robot frame: the saved PNG shows the blue floor tape as blue.
 - **Camera** (`camera.py`): every source is a latest-only slot (`Frame`: RGB uint8 `image`,
   `stamp`, `seq`); frames never queue behind a slow tick, and a policy keys per-frame work on
   `seq` because the same frame is seen every tick until a newer one lands. Sources: `WebRTCCamera`
@@ -253,17 +254,17 @@ env.report()
   computed locally from `x` via `vision.bearing`, plus `path_clear`) and publishes them
   latest-only from a daemon worker, one request in flight, at most one per `min_interval`.
   `Env.observe` offers each frame and attaches `obs.percept` with `obs.percept_age` = env-clock
-  age of the *frame described* (so the model's latency is included). `HFPerceiver` is the only
-  network backend: `vlm.VLMClient`, any OpenAI-compatible chat-completions API. `VLM_PROVIDER`
-  picks the row of `vlm.PROVIDERS` (huggingface — the default —, openai, openrouter, groq,
-  together, deepinfra, mistral, xai, gemini, ollama, custom): its base URL and which key
-  variable is read (`HF_TOKEN`, `OPENAI_API_KEY`, ...; ollama needs none); `VLM_MODEL` is the
-  model (only huggingface has a default); `VLM_BASE_URL` / `VLM_API_KEY` override the row;
-  `--vision-provider` / `--vision-model` per run; a `.env` in the repo root (`.env.example`
-  lists everything) is read by `vlm.load_dotenv` without overriding exported variables, and
-  `tests/conftest.py` keeps tests away from it. `vlm.resolve` names the missing variable.
-  stdlib `urllib`, streamed SSE; `json_schema` → `json_object` → none and `stream_options` are
-  stepped down on a 400 that names them.
+  age of the *frame described* (so the model's latency is included). `VLMPerceiver` is the only
+  network backend: `vlm.VLMClient` on **Hugging Face Inference Providers only** (the user's
+  choice; the provider table was removed on purpose): `HF_TOKEN` is the key, `VLM_MODEL` the
+  model (default `vlm.DEFAULT_MODEL`; `--vision-model` per run), `VLM_BASE_URL` optionally
+  another HF endpoint. A `.env` in the repo root (`.env.example` lists everything, including
+  the robot camera variables) is read by `vlm.load_dotenv` at CLI startup (`run.py`,
+  `python -m camera`) and on first model use, without overriding exported variables;
+  `tests/conftest.py` keeps tests away from it. stdlib `urllib`, streamed SSE; `json_schema` →
+  `json_object` → none and `stream_options` are stepped down on a 400 that names them; an
+  `error` object inside a 200 stream is raised as the classified error (`QuotaExceeded`,
+  `Overloaded`), never swallowed.
   A rule-based perceiver double runs inline in `tests/doubles.py` so the tests are
   deterministic; `--vision auto` picks it for policies with `uses_vision`, `api` is always
   explicit. The runner starts the perceiver before the env and stops it after, so it never gates
@@ -297,6 +298,18 @@ env.report()
 - **Blend semantics are emulated**: sim computes `cmd = (1-w)*hold + w*target` so what you see
   matches what arm_sdk does on the robot. `hold` is the Menagerie `stand` keyframe
   (`config.STAND_Q`) in sim and the live pose on the robot.
+- **Limits live in one file: `configs/limits.json`** (`limits.py`; the user asked for a single
+  place to review and change them). Every tunable number — base and walk speeds, the ranges a
+  tool may be asked for, settle tolerances, timeouts, retry backoff, the token budget, image
+  size, safe-return timing, demo/video sampling — is an entry `{value, unit, source, note}`;
+  `source` is `guess | gpt-policy | repo | measured | user | robot`. **Never add a numeric
+  limit or default as a literal in code or in the catalog**: add it to the file and to
+  `limits.NAMES`, read it with `limits.get("name")`, refer to it in `configs/skills.json` as
+  `{"$limit": "name"}` (`"negate": true` for the lower bound) and in prompt text as
+  `{limit:name}`. The loader refuses a missing/unknown name, a non-number, and contradictions
+  (`walk_speed` above `base_vx_max`, ...). `python -m limits [--source guess]` / `g1 --limits`
+  print the table; `$G1_LIMITS` swaps the file. Choreography timings of the presets
+  (`tpose` hold/rise, `sixseven` swing) are skill parameters in the catalog, not limits.
 - **Joint indexing** (`config.py`): DDS order of `LowCmd_.motor_cmd`, which is also the
   Menagerie `unitree_g1` actuator order. `tests/test_config.py` asserts the hardcoded limit table
   matches the model. Index 29 is the arm_sdk weight slot on the robot, not a joint.

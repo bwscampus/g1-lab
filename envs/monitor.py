@@ -24,6 +24,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+import limits
 from config import (BASE_VEL_MAX, CONTROL_DT, JOINT_HI, JOINT_LO, JOINT_NAMES, NUM_JOINTS,
                     STAND_Q)
 from policy import Action
@@ -50,7 +51,9 @@ class TooManyViolations(Exception):
 
 
 class JointMonitor:
-    def __init__(self, *, margin: float = 0.05, max_vel: float = 4.0, max_violations: int = 20,
+    def __init__(self, *, margin: float = limits.get("joint_margin_rad"),
+                 max_vel: float = limits.get("command_vel_max"),
+                 max_violations: int = int(limits.get("max_violations")),
                  strict: bool = True, gate_targets: bool = True, gate_velocity: bool = True,
                  gate_base: bool = True) -> None:
         self.margin = margin

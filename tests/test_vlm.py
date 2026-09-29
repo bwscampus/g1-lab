@@ -4,53 +4,32 @@ import pytest
 
 from pathlib import Path
 
-from vlm import DEFAULT_MODEL, PROVIDERS, RequestError, VLMClient, load_dotenv, resolve
+import limits
+
+from vlm import DEFAULT_MODEL, RequestError, VLMClient, load_dotenv, resolve
 
 
-def test_every_provider_resolves_its_endpoint_and_key():
-    for name, p in PROVIDERS.items():
-        env = {"VLM_PROVIDER": name, "VLM_MODEL": "m"}
-        if p.key_var:
-            env[p.key_var] = "secret-" + name
-        if p.base_url is None:
-            env["VLM_BASE_URL"] = "http://box:8000/v1/"
-        prov, base, model, key = resolve(env=env)
-        assert prov.name == name and model == "m" and not base.endswith("/")
-        assert base == (p.base_url or "http://box:8000/v1")
-        assert key == ("secret-" + name if p.key_var else None)
-
-
-def test_defaults_overrides_and_errors():
-    prov, base, model, key = resolve(env={"HF_TOKEN": "hf_t"})           # today's setup still works
-    assert prov.name == "huggingface" and model == DEFAULT_MODEL and key == "hf_t"
-    assert base == "https://router.huggingface.co/v1"
-    _, base, model, key = resolve("c/d", env={"VLM_PROVIDER": "OpenAI", "VLM_BASE_URL": "https://proxy/v1",
-                                              "VLM_API_KEY": "override", "OPENAI_API_KEY": "real"})
-    assert base == "https://proxy/v1" and key == "override" and model == "c/d"          # arg beats VLM_MODEL
-    assert resolve(env={"VLM_PROVIDER": "openai", "VLM_MODEL": "gpt-x", "OPENAI_API_KEY": "k"})[2] == "gpt-x"
-    assert resolve(provider="ollama", env={"VLM_MODEL": "qwen2.5vl"})[3] is None        # keyless local server
-    with pytest.raises(RuntimeError, match="set OPENAI_API_KEY"):
-        resolve(env={"VLM_PROVIDER": "openai", "VLM_MODEL": "g"})
-    with pytest.raises(RuntimeError, match="set VLM_MODEL"):
-        resolve(env={"VLM_PROVIDER": "openai", "OPENAI_API_KEY": "k"})
-    with pytest.raises(RuntimeError, match="needs VLM_BASE_URL"):
-        resolve(env={"VLM_PROVIDER": "custom", "VLM_MODEL": "m"})
-    with pytest.raises(RuntimeError, match="unknown VLM_PROVIDER"):
-        resolve(env={"VLM_PROVIDER": "nope"})
-    with pytest.raises(RuntimeError, match="HF_TOKEN"):
+def test_resolve_defaults_overrides_and_errors():
+    assert resolve(env={"HF_TOKEN": "hf_t"}) == ("https://router.huggingface.co/v1", DEFAULT_MODEL, "hf_t")
+    env = {"HF_TOKEN": "hf_t", "VLM_MODEL": "a/b:deepinfra", "VLM_BASE_URL": "https://x.endpoints.huggingface.cloud/v1/"}
+    assert resolve(env=env) == ("https://x.endpoints.huggingface.cloud/v1", "a/b:deepinfra", "hf_t")
+    assert resolve("c/d", env=env)[1] == "c/d"                          # the argument beats VLM_MODEL
+    with pytest.raises(RuntimeError, match="set HF_TOKEN"):
         resolve(env={})
+    # only Hugging Face: other providers' variables are not read
+    with pytest.raises(RuntimeError, match="set HF_TOKEN"):
+        resolve(env={"VLM_PROVIDER": "openai", "OPENAI_API_KEY": "k", "VLM_API_KEY": "k"})
 
 
 def sse(text):
     return iter([json.dumps({"choices": [{"delta": {"content": text}}]}), "[DONE]"])
 
 
-def test_client_from_env_sends_to_the_provider(monkeypatch):
-    for var in ("HF_TOKEN", "VLM_API_KEY", "VLM_BASE_URL", "VLM_MODEL", "VLM_PROVIDER"):
+def test_client_from_env_sends_to_hugging_face(monkeypatch):
+    for var in ("HF_TOKEN", "VLM_BASE_URL", "VLM_MODEL"):
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("VLM_PROVIDER", "groq")
-    monkeypatch.setenv("VLM_MODEL", "llama-vision")
-    monkeypatch.setenv("GROQ_API_KEY", "gsk")
+    monkeypatch.setenv("HF_TOKEN", "hf_t")
+    monkeypatch.setenv("VLM_MODEL", "a/b")
     calls = []
 
     def transport(url, headers, body, timeout):
@@ -58,15 +37,11 @@ def test_client_from_env_sends_to_the_provider(monkeypatch):
         return sse("{}")
 
     c = VLMClient.from_env(transport=transport)
-    assert c.provider == "groq" and c.model == "llama-vision"
+    assert c.provider == "huggingface" and c.model == "a/b"
     assert c.complete([]) == "{}"
     url, headers, body = calls[0]
-    assert url == "https://api.groq.com/openai/v1/chat/completions" and headers["Authorization"] == "Bearer gsk"
-    assert body["model"] == "llama-vision"
-    monkeypatch.setenv("VLM_PROVIDER", "ollama")
-    c = VLMClient.from_env("qwen", transport=transport)
-    c.complete([])
-    assert "Authorization" not in calls[1][1] and calls[1][0].startswith("http://localhost:11434/v1")
+    assert url == "https://router.huggingface.co/v1/chat/completions" and headers["Authorization"] == "Bearer hf_t"
+    assert body["model"] == "a/b"
 
 
 def test_stream_options_step_down():
@@ -86,15 +61,60 @@ def test_stream_options_step_down():
     assert c.complete([]) == "ok" and "stream_options" not in calls[2]
 
 
+def test_an_error_inside_the_stream_is_raised_not_swallowed():
+    from vlm import Overloaded, QuotaExceeded
+
+    def failing(error):
+        return VLMClient("m", "k", transport=lambda *a: iter([json.dumps({"error": error})]))
+
+    with pytest.raises(QuotaExceeded, match="insufficient credits"):
+        failing({"message": "insufficient credits", "type": "insufficient_quota", "code": 402}).complete([])
+    with pytest.raises(Overloaded):
+        failing({"message": "model is overloaded", "code": "overloaded"}).complete([])
+    with pytest.raises(RequestError, match="boom"):
+        failing("boom").complete([])
+
+
 def test_dotenv_fills_gaps_only(tmp_path):
     p = tmp_path / ".env"
-    p.write_text('# comment\nVLM_PROVIDER=openai\nexport VLM_MODEL="gpt-4o-mini"\nOPENAI_API_KEY=sk-1\n\nbroken line\n')
+    p.write_text('# comment\nHF_TOKEN=hf_1\nexport VLM_MODEL="a/b"\nUNITREE_AES_128_KEY=\'k\'\n\nbroken line\n')
     env = {"VLM_MODEL": "already"}
     loaded = load_dotenv(p, env)
-    assert loaded == {"VLM_PROVIDER": "openai", "OPENAI_API_KEY": "sk-1"} and env["VLM_MODEL"] == "already"
+    assert loaded == {"HF_TOKEN": "hf_1", "UNITREE_AES_128_KEY": "k"} and env["VLM_MODEL"] == "already"
     assert load_dotenv(tmp_path / "missing", {}) == {}
     example = Path(__file__).resolve().parents[1] / ".env.example"
     env = {}
     load_dotenv(example, env)
-    assert env["VLM_PROVIDER"] == "huggingface" and env["HF_TOKEN"] == "hf_..."      # the example is loadable
-    assert resolve(env=env)[0].name == "huggingface"
+    assert env == {"HF_TOKEN": "hf_..."}                                  # the example is loadable
+    assert resolve(env=env)[1] == DEFAULT_MODEL
+
+
+def test_a_reply_cut_off_by_the_token_budget_says_so(monkeypatch):
+    from vlm import MAX_TOKENS, TruncatedReply
+    chunks = [json.dumps({"choices": [{"delta": {"content": ""}, "finish_reason": "length"}]}),
+              json.dumps({"choices": [], "usage": {"completion_tokens": 400,
+                                                   "completion_tokens_details": {"reasoning_tokens": 400}}}), "[DONE]"]
+    calls = []
+
+    def transport(url, headers, body, timeout):
+        calls.append(body)
+        return iter(chunks)
+
+    c = VLMClient("m", "k", transport=transport)
+    with pytest.raises(TruncatedReply, match=f"cut off at max_tokens={MAX_TOKENS}, 400 of them on reasoning; raise VLM_MAX_TOKENS"):
+        c.complete([])
+    assert calls[0]["max_tokens"] == MAX_TOKENS == limits.get("max_tokens")      # whatever the file says
+    monkeypatch.setenv("HF_TOKEN", "hf_t")
+    monkeypatch.setenv("VLM_MAX_TOKENS", "9000")
+    assert VLMClient.from_env().max_tokens == 9000
+    monkeypatch.setenv("VLM_MAX_TOKENS", "lots")
+    with pytest.raises(RuntimeError, match="VLM_MAX_TOKENS"):
+        VLMClient.from_env()
+
+
+def test_dotenv_forgives_a_stray_quote(tmp_path):
+    p = tmp_path / ".env"
+    p.write_text('VLM_BASE_URL=https://router.huggingface.co/v1"\nHF_TOKEN="hf_q"\n')
+    env = {}
+    load_dotenv(p, env)
+    assert resolve(env=env) == ("https://router.huggingface.co/v1", DEFAULT_MODEL, "hf_q")

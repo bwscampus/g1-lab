@@ -174,9 +174,10 @@ def test_catalog_binds_every_skill_and_each_runs_with_its_defaults():
     assert data["version"] == 1 and [s["name"] for s in data["skills"]] == list(SKILLS)
     for entry in data["skills"]:
         cls = SKILLS[entry["name"]]
-        assert cls.description == entry["description"] and cls.prompt == entry["prompt"]
+        assert cls.description == CATALOG._format(entry["description"]) and cls.prompt == CATALOG._format(entry["prompt"])
+        assert "{limit:" not in cls.prompt + cls.description            # limits are filled in, never shown raw
         assert cls.terminal == entry.get("terminal", False) and cls.internal == entry.get("internal", False)
-        assert cls.needs_base == entry["needs_base"] and "$schema" not in str(cls.params)
+        assert cls.needs_base == entry["needs_base"] and "$schema" not in str(cls.params) and "$limit" not in str(cls.params)
         props = cls.params["properties"]
         if not cls.terminal and not cls.internal:
             assert "note" in cls.params["required"] and props["note"]["minLength"] == 1

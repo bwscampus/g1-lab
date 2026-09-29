@@ -24,10 +24,9 @@ from tests.doubles import sim_env as check_env
 
 
 def write_frames(path, colors):
-    cv2 = pytest.importorskip("cv2")
+    import images
     for i, c in enumerate(colors):
-        bgr = cv2.cvtColor(solid(c), cv2.COLOR_RGB2BGR)
-        cv2.imwrite(str(path / f"{i:04d}.png"), bgr)
+        images.write_png(path / f"{i:04d}.png", solid(c))
 
 
 # -- frame slot -------------------------------------------------------------
@@ -53,7 +52,7 @@ def test_dir_camera_replays_on_clock(tmp_path):
     cam = DirCamera(tmp_path, fps=10.0)
     cam.start()
     f = cam.poll(0.0)
-    assert f.seq == 1 and tuple(f.image[0, 0]) == (255, 0, 0)      # RGB, not cv2's BGR
+    assert f.seq == 1 and tuple(f.image[0, 0]) == (255, 0, 0)      # RGB as written
     assert cam.poll(0.05).seq == 1
     f = cam.poll(0.1)
     assert f.seq == 2 and tuple(f.image[0, 0]) == (0, 255, 0) and f.stamp == pytest.approx(0.1)

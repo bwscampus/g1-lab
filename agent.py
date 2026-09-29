@@ -34,6 +34,7 @@ from typing import Callable, Optional, Sequence
 
 import numpy as np
 
+import limits
 from config import CONTROL_DT, JOINT_NAMES, UPPER_BODY, joint_index
 from decider import AgentContext, AgentTurn, Decider, Decision, VLMDecider, ProtocolError, build_context, observation
 from envs.monitor import JointMonitor
@@ -45,9 +46,10 @@ from skills import STEP_MAX, Check, Handback, Skill, Takeover, menu, skill_polic
 
 WAIST_YAW = joint_index("waist_yaw")
 
-# their MODEL_RETRY_DELAYS_S / MODEL_RECOVERY_TIMEOUT_S
-RETRY_DELAYS = tuple(min(2.0 * (2 ** k), 8.0) for k in range(20))
-RECOVERY_TIMEOUT = 300.0
+# their MODEL_RETRY_DELAYS_S / MODEL_RECOVERY_TIMEOUT_S; the numbers are in configs/limits.json
+RETRY_DELAYS = tuple(min(limits.get("retry_delay_base_s") * (2 ** k), limits.get("retry_delay_cap_s"))
+                     for k in range(int(limits.get("retry_max"))))
+RECOVERY_TIMEOUT = limits.get("recovery_timeout_s")
 
 
 def dry_run(skill: Skill, cmd: np.ndarray, joints: Sequence[int]) -> dict:
@@ -76,10 +78,17 @@ class Agent(Policy):
     uses_camera = True
 
     def __init__(self, goal: str, decider: Decider, skills: Sequence[type[Skill]], *,
-                 recorder: Optional[EpisodeWriter] = None, max_decisions: int = 30,
-                 step_timeout: float = 60.0, settle_min: float = 0.5, settle_tol: float = 0.03,
-                 settle_vel_tol: float = 0.05, settle_samples: int = 10, settle_timeout: float = 3.0,
-                 frame_max_age: float = 0.5, frame_timeout: float = 2.0, max_failures: int = 3,
+                 recorder: Optional[EpisodeWriter] = None,
+                 max_decisions: int = limits.get("max_decisions"),
+                 step_timeout: float = limits.get("step_timeout_s"),
+                 settle_min: float = limits.get("settle_min_s"),
+                 settle_tol: float = limits.get("settle_pos_tol_rad"),
+                 settle_vel_tol: float = limits.get("settle_vel_tol"),
+                 settle_samples: int = limits.get("settle_samples"),
+                 settle_timeout: float = limits.get("settle_timeout_s"),
+                 frame_max_age: float = limits.get("frame_max_age_s"),
+                 frame_timeout: float = limits.get("frame_timeout_s"),
+                 max_failures: int = limits.get("max_failures"),
                  can_walk: bool = True, has_loco: bool = False, safety_notes: Sequence[str] = (), content: Sequence = (),
                  verdict: Optional[Callable[[], Optional[str]]] = None, name: str = "search",
                  retry_delays: Sequence[float] = RETRY_DELAYS, recovery_timeout: float = RECOVERY_TIMEOUT) -> None:
@@ -582,10 +591,9 @@ def build_search(args, can_walk: bool, has_loco: bool = False) -> Agent:
     if getattr(args, "skills", None):
         use_catalog(args.skills)
     echo = (lambda s: print(s, end="", flush=True)) if getattr(args, "vision_echo", False) else None
-    decider = VLMDecider.from_env(getattr(args, "vision_model", None), provider=getattr(args, "vision_provider", None),
-                                  on_text=echo,
-                                 live_image_window=getattr(args, "live_image_window", 8),
-                                 fresh_turns=getattr(args, "fresh_turns", False))
+    decider = VLMDecider.from_env(getattr(args, "vision_model", None), on_text=echo,
+                                  live_image_window=getattr(args, "live_image_window", limits.get("live_image_window")),
+                                  fresh_turns=getattr(args, "fresh_turns", False))
     skills = menu(can_walk, has_loco)
     from scene import safety_notes
     notes = safety_notes(getattr(args, "scene", None)) + list(getattr(args, "safety_note", None) or [])
@@ -605,8 +613,7 @@ def build_search(args, can_walk: bool, has_loco: bool = False) -> Agent:
         frames = max(1, min(MAX_FRAMES, getattr(args, "demo_frames", DEFAULT_FRAMES)))
         selector = None
         if any(isinstance(p, VideoPart) for p in request.content):
-            selector = build_selector(getattr(args, "demo_select", "auto"), frames, getattr(args, "vision_model", None),
-                                      getattr(args, "vision_provider", None))
+            selector = build_selector(getattr(args, "demo_select", "auto"), frames, getattr(args, "vision_model", None))
         where = recorder.dir / "input" if recorder is not None else Path(tempfile.mkdtemp(prefix="g1-demo-"))
         prepared, reports = prepare(request, where, selector=selector, max_frames=frames)
         content = prepared.content

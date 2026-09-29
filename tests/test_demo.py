@@ -18,8 +18,8 @@ from tests.test_agent import Sequence, check
 
 
 def png(path, color=(10, 20, 30)):
-    import cv2
-    cv2.imwrite(str(path), np.full((8, 8, 3), color[::-1], np.uint8))
+    import images
+    images.write_png(path, np.full((8, 8, 3), color, np.uint8))
     return path
 
 
@@ -77,7 +77,6 @@ def test_build_request(tmp_path):
 
 
 def recorded_run(tmp_path):
-    pytest.importorskip("cv2")
     dec = Sequence([("move", {"dyaw_deg": 30}),
                     ("arm_path", {"waypoints": [{"joints": {"left_elbow": 0.3}, "seconds": 1.5},
                                                 {"joints": {"left_elbow": 1.28}, "seconds": 1.5}]}),
@@ -161,16 +160,19 @@ def test_prepare_and_turn_zero(tmp_path):
 
 
 def synthetic_video(path, seconds=3.0, fps=10):
-    import cv2
-    w = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (64, 48))
+    """A tiny mp4 made with ffmpeg itself from PNG frames (no OpenCV)."""
+    import subprocess
+    import images
+    frames = path.parent / (path.stem + "_frames")
+    frames.mkdir()
     for i in range(int(seconds * fps)):
-        w.write(np.full((48, 64, 3), (min(255, i * 3), 0, 0), np.uint8))
-    w.release()
+        images.write_png(frames / f"{i:04d}.png", np.full((48, 64, 3), (0, 0, min(255, i * 3)), np.uint8))
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-framerate", str(fps), "-i", str(frames / "%04d.png"),
+                    "-c:v", "mpeg4", "-pix_fmt", "yuv420p", str(path)], check=True)
     return path
 
 
 def test_video_uniform_selection_and_cache(tmp_path):
-    pytest.importorskip("cv2")
     if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
         pytest.skip("ffmpeg not installed")
     video = synthetic_video(tmp_path / "walk.mp4")
@@ -190,7 +192,6 @@ def test_video_uniform_selection_and_cache(tmp_path):
 
 
 def test_video_model_selection(tmp_path):
-    pytest.importorskip("cv2")
     if not shutil.which("ffmpeg"):
         pytest.skip("ffmpeg not installed")
     video = synthetic_video(tmp_path / "walk.mp4", seconds=2.0)

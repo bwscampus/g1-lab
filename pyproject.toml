@@ -10,6 +10,7 @@ requires-python = ">=3.10"
 dependencies = [
     "numpy",
     "jsonschema>=4",
+    "pillow",
 ]
 
 [project.optional-dependencies]
@@ -18,14 +19,14 @@ dependencies = [
 sim = ["mujoco>=3.2", "mujoco-menagerie"]
 # Camera feed. unitree_webrtc_connect is not on PyPI either; install it from
 # https://github.com/legion1581/go2_webrtc_connect for --env robot with a camera policy.
-camera = ["aiortc", "av", "opencv-python"]
-dev = ["pytest", "opencv-python"]
+camera = ["aiortc", "av"]
+dev = ["pytest"]
 
 [project.scripts]
 g1 = "run:main"
 
 [tool.setuptools]
-py-modules = ["agent", "behaviors", "camera", "config", "decider", "demo", "episode", "perception", "policy", "run", "routines", "scene", "skills", "targets", "vision", "vlm", "worker"]
+py-modules = ["agent", "behaviors", "camera", "config", "decider", "demo", "episode", "images", "limits", "perception", "policy", "run", "routines", "scene", "skills", "targets", "vision", "vlm", "worker"]
 packages = ["envs"]
 
 [tool.pytest.ini_options]

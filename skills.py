@@ -33,15 +33,17 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
+import limits
 from config import CONTROL_DT, JOINT_HI, JOINT_LO, JOINT_NAMES, NUM_JOINTS, STAND_Q, UPPER_BODY, joint_index
 from poses import ARMS_UP, SIXSEVEN, STAND
 from policy import Policy, Segment, SegmentPolicy
 
-STEP_MAX = 3.0        # s: how often a running skill is observed and recorded
-WALK_SPEED = 0.2      # m/s (< BASE_VEL_MAX[0]; the speed proven on the robot)
-SIDE_SPEED = 0.15     # m/s (< BASE_VEL_MAX[1])
-TURN_RATE = 0.4       # rad/s (< BASE_VEL_MAX[2])
-MIN_SEGMENT = 0.5     # s: a shorter entry segment could recentre a held waist too fast
+# Every number below lives in configs/limits.json, with its unit and where it came from.
+STEP_MAX = limits.get("record_step_s")      # how often a running skill is observed and recorded
+WALK_SPEED = limits.get("walk_speed")
+SIDE_SPEED = limits.get("side_speed")
+TURN_RATE = limits.get("turn_rate")
+MIN_SEGMENT = limits.get("min_segment_s")   # a shorter entry segment could recentre a held waist too fast
 WAIST_YAW = joint_index("waist_yaw")
 ARM_JOINTS = [JOINT_NAMES[j] for j in UPPER_BODY]      # the 17 joints arm_sdk may command, by name
 # The only onboard LocoClient calls a skill may make. Everything else (FSM, damp, torque,
@@ -54,6 +56,7 @@ ELBOW_UP = -0.45      # fingertips at shoulder height
 CATALOG_PATH = Path(__file__).parent / "configs" / "skills.json"
 _NAME = re.compile(r"[a-z][a-z0-9_]*\Z")
 STATIC_TEMPLATES = {"arm_joints"}          # resolvable without a menu, so bound onto the class
+_LIMIT_IN_TEXT = re.compile(r"\{limit:([a-z0-9_]+)\}")
 
 
 def _ticks(seconds: float) -> float:
@@ -169,14 +172,18 @@ class ArmPath(Skill):
                     raise ValueError(f"arm_path: {name} must be a number") from None
                 if not (JOINT_LO[j] <= v <= JOINT_HI[j]):
                     raise ValueError(f"arm_path: {name}={v} outside [{JOINT_LO[j]:.3f}, {JOINT_HI[j]:.3f}]")
-            seconds = wp.get("seconds", 2.0)
-            if not isinstance(seconds, (int, float)) or not (0.5 <= seconds <= 10.0):
-                raise ValueError(f"arm_path: waypoint {i} seconds must be within [0.5, 10]")
+            lo, hi = limits.get("arm_path_seconds_min"), limits.get("arm_path_seconds_max")
+            seconds = wp.get("seconds", limits.get("arm_path_seconds_default"))
+            if not isinstance(seconds, (int, float)) or not (lo <= seconds <= hi):
+                raise ValueError(f"arm_path: waypoint {i} seconds must be within [{lo}, {hi}]")
+        if len(self.waypoints) > limits.get("arm_path_max_waypoints"):
+            raise ValueError(f"arm_path: at most {limits.get('arm_path_max_waypoints')} waypoints")
 
     def segments(self) -> tuple[Segment, ...]:
         n = len(self.waypoints)
+        default = limits.get("arm_path_seconds_default")
         return tuple(Segment({joint_index(k): float(v) for k, v in wp["joints"].items()},
-                             float(wp.get("seconds", 2.0)), label=f"waypoint {i + 1}/{n}")
+                             float(wp.get("seconds", default)), label=f"waypoint {i + 1}/{n}")
                      for i, wp in enumerate(self.waypoints))
 
 
@@ -243,7 +250,7 @@ class Gesture(Skill):
     take the arms back (0->1). Robot-only: sim has no onboard gestures."""
 
     needs_loco = True
-    ramp = 1.0
+    ramp = limits.get("gesture_ramp_s")
 
     def call_args(self) -> dict:
         return {}
@@ -428,9 +435,22 @@ class Catalog:
         return cls
 
     # -- schema helpers ----------------------------------------------------------
-    @staticmethod
-    def _format(text: str) -> str:
-        return text.replace("{n_joints}", str(NUM_JOINTS))
+    def _format(self, text: str) -> str:
+        """``{n_joints}`` and ``{limit:name}`` in catalog text, so a prompt can
+        never quote a number that differs from the limit the host enforces."""
+        def limit(match: "re.Match[str]") -> str:
+            name = match.group(1)
+            if name not in limits.LIMITS:
+                raise ValueError(f"skill catalog {self.source}: unknown limit {name!r} in text")
+            return f"{limits.get(name):g}"
+        return _LIMIT_IN_TEXT.sub(limit, text.replace("{n_joints}", str(NUM_JOINTS)))
+
+    def _limit(self, value: dict) -> Any:
+        name = value["$limit"]
+        if name not in limits.LIMITS:
+            raise ValueError(f"skill catalog {self.source}: unknown limit {name!r}")
+        v = limits.get(name)
+        return -v if value.get("negate") else v
 
     def _resolve(self, value: Any, *, templates: bool, menu: Sequence[type[Skill]] = ()) -> Any:
         if isinstance(value, list):
@@ -439,6 +459,8 @@ class Catalog:
             return self._format(value)
         if not isinstance(value, dict):
             return deepcopy(value)
+        if "$limit" in value and set(value) <= {"$limit", "negate"}:
+            return self._limit(value)
         if set(value) == {"$schema"}:
             ref = value["$schema"]
             if ref not in self.schemas:

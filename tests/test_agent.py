@@ -87,7 +87,6 @@ def recorder(tmp_path, dec, goal="g"):
 
 
 def test_search_finds_the_ball_and_records(tmp_path):
-    pytest.importorskip("cv2")
     env = check()
     dec = RedBallDecider()
     rec = recorder(tmp_path, dec, "find the red ball")
@@ -120,7 +119,6 @@ def test_search_finds_the_ball_and_records(tmp_path):
 
 
 def test_observation_and_feedback_follow_the_contract():
-    pytest.importorskip("cv2")
     env = check()
     dec = Sequence([("move", {"dyaw_deg": 30}), ("move", {"dx_m": 0.3}),
                     ("done", {"summary": "s", "hindsight": "h"})])
@@ -156,7 +154,6 @@ def test_observation_and_feedback_follow_the_contract():
 
 def test_long_skill_runs_as_three_second_chunks(tmp_path):
     """One model call, one continuous motion, a record every STEP_MAX seconds."""
-    pytest.importorskip("cv2")
     env = check()
     dec = Sequence([("tpose", {}), ("done", {"summary": "s", "hindsight": ""})])     # tpose is 11 s
     rec = recorder(tmp_path, dec)
@@ -331,7 +328,6 @@ def test_budget_and_no_frame():
 
 
 def test_run_files_and_human_verdict(tmp_path):
-    pytest.importorskip("cv2")
     env = check()
     dec = Sequence([("move", {"dyaw_deg": 20}), ("raw", "junk"), ("done", {"summary": "s", "hindsight": "h"})])
     rec = recorder(tmp_path, dec)
@@ -385,7 +381,6 @@ def test_give_up_and_skipped_verdict(tmp_path):
 
 
 def test_replay_reproduces_a_recorded_run(tmp_path):
-    pytest.importorskip("cv2")
     env = check()
     rec = recorder(tmp_path, RedBallDecider())
     agent = Agent("g", RedBallDecider(), menu(True), recorder=rec)

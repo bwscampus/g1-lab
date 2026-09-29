@@ -166,12 +166,13 @@ class SimEnv(Env):
         g.add_argument("--camera-fps", type=float, default=15.0,
                        help="frame rate of --camera-dir / --camera-noise (default 15)")
         c = parser.add_argument_group("checks (sim)")
-        c.add_argument("--margin", type=float, default=0.05,
-                       help="safety margin inside the joint limits, rad (default 0.05)")
-        c.add_argument("--max-vel", type=float, default=4.0,
-                       help="max allowed joint speed of the effective command, rad/s (default 4.0)")
-        c.add_argument("--max-violations", type=int, default=20,
-                       help="stop the run after this many violations (default 20)")
+        import limits
+        c.add_argument("--margin", type=float, default=limits.get("joint_margin_rad"),
+                       help="safety margin inside the joint limits, rad (default: limit joint_margin_rad)")
+        c.add_argument("--max-vel", type=float, default=limits.get("command_vel_max"),
+                       help="max allowed joint speed of the effective command, rad/s (default: limit command_vel_max)")
+        c.add_argument("--max-violations", type=int, default=int(limits.get("max_violations")),
+                       help="stop the run after this many violations (default: limit max_violations)")
 
     def setup(self) -> None:
         import mujoco

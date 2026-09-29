@@ -171,8 +171,8 @@ def sse(*chunks, done=True):
 
 
 def test_hf_request_and_stream():
-    cv2 = pytest.importorskip("cv2")
     import base64
+    import images
     calls = []
 
     def transport(url, headers, body, timeout):
@@ -194,9 +194,9 @@ def test_hf_request_and_stream():
     data_url = body["messages"][1]["content"][0]["image_url"]["url"]
     assert data_url.startswith("data:image/jpeg;base64,")
     jpeg = base64.b64decode(data_url.split(",", 1)[1])
-    bgr = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
-    assert bgr.shape[1] == 32                                   # downscaled to max_width
-    assert bgr[0, 0, 2] > 150 and bgr[0, 0, 0] < 80             # still red after RGB->BGR->JPEG
+    rgb = images.decode(jpeg)
+    assert rgb.shape[1] == 32                                   # downscaled to max_width
+    assert rgb[0, 0, 0] > 150 and rgb[0, 0, 2] < 80             # still red after JPEG: RGB end to end
     assert len(deltas) == 2 and "".join(deltas) == p.raw
     assert p.summary == "a chair ahead" and p.path_clear is False and p.frame_seq == 3
     assert p.objects[0].label == "chair" and p.objects[0].distance_m == 1.5 and p.objects[0].bearing > 0

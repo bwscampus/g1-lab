@@ -113,11 +113,8 @@ class DirCamera(ClockedCamera):
         if i == self._last:
             return None                     # ran out (or no new frame yet): keep the last one
         self._last = i
-        import cv2
-        bgr = cv2.imread(str(self.files[i]), cv2.IMREAD_COLOR)
-        if bgr is None:
-            raise IOError(f"could not decode {self.files[i]}")
-        return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        import images
+        return images.read_rgb(self.files[i])
 
 
 class NoiseCamera(ClockedCamera):
@@ -152,9 +149,11 @@ class WebRTCCamera(Camera):
         self.loop: asyncio.AbstractEventLoop | None = None
         self.thread: threading.Thread | None = None
         self.error: BaseException | None = None
+        self._stopping = False
 
     def start(self) -> None:
         import logging
+        self._stopping = False
         from unitree_webrtc_connect.webrtc_driver import (UnitreeWebRTCConnection,
                                                           WebRTCConnectionMethod)
         # The packets that arrive before the first keyframe cannot be decoded; aiortc
@@ -194,10 +193,18 @@ class WebRTCCamera(Camera):
 
     async def _recv(self, track) -> None:
         while True:
-            frame = await track.recv()
+            try:
+                frame = await track.recv()
+            except Exception as e:
+                if self._stopping:          # the track ends when we disconnect: not an error
+                    return
+                self.error = e              # the stream died mid-run: say so, once
+                print(f"camera: stream ended: {type(e).__name__}: {e}")
+                return
             self.publish(frame.to_ndarray(format="rgb24"), time.monotonic())
 
     def stop(self) -> None:
+        self._stopping = True
         loop, thread = self.loop, self.thread
         if thread is None:
             return
@@ -215,11 +222,15 @@ class WebRTCCamera(Camera):
 
 
 def _main(argv: list[str] | None = None) -> int:
+    from vlm import load_dotenv
+    load_dotenv()              # $UNITREE_ROBOT_IP / $UNITREE_AES_128_KEY may live in .env
     p = argparse.ArgumentParser(prog="python -m camera",
                                 description="print the head camera frame rate; no robot control")
     p.add_argument("--ip", default=os.environ.get("UNITREE_ROBOT_IP"),
                    help="robot IP (default: $UNITREE_ROBOT_IP)")
     p.add_argument("--seconds", type=float, default=5.0)
+    p.add_argument("--save", default=None, metavar="PNG",
+                   help="also save the last frame, to look at it or to try the vision model on it")
     args = p.parse_args(argv)
     if not args.ip:
         p.error("--ip is required (or set $UNITREE_ROBOT_IP)")
@@ -240,6 +251,10 @@ def _main(argv: list[str] | None = None) -> int:
         print(f"{n} frames in {args.seconds:.1f}s = {n / args.seconds:.1f} fps; "
               f"shape {last.image.shape}; frame gap mean {np.mean(gaps) * 1e3:.1f} ms, "
               f"max {np.max(gaps) * 1e3:.1f} ms")
+        if args.save:
+            import images
+            images.write_png(args.save, last.image)
+            print(f"saved {args.save}")
     finally:
         cam.stop()
     return 0

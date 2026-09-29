@@ -32,6 +32,9 @@ from typing import Any, Optional
 
 import numpy as np
 
+import images
+import limits
+
 OUTCOMES = ("completed", "running", "done", "give_up", "checked", "rejected", "no_frame")
 
 
@@ -64,20 +67,12 @@ class StepRecord:
 
 
 def save_png(path: Path, image_rgb: np.ndarray) -> None:
-    """Lossless. OpenCV wants BGR, so the conversion happens here and nowhere else."""
-    import cv2
-    ok = cv2.imwrite(str(path), cv2.cvtColor(np.ascontiguousarray(image_rgb), cv2.COLOR_RGB2BGR),
-                     [cv2.IMWRITE_PNG_COMPRESSION, 3])
-    if not ok:
-        raise IOError(f"could not write {path}")
+    """Lossless: the exact RGB matrix reads back (``images.py``)."""
+    images.write_png(path, image_rgb)
 
 
 def load_png(path: Path) -> np.ndarray:
-    import cv2
-    bgr = cv2.imread(str(path), cv2.IMREAD_COLOR)
-    if bgr is None:
-        raise IOError(f"could not read {path}")
-    return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+    return images.read_rgb(path)
 
 
 def slug(text: str, n: int = 32) -> str:
@@ -98,7 +93,7 @@ OUTCOME_OF = {              # runtime status -> outcome suffix of the run direct
 }
 TRANSCRIPT_EVENTS = {"protocol", "input_manifest", "observation", "model_decision", "execution_result",
                      "tool_error", "human_evaluation", "model_retry", "model_retry_exhausted"}
-STATES_HZ = 20.0
+STATES_HZ = limits.get("states_hz")          # configs/limits.json
 
 
 class EpisodeWriter:

@@ -9,7 +9,7 @@ result appears as ``obs.percept`` a few ticks later. ``policy.step`` never
 waits: a model round trip is 1-5 s, the control tick is 20 ms.
 
 Smoke-test one image before any sim/robot use:
-    HF_TOKEN=hf_... python -m perception head.png        # or VLM_PROVIDER=openai VLM_MODEL=... OPENAI_API_KEY=...
+    HF_TOKEN=hf_... python -m perception head.png
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from typing import Optional
 import numpy as np
 
 from camera import Frame
-from vlm import DEFAULT_MODEL, VLMClient, RequestError, encode_jpeg, extract_json, image_part  # noqa: F401 (re-exported)
+from vlm import DEFAULT_MODEL, IMAGE_WIDTH, VLMClient, RequestError, encode_jpeg, extract_json, image_part  # noqa: F401 (re-exported)
 from vision import bearing, elevation
 from worker import Worker
 
@@ -172,19 +172,19 @@ class VisionQuery:
 
 
 class VLMPerceiver(Perceiver):
-    """The vision model over any OpenAI-compatible endpoint (see ``vlm.py``)."""
+    """The vision model on Hugging Face Inference Providers (see ``vlm.py``)."""
 
     def __init__(self, model: str = DEFAULT_MODEL, token: Optional[str] = None, *,
-                 min_interval: float = 1.0, max_width: int = 640, client: Optional[VLMClient] = None,
+                 min_interval: float = 1.0, max_width: int = IMAGE_WIDTH, client: Optional[VLMClient] = None,
                  **client_kw) -> None:
         super().__init__(min_interval=min_interval)
         self.client = client or VLMClient(model, token, **client_kw)
         self.max_width = max_width
 
     @classmethod
-    def from_env(cls, model: Optional[str] = None, *, provider: Optional[str] = None, min_interval: float = 1.0,
-                 max_width: int = 640, **client_kw) -> "VLMPerceiver":
-        return cls(client=VLMClient.from_env(model, provider=provider, **client_kw), min_interval=min_interval,
+    def from_env(cls, model: Optional[str] = None, *, min_interval: float = 1.0,
+                 max_width: int = IMAGE_WIDTH, **client_kw) -> "VLMPerceiver":
+        return cls(client=VLMClient.from_env(model, **client_kw), min_interval=min_interval,
                    max_width=max_width)
 
     @property
@@ -221,7 +221,7 @@ def build_perceiver(args: argparse.Namespace, policy) -> Optional[Perceiver]:
         return None
     echo = (lambda s: print(s, end="", flush=True)) if getattr(args, "vision_echo", False) else None
     try:
-        return VLMPerceiver.from_env(getattr(args, "vision_model", None), provider=getattr(args, "vision_provider", None),
+        return VLMPerceiver.from_env(getattr(args, "vision_model", None),
                                      min_interval=getattr(args, "vision_interval", 1.0), on_text=echo)
     except RuntimeError as e:
         if mode == "api":
@@ -232,26 +232,28 @@ def build_perceiver(args: argparse.Namespace, policy) -> Optional[Perceiver]:
 
 def _main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="python -m perception",
-                                description="describe one image with the vision model (needs the provider's key, "
-                                            "see vlm.py: VLM_PROVIDER / VLM_MODEL / VLM_BASE_URL)")
+                                description="describe one image with the vision model (needs $HF_TOKEN)")
     p.add_argument("image", help="image file (png/jpg)")
-    p.add_argument("--model", default=None, help="model id (default: $VLM_MODEL, or the provider's default)")
-    p.add_argument("--provider", default=None, help="VLM provider (default: $VLM_PROVIDER or huggingface)")
+    p.add_argument("--model", default=None, help=f"model id (default: $VLM_MODEL or {DEFAULT_MODEL})")
     p.add_argument("--no-stream", action="store_true")
     args = p.parse_args(argv)
-    import cv2
-    bgr = cv2.imread(args.image, cv2.IMREAD_COLOR)
-    if bgr is None:
-        p.error(f"could not read {args.image}")
-    frame = Frame(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), 0.0, 1)
+    import images
     try:
-        per = VLMPerceiver.from_env(args.model, provider=args.provider, stream=not args.no_stream,
+        frame = Frame(images.read_rgb(args.image), 0.0, 1)
+    except IOError as e:
+        p.error(str(e))
+    try:
+        per = VLMPerceiver.from_env(args.model, stream=not args.no_stream,
                                    on_text=lambda s: print(s, end="", flush=True))
     except RuntimeError as e:
         p.error(str(e))
     print(f"model {per.model}; image {frame.image.shape[1]}x{frame.image.shape[0]}")
     t0 = time.monotonic()
-    percept = per.describe(frame)
+    try:
+        percept = per.describe(frame)
+    except (RequestError, ValueError) as e:
+        print(f"\n-- failed after {time.monotonic() - t0:.2f}s ({type(e).__name__}): {e}")
+        return 1
     print(f"\n-- {time.monotonic() - t0:.2f}s")
     print(f"summary:    {percept.summary}")
     print(f"path_clear: {percept.path_clear}")

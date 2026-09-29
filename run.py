@@ -13,8 +13,7 @@ commanded targets, the command speed, the weight and any base velocity (see
 Policies that use the camera (``look``, ``wave_on_red``) get frames from the
 env: rendered in sim, or replayed / random with ``--camera-dir`` /
 ``--camera-noise``, the head camera on the robot (``--camera-ip``). ``describe``
-asks the vision model (any OpenAI-compatible API: ``VLM_PROVIDER`` / ``VLM_MODEL`` /
-``VLM_BASE_URL`` and the provider's key, see ``vlm.py``) for a scene description; ``search``
+asks the vision model (Hugging Face: ``$HF_TOKEN``, ``$VLM_MODEL``) for a scene description; ``search``
 asks it for the next skill every decision, feeds back what happened, records
 everything under ``runs/`` and asks you for the verdict at the end. ``goto_red``
 and the walking skills drive the base: sim slides it, the robot needs ``--walk``.
@@ -27,13 +26,14 @@ import os
 import sys
 from typing import Optional
 
+import limits
 from envs import ENVS, Env, EnvAbort
 from envs.base import shield_sigint
 from perception import VISION_MODES, build_perceiver
 from policy import Action, Obs, Policy, Segment, SegmentPolicy
 from routines import POLICIES, ROUTINES, build_policy
 from skills import SKILLS, describe_menu, use_catalog
-from vlm import PROVIDERS
+from vlm import load_dotenv
 from agent import AGENTS
 
 
@@ -54,12 +54,9 @@ def build_parser() -> argparse.ArgumentParser:
     v = p.add_argument_group("vision")
     v.add_argument("--vision", choices=VISION_MODES, default="auto",
                    help="vision model for policies that use one: auto = run it iff the policy asks "
-                        "and the provider's key is set (default); api = require it; off = never")
-    v.add_argument("--vision-provider", default=None, choices=sorted(PROVIDERS),
-                   help="which OpenAI-compatible API to use (default: $VLM_PROVIDER or huggingface); "
-                        "$VLM_BASE_URL overrides its endpoint, $VLM_API_KEY its key variable")
+                        "and $HF_TOKEN is set (default); api = require it; off = never")
     v.add_argument("--vision-model", default=None,
-                   help="model id to query (default: $VLM_MODEL, or the provider's default)")
+                   help="Hugging Face model id to query (default: $VLM_MODEL or vlm.DEFAULT_MODEL)")
     v.add_argument("--vision-interval", type=float, default=1.0,
                    help="cost floor: requests closer together than this are ignored (default 1.0); "
                         "policies decide when to ask (their vision_refresh, default 2 s)")
@@ -78,18 +75,20 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--demo-select", choices=("auto", "model", "uniform"), default="auto",
                    help="how keyframes are picked from a video file: the vision model (default when its key is set) "
                         "or evenly spaced")
-    a.add_argument("--demo-frames", type=int, default=12, help="keyframes to keep per demonstration (default 12, max 24)")
+    a.add_argument("--demo-frames", type=int, default=limits.get("demo_frames"),
+                   help="keyframes to keep per demonstration (default: limit demo_frames, at most demo_frames_max)")
     a.add_argument("--ref", action="append", default=None, metavar="IMAGE",
                    help="a reference image (a photo of the goal) shown on turn 0; repeatable")
     a.add_argument("--episode", default=None, metavar="DIR", help="recorded run to replay (--policy replay)")
-    a.add_argument("--max-decisions", type=int, default=30,
-                   help="model decisions per run, rejected replies included (default 30)")
-    a.add_argument("--step-timeout", type=float, default=60.0,
-                   help="wall seconds to wait for one decision before the run fails (default 60)")
+    a.add_argument("--max-decisions", type=int, default=limits.get("max_decisions"),
+                   help="model decisions per run, rejected replies included (default: limit max_decisions)")
+    a.add_argument("--step-timeout", type=float, default=limits.get("step_timeout_s"),
+                   help="wall seconds to wait for one decision before the run fails (default: limit step_timeout_s)")
     a.add_argument("--skills", default=None, metavar="FILE",
                    help="skill catalog JSON to use instead of configs/skills.json (prompts, ranges)")
-    a.add_argument("--live-image-window", type=int, default=8,
-                   help="observation images kept in the conversation; older turns keep their text (default 8)")
+    a.add_argument("--live-image-window", type=int, default=limits.get("live_image_window"),
+                   help="observation images kept in the conversation; older turns keep their text "
+                        "(default: limit live_image_window)")
     a.add_argument("--fresh-turns", action="store_true",
                    help="no conversation memory: every decision is a fresh chat with only the current observation")
     a.add_argument("--safety-note", action="append", default=None, metavar="TEXT",
@@ -98,16 +97,19 @@ def build_parser() -> argparse.ArgumentParser:
                    help="do not ask for the human success/failed verdict after the run")
     a.add_argument("--log", default="runs", metavar="DIR", help="where search records its steps (default runs/)")
     a.add_argument("--no-log", action="store_true", help="do not record the run")
-    p.add_argument("--max-time", type=float, default=120.0,
-                   help="abort if the policy runs longer than this many seconds (default 120)")
+    p.add_argument("--max-time", type=float, default=limits.get("max_time_s"),
+                   help="stop (and return to a safe state) if the policy runs longer than this many seconds "
+                        "(default: limit max_time_s)")
+    p.add_argument("--limits", action="store_true",
+                   help="print every limit with its value, unit and source (configs/limits.json), then exit")
     for env_cls in ENVS.values():
         env_cls.add_args(p)
     return p
 
 
-TO_STAND = 3.0      # s: the safe return's move to STAND
-RAMP = 2.0          # s: then the weight fades to 0 (the onboard controller takes the arms)
-RELEASED = 0.2      # s: held at exactly weight 0 before the env is left
+TO_STAND = limits.get("return_to_stand_s")      # the safe return's move to STAND
+RAMP = limits.get("return_ramp_s")              # then the weight fades to 0 (the onboard controller takes the arms)
+RELEASED = limits.get("return_released_s")      # held at exactly weight 0 before the env is left
 
 
 def safe_return(env: Env, last: Action, obs: Obs) -> str:
@@ -146,7 +148,7 @@ def _return_to_safety(policy: Policy, env: Env, last: Optional[Action], obs: Obs
     policy.on_returned(outcome)
 
 
-def run(policy: Policy, env: Env, max_time: float = 120.0, perceiver=None) -> bool:
+def run(policy: Policy, env: Env, max_time: float = limits.get("max_time_s"), perceiver=None) -> bool:
     """The one loop every stage shares. ``perceiver`` (or a pre-set
     ``env.perceiver``) runs the vision model beside the loop; it is started
     before the env and stopped after it, so it never gates the env's teardown."""
@@ -203,6 +205,7 @@ def run(policy: Policy, env: Env, max_time: float = 120.0, perceiver=None) -> bo
 
 
 def main(argv: list[str] | None = None) -> int:
+    load_dotenv()              # before the parser: its defaults read $G1_ENV, $UNITREE_ROBOT_IP, ...
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -211,6 +214,9 @@ def main(argv: list[str] | None = None) -> int:
             use_catalog(args.skills)
         except ValueError as e:
             parser.error(str(e))
+    if args.limits:
+        print(limits.describe())
+        return 0
     if args.list:
         print("envs:     " + ", ".join(sorted(ENVS)))
         print("routines: " + ", ".join(sorted(ROUTINES)))

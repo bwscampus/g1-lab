@@ -12,8 +12,10 @@ from dataclasses import dataclass
 
 import numpy as np
 
+import limits
+
 NUM_JOINTS = 29
-CONTROL_DT = 0.02          # 50 Hz policy tick
+CONTROL_DT = limits.get("control_dt_s")          # the policy tick (configs/limits.json)
 ARM_SDK_WEIGHT_IDX = 29    # motor_cmd[29].q carries the arm-sdk blend weight on the robot
 
 
@@ -92,5 +94,5 @@ HEAD_CAMERA_FOVY = 58.0                           # degrees, vertical
 HEAD_CAMERA_SIZE = (480, 640)                     # sim render height, width
 
 # Base velocity limits for Action.base: |vx| m/s forward, |vy| m/s left, |vyaw| rad/s.
-# The SDK's high-level examples cap forward speed at 0.3 m/s.
-BASE_VEL_MAX = np.array([0.3, 0.2, 0.5])
+# Values and their provenance: configs/limits.json.
+BASE_VEL_MAX = np.array([limits.get("base_vx_max"), limits.get("base_vy_max"), limits.get("base_vyaw_max")])

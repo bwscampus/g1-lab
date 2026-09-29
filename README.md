@@ -33,7 +33,7 @@ conda create -n g1 python=3.10 -y && conda activate g1     # or: python3 -m venv
 ```
 
 **2. Install the repo.** The `sim` extra pulls in MuJoCo (which also provides
-`mjpython` on macOS); `dev` adds pytest and OpenCV (used by `--camera-dir`).
+`mjpython` on macOS); `dev` adds pytest. Images are handled with Pillow.
 
 ```
 git clone <this repo> g1-lab && cd g1-lab
@@ -87,7 +87,9 @@ neither is on PyPI and neither is needed for sim.
 ## Layout
 
 ```
-config.py           29-DoF joint table (DDS order), limits, groups, stand pose
+configs/limits.json every tunable limit and default, with its unit and where the number came from
+limits.py           reads it; python -m limits prints the table
+config.py           29-DoF joint table (DDS order), joint limits, groups, stand pose
 policy.py           Policy / Action / Obs interface, SegmentPolicy (scripted), ReactivePolicy (camera)
 camera.py           Frame sources: WebRTCCamera (robot), DirCamera / NoiseCamera (sim replay); `python -m camera`
 vision.py           pure detectors and image geometry: red_blob, bearing, elevation
@@ -107,8 +109,8 @@ demo.py             demonstrations on turn 0: a recorded run, a video (ffmpeg + 
                     or a goal image, compiled into a portable demo.json; python -m demo prepare/show
 scene.py            the sim room: textures, furniture, real object meshes; python -m scene fetch
 perception.py       Percept / Perceiver: describe a frame with the vision model, on request only
-vlm.py, worker.py   the vision-model client for any OpenAI-compatible API (providers, env, urllib, SSE);
-                    background worker with a latest-only result
+vlm.py, worker.py   the vision-model client (Hugging Face, .env, urllib, SSE); background worker with a
+                    latest-only result
 run.py              CLI and the single run loop shared by all envs
 envs/
   base.py           Env interface: setup / reset / step / teardown / report
@@ -119,6 +121,37 @@ routines.py         Routine = Takeover + skills (+ pauses) + Handback; Selector 
                     skill); ROUTINES and POLICIES registries
 tests/              pytest; everything runs through headless sim
 ```
+
+## Limits
+
+Every tunable number — speeds, ranges the model may ask for, timeouts, the
+settle tolerances, the token budget, the safe-return timing — lives in one file,
+**`configs/limits.json`**. Nothing else holds a limit: the code reads it, the
+skill catalog refers to it (`{"$limit": "move_dx_max_m"}`), and the prompts
+quote it (`{limit:walk_speed}`), so what the model is told always matches what
+the host enforces. Each entry says what it bounds and where the number came
+from:
+
+```
+python -m limits                  # the whole table, least-checked first
+python -m limits --source guess   # only the numbers nobody has verified
+g1 --limits                       # the same table
+G1_LIMITS=my_limits.json g1 ...   # another file for one run
+```
+
+| source | meaning |
+|---|---|
+| `guess` | chosen without evidence — review these first |
+| `gpt-policy` | copied from the reference repo (tuned for a tabletop arm) |
+| `repo` | already in the repo before the agent work |
+| `measured` | checked by running it |
+| `user` | your decision |
+| `robot` | a fact of the hardware or the SDK |
+
+Edit a `value` and rerun; update its `source` when you have verified it. The
+file is validated at startup: a missing or misspelt name, a non-number, or a
+contradiction (a walk speed above the base velocity ceiling) stops the program
+with the name of the entry.
 
 ## Skills and routines
 
@@ -219,35 +252,24 @@ FOV), and `path_clear`. Policies read it as `obs.percept`; `obs.percept_age` is
 the age of the frame it describes, so it includes the model's latency, and a
 policy holds when it grows stale. The control loop never waits on the model.
 
-Backend: **any OpenAI-compatible chat-completions API** (`vlm.py`), chosen by
-three variables plus the provider's own key:
+Backend: **Hugging Face Inference Providers** (`vlm.py`), configured by:
 
 ```
-VLM_PROVIDER   huggingface (default) | openai | openrouter | groq | together | deepinfra |
-               mistral | xai | gemini | ollama | custom
-VLM_MODEL      the model id to query (required, except huggingface has a default)
-VLM_BASE_URL   overrides the provider's endpoint; required for custom (any /v1 server: vLLM, ...)
-VLM_API_KEY    overrides the provider's key variable: HF_TOKEN, OPENAI_API_KEY, OPENROUTER_API_KEY,
-               GROQ_API_KEY, TOGETHER_API_KEY, DEEPINFRA_API_KEY, MISTRAL_API_KEY, XAI_API_KEY,
-               GEMINI_API_KEY; ollama and custom need none
+HF_TOKEN       a fine-grained token with "Make calls to Inference Providers"
+VLM_MODEL      optional: the model id (default vlm.DEFAULT_MODEL, a Qwen3-VL instruct model
+               verified live on the router); a suffix such as ":deepinfra" pins a provider
+VLM_BASE_URL   optional: another Hugging Face endpoint, e.g. a dedicated Inference Endpoint
 ```
 
 Put them in a `.env` in the repo root (`cp .env.example .env`; git-ignored; read
-on first use, exported variables win) or export them.
-`--vision-provider` / `--vision-model` override the first two per run. With
-nothing set, the default is Hugging Face Inference Providers (a fine-grained
-token with "Make calls to Inference Providers" as `HF_TOKEN`) and
-`vlm.DEFAULT_MODEL`, a Qwen3-VL instruct model verified live on the router;
-a suffix such as `Qwen/Qwen3-VL-30B-A3B-Instruct:deepinfra` pins one of its
-providers. Structured output (`json_schema`, then `json_object`) and
-`stream_options` are requested and stepped down automatically when a server
-rejects them.
+at startup, exported variables win) or export them. `--vision-model` overrides
+the model per run. Structured output (`json_schema`, then `json_object`) and
+`stream_options` are requested and stepped down automatically when the serving
+provider rejects them.
 
 ```
-python   run.py --env sim   --policy describe --headless               # needs the provider's key
-export HF_TOKEN=hf_...                                              # or e.g.:
-export VLM_PROVIDER=openai VLM_MODEL=gpt-4o-mini OPENAI_API_KEY=sk-...
-export VLM_PROVIDER=ollama VLM_MODEL=qwen2.5vl                      # a local server, no key
+python   run.py --env sim   --policy describe --headless               # needs $HF_TOKEN
+export HF_TOKEN=hf_...
 python -m perception head.png                                       # one real request, prints the Percept + latency
 mjpython run.py --env sim --policy describe --sim-obstacle 1.2,0,0.225 --vision api --vision-echo
 python   run.py --env sim --policy describe --headless --realtime 1 --sim-target 1.0,0.5,0.6 --vision api
@@ -356,7 +378,7 @@ fetch once, ~35 MB, git-ignored):
 
 ```
 python -m scene fetch
-export HF_TOKEN=hf_...            # or VLM_PROVIDER=... VLM_MODEL=... and that provider's key
+export HF_TOKEN=hf_...            # or put it in .env
 mjpython run.py --env sim --scene room --policy search --goal "find the mug" \
         --sim-objects mug@1.5,1.2 pencil@0.9,-0.4 --camera-size 720x1280 --realtime 1 --max-time 600
 ```
@@ -438,6 +460,39 @@ Check and headless sim run faster than realtime, so a real model there
 describes frames from well before its answer lands; use the fake, or pace sim
 with `--realtime 1`.
 
+### Robot camera: the AES key
+
+The head camera streams over WebRTC, and firmware 1.5.1 and later (G1) will not
+accept a connection without the robot's **AES-128 key**. The key is per device
+and does not change between connections, so fetch it once. It comes from the
+Unitree cloud, using the account the robot is bound to in the Unitree Explorer
+app; `unitree-fetch-aes-key` is installed with `unitree_webrtc_connect`.
+
+```
+unitree-fetch-aes-key --email you@example.com          # prompts for the password; lists every bound robot
+unitree-fetch-aes-key --email you@example.com --sn <serial> --quiet    # prints only that robot's key
+```
+
+Add `--region cn` for an account on the Chinese cloud. Put the key and the
+robot's address in `.env` (git-ignored, read by `run.py` and `python -m camera`):
+
+```
+UNITREE_ROBOT_IP=192.168.123.161
+UNITREE_AES_128_KEY=<the key>
+```
+
+Then check the stream before any run that moves the robot. This opens the
+camera only; it sends no robot commands:
+
+```
+python -m camera            # frame size, fps and frame gaps for 5 s
+```
+
+Expect `(720, 1280, 3)` at about 15 fps. The robot accepts one WebRTC client at
+a time, so close the Unitree app first. If it fails: the key belongs to a
+different robot, the app is still connected, or the robot is not reachable at
+that address (`ping 192.168.123.161`).
+
 ### Robot modes
 
 `--mode` is required for `--env robot`; there is no default.
@@ -451,6 +506,7 @@ the current FSM id, goes to FSM 200, runs the policy, releases the arms and
 returns the robot to the recorded FSM. It never damps and does not check which
 FSM the robot starts in.
 
-Both modes release the arms on exit, including on Ctrl-C. Pre-flight for either:
-not in debug mode, clear space around the arms, someone on the remote with L2+B
-ready.
+Both modes hand the arms back on exit. An interrupted run (Ctrl-C, `--max-time`,
+an error) first returns to the stand pose and fades the arm_sdk weight out; see
+*Ctrl-C is safe* above. Pre-flight for either: not in debug mode, clear space
+around the arms, someone on the remote with L2+B ready.

@@ -107,16 +107,14 @@ def _download(url: str, dest: Path, label: str) -> None:
 
 
 def fetch(objects: Sequence[str] = tuple(YCB), force: bool = False) -> None:
-    import cv2
+    import images
     for name, (slug, url) in TEXTURES.items():
         png = texture_path(name)
         if png.exists() and not force:
             continue
         jpg = png.with_suffix(".jpg")
         _download(url, jpg, f"texture {slug}")
-        img = cv2.imread(str(jpg))
-        if img is None or not cv2.imwrite(str(png), img):
-            raise IOError(f"could not convert {jpg}")
+        images.write_png(png, images.read_rgb(jpg))
         jpg.unlink()
     for o in objects:
         if o not in YCB:

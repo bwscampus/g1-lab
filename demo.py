@@ -27,11 +27,9 @@ Both video paths end in a portable bundle, ``demo.json`` + images, which
 from __future__ import annotations
 
 import argparse
-import base64
 import hashlib
 import json
 import math
-import mimetypes
 import os
 import shutil
 import subprocess
@@ -40,13 +38,14 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Optional, Sequence, Union
 
-from vlm import VLMClient, image_part
+import limits
+from vlm import IMAGE_WIDTH, VLMClient, image_part
 
 VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
 MODES = ("video", "video+action")
-DEFAULT_FRAMES = 12
-MAX_FRAMES = 24
+DEFAULT_FRAMES = int(limits.get("demo_frames"))          # every number here: configs/limits.json
+MAX_FRAMES = int(limits.get("demo_frames_max"))
 CACHE_DIR = Path("runs") / ".cache" / "video"
 
 HISTORICAL = (
@@ -77,7 +76,7 @@ HISTORICAL_ACTION = (
 class TextPart:
     text: str
 
-    def blocks(self, max_width: int = 640) -> list[dict]:
+    def blocks(self, max_width: int = IMAGE_WIDTH) -> list[dict]:
         return [{"type": "text", "text": self.text}]
 
 
@@ -87,7 +86,7 @@ class ImagePart:
     label: Optional[str] = None
     detail: Optional[str] = None
 
-    def blocks(self, max_width: int = 640) -> list[dict]:
+    def blocks(self, max_width: int = IMAGE_WIDTH) -> list[dict]:
         out = []
         if self.label:
             out.append({"type": "text", "text": f"Image: {self.label}"})
@@ -106,21 +105,14 @@ class VideoPart:
 ContentPart = Union[TextPart, ImagePart, VideoPart]
 
 
-def image_block(path: Path, max_width: int = 640) -> dict:
+def image_block(path: Path, max_width: int = IMAGE_WIDTH) -> dict:
     """An image file as an ``image_url`` block: PNG/JPEG re-encoded to JPEG at
     ``max_width`` like a camera frame (the bundle keeps the original)."""
+    import images
     try:
-        import cv2
-        bgr = cv2.imread(str(path), cv2.IMREAD_COLOR)
-    except ImportError:
-        bgr = None
-    if bgr is not None:
-        return image_part(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), max_width)
-    mime, _ = mimetypes.guess_type(path.name)
-    if mime is None or not mime.startswith("image/"):
-        raise ValueError(f"not an image: {path}")
-    data = base64.b64encode(path.read_bytes()).decode("ascii")
-    return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}}
+        return image_part(images.read_rgb(path), max_width)
+    except IOError as e:
+        raise ValueError(f"not an image: {path} ({e})") from None
 
 
 def content_records(parts: Sequence[ContentPart]) -> list:
@@ -400,12 +392,12 @@ def _rows(samples: list[dict], t0, t1, fallback) -> list:
 
 @dataclass(frozen=True)
 class VideoConfig:
-    target_fps: float = 2.0
-    max_candidates: int = 24          # per window
-    window_s: float = 30.0
-    candidate_width: int = 768
-    keyframe_width: int = 1280
-    max_duration_s: float = 1800.0
+    target_fps: float = limits.get("video_fps")
+    max_candidates: int = int(limits.get("video_candidates_per_window"))
+    window_s: float = limits.get("video_window_s")
+    candidate_width: int = int(limits.get("video_candidate_width_px"))
+    keyframe_width: int = int(limits.get("video_keyframe_width_px"))
+    max_duration_s: float = limits.get("video_max_duration_s")
 
     def record(self) -> dict:
         return self.__dict__.copy()
@@ -544,8 +536,9 @@ class ModelSelector:
 
     name = "model"
 
-    def __init__(self, client: VLMClient, max_frames: int = DEFAULT_FRAMES, per_window: int = 8,
-                 max_width: int = 640) -> None:
+    def __init__(self, client: VLMClient, max_frames: int = DEFAULT_FRAMES,
+                 per_window: int = int(limits.get("video_keyframes_per_window")),
+                 max_width: int = IMAGE_WIDTH) -> None:
         self.client = client
         self.max_frames = max_frames
         self.per_window = per_window
@@ -566,7 +559,7 @@ class ModelSelector:
             blocks.append(image_block(Path(f["path"]), self.max_width))
         schema = selection_schema(limit)
         text = self.client.complete([{"role": "system", "content": system}, {"role": "user", "content": blocks}],
-                                    max_tokens=1200, schema=schema)
+                                    schema=schema)
         self.calls.append({"model": self.client.model, "elapsed_s": self.client.last_elapsed, "status": "completed",
                            "usage": self.client.last_usage, "response_mode": self.client.response_mode,
                            "provider": self.client.provider, "phase": "demo"})
@@ -753,12 +746,12 @@ def save_input(request: Request, directory: Path) -> Path:
     return directory / "input.json"
 
 
-def build_selector(kind: str, max_frames: int, model: Optional[str] = None, provider: Optional[str] = None):
-    """``model`` when the provider's key is there (or asked for), else ``uniform``."""
+def build_selector(kind: str, max_frames: int, model: Optional[str] = None):
+    """``model`` when a token is there (or asked for), else ``uniform``."""
     if kind == "uniform":
         return UniformSelector(max_frames)
     try:
-        client = VLMClient.from_env(model, provider=provider)
+        client = VLMClient.from_env(model)
     except RuntimeError:
         if kind == "model":
             raise
@@ -782,7 +775,6 @@ def _main(argv: Optional[list[str]] = None) -> int:
     prep.add_argument("--demo-select", choices=("auto", "model", "uniform"), default="auto")
     prep.add_argument("--demo-frames", type=int, default=DEFAULT_FRAMES)
     prep.add_argument("--model", default=None, help="model id for --demo-select model (default: $VLM_MODEL)")
-    prep.add_argument("--provider", default=None, help="VLM provider (default: $VLM_PROVIDER or huggingface)")
     show = sub.add_parser("show", help="print what the model gets from a bundle")
     show.add_argument("bundle", help="demo.json or its directory")
     args = p.parse_args(argv)
@@ -800,7 +792,7 @@ def _main(argv: Optional[list[str]] = None) -> int:
         request = build_request(args.goal, manifest=args.input_json, demo=args.demo, mode=args.demo_mode)
         if not any(isinstance(x, VideoPart) for x in request.content):
             p.error("nothing to compile: pass --demo or a manifest with a video")
-        selector = build_selector(args.demo_select, args.demo_frames, args.model, args.provider)
+        selector = build_selector(args.demo_select, args.demo_frames, args.model)
         out = Path(args.out)
         prepared, reports = prepare(request, out, selector=selector, max_frames=args.demo_frames)
     except (ValueError, RuntimeError) as e:

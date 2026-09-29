@@ -3,6 +3,8 @@ import json
 import numpy as np
 import pytest
 
+import limits
+
 from decider import (AgentTurn, Decision, VLMDecider, ProtocolError, build_context, instructions, observation,
                      parse_selection)
 from vlm import VLMClient, Overloaded, QuotaExceeded, RequestError, classify
@@ -143,7 +145,7 @@ def test_hf_decider_keeps_the_conversation_and_prunes_images():
     assert d.name == "move" and d.arguments == {"dx_m": 0.0, "dy_m": 0.0, "dyaw_deg": 45.0, "note": "searching"}
     body = calls[0]
     assert body["response_format"]["type"] == "json_schema" and body["response_format"]["json_schema"]["schema"] == dec.context.output_schema
-    assert body["stream_options"] == {"include_usage": True} and body["max_tokens"] == 400
+    assert body["stream_options"] == {"include_usage": True} and body["max_tokens"] == limits.get("max_tokens")
     msgs = body["messages"]
     assert msgs[0] == {"role": "system", "content": dec.context.instructions} and len(msgs) == 2
     user = msgs[1]["content"]

@@ -19,7 +19,6 @@ def record(step, name, args, status="completed"):
 
 
 def test_round_trip_is_lossless(tmp_path):
-    pytest.importorskip("cv2")
     rng = np.random.default_rng(1)
     img = rng.integers(0, 256, (48, 64, 3), dtype=np.uint8)
     w = EpisodeWriter(tmp_path, env="sim", goal="Find the Mug!", model="m", skills=["turn"], threaded=False)
@@ -39,7 +38,6 @@ def test_round_trip_is_lossless(tmp_path):
 
 
 def test_threaded_writer_flushes_on_close(tmp_path):
-    pytest.importorskip("cv2")
     img = np.zeros((8, 8, 3), np.uint8)
     w = EpisodeWriter(tmp_path, env="sim", goal="g", model="m", skills=[])
     for i in range(1, 6):
@@ -55,7 +53,6 @@ def test_threaded_writer_flushes_on_close(tmp_path):
 
 
 def test_chain_of_and_cli(tmp_path, capsys):
-    pytest.importorskip("cv2")
     w = EpisodeWriter(tmp_path, env="sim", goal="g", model="m", skills=[], threaded=False)
     w.write_step(record(1, "turn", {"angle_deg": 45.0}), None)
     w.write_step(record(2, "walk_forward", {"distance_m": 0.5}), None)
@@ -100,7 +97,8 @@ def test_events_transcript_and_status(tmp_path):
     usage = [json.loads(l) for l in (d / "usage.jsonl").read_text().splitlines()]
     assert usage[1]["call"] == 2 and usage[0]["cost_unavailable_reason"] == "model_price_unknown"
     assert json.loads((d / "config.json").read_text())["goal"] == "g"
+    # a finished run is never overwritten by the rename
+    w2 = EpisodeWriter(tmp_path / "other", env="sim", goal="g", model="m", skills=[], threaded=False)
+    w2.dir.with_name(w2.dir.name + "_failed").mkdir()
     with pytest.raises(FileExistsError):
-        w2 = EpisodeWriter(tmp_path, env="sim", goal="g", model="m", skills=[], threaded=False)
-        w2.dir.rename(w2.dir.with_name(w2.dir.name + "_x")); w2.dir = w2.dir.with_name(w2.dir.name + "_x")
-        w2.dir.with_name(w2.dir.name[:-2] + "_failed").mkdir(); w2.close("failed")
+        w2.close("failed")
