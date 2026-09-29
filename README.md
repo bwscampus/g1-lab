@@ -316,7 +316,9 @@ python   run.py --env robot --policy goto_red --iface <iface> --mode standing --
 
 ### Search: a decision loop over skills
 
-`search` is the top-level behaviour, GPT-Policy's closed loop on this executor:
+`search` is the top-level behaviour, GPT-Policy's closed loop
+([arXiv:2609.19138](https://arxiv.org/abs/2609.19138), see
+[Acknowledgements](#acknowledgements)) on this executor:
 each **decision** reads a fresh camera frame and the measured joint state
 (standing still, once the joints have measurably settled), sends the model one
 JSON observation, runs the skill it picks to its end, waits for the joints to
@@ -510,3 +512,35 @@ Both modes hand the arms back on exit. An interrupted run (Ctrl-C, `--max-time`,
 an error) first returns to the stand pose and fades the arm_sdk weight out; see
 *Ctrl-C is safe* above. Pre-flight for either: not in debug mode, clear space
 around the arms, someone on the remote with L2+B ready.
+
+## Acknowledgements
+
+The decision loop in this repo is inspired by **GPT-Policy**, *In-Context Robot
+Learning with VLM Agents* ([arXiv:2609.19138](https://arxiv.org/abs/2609.19138),
+[code](https://github.com/cheng-haha/GPT-Policy)). These ideas are theirs:
+
+* a frozen vision-language model choosing one tool per turn from a catalog
+  defined in JSON, with a `note` on every action
+* one structured observation per turn, carrying the measured state and the
+  result of the previous action as feedback
+* errors returned to the model as feedback instead of retried
+* demonstrations compiled into the first turn as context
+* a human assigning the success label after the run, and the run trace
+  (events, transcript, protocol, states, usage)
+
+This repo reimplements that design for a Unitree G1. It contains none of their
+code, which had no licence granted when this was written. The executor, the
+skills, the joint monitor, the safe return and the simulator are this repo's
+own, and any fault in how their design was adapted is ours.
+
+```bibtex
+@article{cheng2026incontext,
+  title   = {In-Context Robot Learning with VLM Agents},
+  author  = {Cheng, Dongzhou and Yi, Taoran and Fang, Ye and Zhang, Xingwu and
+             Feng, Fan and Li, Yixuan and Zhuang, Gengxiong and Wang, Rongze and
+             Yang, Shuai and Song, Wei and Xue, Weizhi and Wu, Minyan and
+             Gui, Jie and Wang, Jiaqi and Wu, Tong},
+  journal = {arXiv preprint arXiv:2609.19138},
+  year    = {2026}
+}
+```
