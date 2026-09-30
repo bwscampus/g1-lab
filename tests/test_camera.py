@@ -3,28 +3,20 @@ import math
 import numpy as np
 import pytest
 
-from camera import Camera, DirCamera, Frame, NoiseCamera
-from config import CONTROL_DT, STAND_Q, UPPER_BODY, joint_index
-from envs.base import Env
-from skills import SixSeven
-from policy import Obs, ReactivePolicy
-from routines import Selector
-from run import build_parser, run
-from behaviors import Look
-from vision import red_blob
-
-WAIST_YAW = joint_index("waist_yaw")
+from g1.camera import Camera, DirCamera
+from g1.cli import run
+from g1.core.action import Obs, Runnable
+from g1.core.config import CONTROL_DT, STAND_Q, UPPER_BODY
+from g1.envs.base import Env
+from tests.doubles import red_blob, sim_env
 
 
 def solid(color, h=48, w=64):
     return np.full((h, w, 3), color, dtype=np.uint8)
 
 
-from tests.doubles import sim_env as check_env
-
-
 def write_frames(path, colors):
-    import images
+    from g1.core import images
     for i, c in enumerate(colors):
         images.write_png(path / f"{i:04d}.png", solid(c))
 
@@ -60,16 +52,7 @@ def test_dir_camera_replays_on_clock(tmp_path):
     assert cam.poll(1.0).seq == 3       # ran out: the last frame stays, no re-publish
 
 
-def test_noise_camera_frames_differ():
-    cam = NoiseCamera(fps=10.0, size=(32, 32))
-    a = cam.poll(0.0).image.copy()
-    b = cam.poll(0.1).image
-    assert a.shape == (32, 32, 3) and not np.array_equal(a, b)
-
-
-# -- vision helper ----------------------------------------------------------
-
-def test_red_blob():
+def test_red_blob_double():
     img = solid((0, 0, 0))
     assert red_blob(img) is None
     img[:, 48:] = (220, 20, 20)                     # right quarter red
@@ -77,86 +60,34 @@ def test_red_blob():
     assert u > 0.5 and abs(v) < 1e-6 and frac == pytest.approx(0.25)
 
 
-# -- ReactivePolicy envelope --------------------------------------------------
+# -- frames reach the program through the env, on the env's clock ----------------------
 
-class Nod(ReactivePolicy):
-    name = "nod"
+class Watch(Runnable):
+    """Holds STAND for ``seconds`` and notes every distinct frame it is shown."""
 
-    def __init__(self):
-        super().__init__(1.0, ramp=0.1, to_stand=0.1)
-        self.calls = 0
+    name = "watch"
+    joints = UPPER_BODY
+    uses_camera = True
 
-    def track(self, t, obs):
-        self.calls += 1
-        return {WAIST_YAW: 0.3}
+    def __init__(self, seconds):
+        self.seconds = seconds
+        self.seen = []
 
-
-def test_reactive_tracks_per_frame_and_holds_when_stale():
-    p = Nod()
-    p.reset(Obs(STAND_Q))
-    t = 0.0
-    while t < 0.2 - 1e-9:                           # through both bookends
-        p.step(t, Obs(STAND_Q))
-        t += CONTROL_DT
-    img = solid((0, 0, 0))
-    a = p.step(0.2, Obs(STAND_Q, Frame(img, 0.2, 1), 0.0))
-    assert p.calls == 1
-    assert a.q[WAIST_YAW] == pytest.approx(3.0 * CONTROL_DT)   # rate-limited toward 0.3
-    p.step(0.22, Obs(STAND_Q, Frame(img, 0.2, 1), 0.02))      # same seq: no new call
-    assert p.calls == 1
-    p.step(0.24, Obs(STAND_Q, Frame(img, 0.2, 2), 1.0))       # new seq but stale: no call
-    assert p.calls == 1
-    p.step(0.26, Obs(STAND_Q, Frame(img, 0.26, 3), 0.0))
-    assert p.calls == 2
-    assert p.duration == pytest.approx(1.4)
+    def step(self, t, obs):
+        if obs.frame is not None and (not self.seen or self.seen[-1][0] != obs.frame.seq):
+            self.seen.append((obs.frame.seq, obs.frame.stamp, obs.frame_age, tuple(obs.frame.image[0, 0])))
+        return None if t >= self.seconds - 1e-9 else self.action(obs.q.copy())
 
 
-def test_reactive_rejects_joint_outside_policy():
-    class Bad(ReactivePolicy):
-        joints = [WAIST_YAW]
-
-        def track(self, t, obs):
-            return {18: 0.0}
-
-    p = Bad(1.0, ramp=0.0, to_stand=0.0)
-    p.reset(Obs(STAND_Q))
-    with pytest.raises(ValueError):
-        p.step(0.0, Obs(STAND_Q, Frame(solid((0, 0, 0)), 0.0, 1), 0.0))
-
-
-# -- through the check env ----------------------------------------------------
-
-def test_look_passes_check_under_noise():
-    env = check_env("--camera-noise")
-    p = Look(duration=3.0)
-    assert run(p, env) is True
-    assert env.violations == []
-    assert env.ticks == round(p.duration / CONTROL_DT)
-    assert env.replay.count > 30                      # the fuzzed feed replaced the render
-
-
-def test_look_holds_without_frames():
-    env = check_env()
-    assert run(Look(duration=2.0), env) is True
-    assert env.cmd_min[WAIST_YAW] == env.cmd_max[WAIST_YAW] == 0.0      # never commanded away
-    assert env.q_max[WAIST_YAW] == pytest.approx(0.0, abs=1e-3)         # and physics held it
-
-
-def test_selector_triggers_motion_then_hands_back(tmp_path):
-    write_frames(tmp_path, [(0, 0, 0)] * 30 + [(230, 10, 10)] * 5)   # red appears at 3 s
-    env = check_env("--camera-dir", str(tmp_path), "--camera-fps", "10")
-    p = Selector([(lambda o: red_blob(o.frame.image) is not None, "sixseven")])
-    assert run(p, env) is True
-    assert env.violations == []
-    # takeover 5 s -> triggers as soon as idle begins -> sixseven -> handback 5 s
-    assert env.ticks == round((10.0 + SixSeven().duration) / CONTROL_DT)
-    assert env.q_min[19] < -1.0 and env.q_max[26] > 1.0   # sixseven turned the wrists
-
-
-def test_selector_times_out_without_trigger():
-    env = check_env()
-    p = Selector([(lambda o: False, "tpose")], timeout=1.0)   # sim always has frames; nothing matches
-    assert run(p, env) is True
-    assert env.ticks == round(11.0 / CONTROL_DT)
-    assert env.q_max[16] == pytest.approx(0.2, abs=0.01)   # never left STAND
-    assert p.joints == sorted(UPPER_BODY)
+def test_camera_dir_feeds_the_program_on_sim_time(tmp_path):
+    write_frames(tmp_path, [(0, 0, 0)] * 10 + [(230, 10, 10)] * 5)   # red appears at 1 s
+    env = sim_env("--camera-dir", str(tmp_path), "--camera-fps", "10")
+    p = Watch(2.0)
+    assert run(p, env) is True and env.violations == []
+    assert len(p.seen) == 15 and env.replay.count == 15               # every file, once, at 10 fps
+    seqs, stamps, ages, pixels = zip(*p.seen)
+    assert list(seqs) == list(range(1, 16))
+    assert stamps[10] == pytest.approx(1.0, abs=CONTROL_DT) and all(a <= CONTROL_DT + 1e-9 for a in ages)
+    assert pixels[9] == (0, 0, 0) and pixels[10] == (230, 10, 10)
+    env = sim_env()
+    assert run(Watch(0.5), env) is True and env.renderer is not None    # no --camera-dir: the render feeds it

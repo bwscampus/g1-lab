@@ -4,9 +4,9 @@ import pytest
 
 from pathlib import Path
 
-import limits
+from g1.core import limits
 
-from vlm import DEFAULT_MODEL, RequestError, VLMClient, load_dotenv, resolve
+from g1.vlm import DEFAULT_MODEL, RequestError, VLMClient, load_dotenv, resolve
 
 
 def test_resolve_defaults_overrides_and_errors():
@@ -62,7 +62,7 @@ def test_stream_options_step_down():
 
 
 def test_an_error_inside_the_stream_is_raised_not_swallowed():
-    from vlm import Overloaded, QuotaExceeded
+    from g1.vlm import Overloaded, QuotaExceeded
 
     def failing(error):
         return VLMClient("m", "k", transport=lambda *a: iter([json.dumps({"error": error})]))
@@ -90,7 +90,7 @@ def test_dotenv_fills_gaps_only(tmp_path):
 
 
 def test_a_reply_cut_off_by_the_token_budget_says_so(monkeypatch):
-    from vlm import MAX_TOKENS, TruncatedReply
+    from g1.vlm import MAX_TOKENS, TruncatedReply
     chunks = [json.dumps({"choices": [{"delta": {"content": ""}, "finish_reason": "length"}]}),
               json.dumps({"choices": [], "usage": {"completion_tokens": 400,
                                                    "completion_tokens_details": {"reasoning_tokens": 400}}}), "[DONE]"]

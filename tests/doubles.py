@@ -2,45 +2,42 @@
 the real vision model or runs a preset; tests use these to run offline."""
 from __future__ import annotations
 
+import json
 import math
-from dataclasses import replace
-from typing import Sequence
 
-from camera import Frame
-from perception import Detected, Perceiver, Percept
-from vision import bearing, elevation, red_blob
+import numpy as np
 
-
-class FakePerceiver(Perceiver):
-    """Inline stand-in: labels the red blob, or cycles scripted Percepts."""
-
-    def __init__(self, label: str = "red ball", script: Sequence[Percept] | None = None,
-                 min_interval: float = 0.0) -> None:
-        super().__init__(threaded=False, min_interval=min_interval)
-        self.label = label
-        self.script = list(script or [])
-        self._i = 0
-
-    def describe(self, frame: Frame) -> Percept:
-        if self.script:
-            p = self.script[self._i % len(self.script)]
-            self._i += 1
-            return replace(p, frame_seq=frame.seq, frame_stamp=frame.stamp, seq=0, latency=0.0)
-        blob = red_blob(frame.image)
-        if blob is None:
-            return Percept("nothing of interest", [], True, frame.seq, frame.stamp)
-        u, v, frac = blob
-        size = math.sqrt(frac)
-        d = Detected(self.label, (u + 1) / 2, (v + 1) / 2, size, size, None,
-                     bearing(u, frame.image.shape), elevation(v, frame.image.shape))
-        return Percept(f"a {self.label} at {math.degrees(d.bearing):+.0f} deg", [d], frac < 0.2,
-                       frame.seq, frame.stamp)
+from g1.agent.decider import AgentTurn, Decider, Decision
+from g1.core.config import HEAD_CAMERA_FOVY
 
 
-import json                                      # noqa: E402
+def red_blob(image: np.ndarray, min_fraction: float = 0.002):
+    """Centre of the red pixels as ``(u, v, fraction)`` with u, v in [-1, 1]
+    (u positive to the right of the image, v down), or None when fewer than
+    ``min_fraction`` of the pixels are red. The stand-in for a goal detector."""
+    img = image.astype(np.int16)
+    r, g, b = img[..., 0], img[..., 1], img[..., 2]
+    mask = (r > 120) & (r - g > 60) & (r - b > 60)
+    n = int(mask.sum())
+    if n < min_fraction * mask.size:
+        return None
+    ys, xs = np.nonzero(mask)
+    h, w = mask.shape
+    u = 2.0 * xs.mean() / (w - 1) - 1.0
+    v = 2.0 * ys.mean() / (h - 1) - 1.0
+    return float(u), float(v), n / mask.size
 
-from decider import AgentTurn, Decider, Decision   # noqa: E402
-from targets import RedDot, Sighting             # noqa: E402
+
+def bearing(u: float, image_shape, fovy_deg: float = HEAD_CAMERA_FOVY) -> float:
+    """Horizontal angle in rad (positive to the right) of normalised image column ``u``."""
+    h, w = image_shape[:2]
+    half_w = math.tan(math.radians(fovy_deg) / 2) * w / h
+    return math.atan(u * half_w)
+
+
+def elevation(v: float, image_shape, fovy_deg: float = HEAD_CAMERA_FOVY) -> float:
+    """Vertical angle in rad (positive up) of normalised image row ``v`` (+1 at the bottom)."""
+    return -math.atan(v * math.tan(math.radians(fovy_deg) / 2))
 
 
 def select(decider: Decider, turn: AgentTurn, name: str, arguments: dict) -> Decision:
@@ -50,10 +47,13 @@ def select(decider: Decider, turn: AgentTurn, name: str, arguments: dict) -> Dec
 
 class RedBallDecider(Decider):
     """Rule-based decider on the red blob (the test stand-in for a goal object):
-    not seen -> turn 45 (or look, without base skills); seen off-centre -> turn
-    toward it; centred -> walk 0.5 m when the path is clear; reached -> done."""
+    not seen -> turn 45 (or glance, without base tools); seen off-centre ->
+    turn toward it; centred -> walk 0.5 m when the path is clear; reached
+    (it looms past 3 % of the image, or sinks below -0.2 rad) -> done."""
 
     model = "red-ball-rules"
+    reach_fraction = 0.03
+    reach_elevation = -0.2
 
     def __init__(self) -> None:
         super().__init__(threaded=False)
@@ -63,13 +63,12 @@ class RedBallDecider(Decider):
 
     def decide(self, turn: AgentTurn) -> Decision:
         self.turns.append(turn)
-        names = {s.name for s in self.context.menu}
+        names = {t.name for t in self.context.menu}
         obs = json.loads(turn.observation)
         waist = obs["state"]["waist_yaw_deg"]
         image = turn.images.get("head")
         if image is None:
             return self._reply(turn, "hold", {"seconds": 0.5, "note": "no image; waiting"})
-        frame = Frame(image, turn.frame_stamp or 0.0, turn.frame_seq or 0)
         if image.shape[1] > 800:
             image = image[::2, ::2]
         blob = red_blob(image)
@@ -82,11 +81,11 @@ class RedBallDecider(Decider):
                 return self._reply(turn, "arm_path", {"waypoints": [{"joints": {"waist_yaw": yaw}, "seconds": 1.5}],
                                                       "note": "no red ball in view; glancing"})
             return self._reply(turn, "give_up", {"reason": "cannot search", "hindsight": ""})
-        s = Sighting.from_blob(*blob, frame)
-        b = math.degrees(s.bearing) - waist          # base-relative, + right
-        clear = blob[2] < 0.2
+        u, v, frac = blob
+        b = math.degrees(bearing(u, image.shape)) - waist          # base-relative, + right
+        clear = frac < 0.2
         evidence = f"a red ball at {b:+.0f} deg"
-        if RedDot().reached(s):
+        if frac >= self.reach_fraction or elevation(v, image.shape) <= self.reach_elevation:
             return self._reply(turn, "done", {"summary": f"reached: {evidence}", "hindsight": ""})
         if abs(b) > 8:
             turn_deg = max(-68.0, min(68.0, -b))
@@ -109,15 +108,15 @@ class RedBallDecider(Decider):
 
 def sim_env(*extra, cls=None):
     """A headless sim env: the fast, fully checked stage the tests run in."""
-    from envs import SimEnv
-    from run import build_parser
-    args = build_parser().parse_args(["--env", "sim", "--policy", "x", "--headless", *extra])
+    from g1.cli import run_parser
+    from g1.envs import SimEnv
+    args = run_parser().parse_args(["--env", "sim", "--tools", "x", "--headless", *extra])
     return (cls or SimEnv)(args)
 
 
 def scripted_sim(camera, *extra):
     """A headless sim whose camera feed is scripted, recording every action."""
-    from envs import SimEnv
+    from g1.envs import SimEnv
 
     class ScriptedSim(SimEnv):
         def setup(self):

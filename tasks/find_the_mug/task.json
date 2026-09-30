@@ -1,0 +1,9 @@
+{
+  "instruction": "find the mug and stop in front of it",
+  "scene": "room",
+  "objects": ["mug@1.5,1.2"],
+  "safety_notes": [],
+  "max_decisions": 30,
+  "max_time_s": 600,
+  "notes": "The reference task: a mug on the floor of the room, 1.5 m ahead and 1.2 m to the left of the start. The room's own safety notes (walls, the table, the doorway) are added by --scene room. Sim: g1 task run tasks/find_the_mug --env sim --headless (or mjpython -m g1 task run ... to watch). Robot: put a mug on the floor and run g1 task run tasks/find_the_mug --env robot --iface <iface> --mode standing --camera-ip <ip> --walk."
+}

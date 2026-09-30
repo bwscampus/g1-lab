@@ -1,0 +1,13 @@
+{
+  "instruction": "find the mug and stop in front of it",
+  "scene": "room",
+  "objects": ["mug@1.5,1.2"],
+  "safety_notes": [],
+  "demo": null,
+  "demo_mode": null,
+  "refs": [],
+  "success": "human",
+  "max_decisions": 30,
+  "max_time_s": 600,
+  "notes": "A new task, from `g1 new task NAME`. Every key but instruction is optional. instruction: what the model is asked to do, in one sentence. scene/objects: the sim room and what to put in it (g1 scene fetch once); on the robot they are ignored. safety_notes: physical facts the camera cannot see, added to the prompt. demo: a video, a runs/<dir> or a demo.json shown on turn 0, relative to this folder. refs: photos of the goal. success: the human verdict asked after the run. notes: for people; the model never sees them. Run it: g1 task run tasks/NAME --env sim --headless"
+}

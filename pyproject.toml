@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "g1-lab"
-version = "0.1.0"
-description = "Policies for the Unitree G1 and the check / sim / robot environments that run them"
+version = "0.2.0"
+description = "Tools for the Unitree G1, the sim and robot envs that run them, and the agent that lets a vision-language model pick them"
 requires-python = ">=3.10"
 dependencies = [
     "numpy",
@@ -14,20 +14,19 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# MuJoCo viewer stage. unitree_sdk2py is not on PyPI; install it from
+# MuJoCo stage. unitree_sdk2py is not on PyPI; install it from
 # https://github.com/unitreerobotics/unitree_sdk2_python for --env robot.
 sim = ["mujoco>=3.2", "mujoco-menagerie"]
 # Camera feed. unitree_webrtc_connect is not on PyPI either; install it from
-# https://github.com/legion1581/go2_webrtc_connect for --env robot with a camera policy.
+# https://github.com/legion1581/go2_webrtc_connect for --env robot with the camera.
 camera = ["aiortc", "av"]
 dev = ["pytest"]
 
 [project.scripts]
-g1 = "run:main"
+g1 = "g1.cli:main"
 
-[tool.setuptools]
-py-modules = ["agent", "behaviors", "camera", "config", "decider", "demo", "episode", "images", "limits", "perception", "policy", "run", "routines", "scene", "skills", "targets", "vision", "vlm", "worker"]
-packages = ["envs"]
+[tool.setuptools.packages.find]
+include = ["g1*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,9 +1,9 @@
 {
   "version": 1,
-  "about": "Every tunable limit and default in g1-lab. Change a value here and nothing else. 'source' says where the number came from: robot (a fact of the hardware or SDK), user (your decision), gpt-policy (copied from the reference repo), measured (checked by running it), repo (in the repo before the agent work), guess (chosen without evidence: review these first). Print this table with: python -m limits",
+  "about": "Every tunable limit and default in g1-lab. Change a value here and nothing else. 'source' says where the number came from: robot (a fact of the hardware or SDK), user (your decision), gpt-policy (copied from the reference repo), measured (checked by running it), repo (in the repo before the agent work), guess (chosen without evidence: review these first). Print this table with: g1 limits",
   "limits": {
     "control_dt_s":               {"value": 0.02,  "unit": "s",     "source": "robot",      "note": "the control tick: arm_sdk is published at 50 Hz"},
-    "record_step_s":              {"value": 3.0,   "unit": "s",     "source": "user",       "note": "a step record (frame + joints) is closed this often while a skill runs"},
+    "record_step_s":              {"value": 3.0,   "unit": "s",     "source": "user",       "note": "a step record (frame + joints) is closed this often while a tool runs"},
 
     "base_vx_max":                {"value": 0.3,   "unit": "m/s",   "source": "robot",      "note": "hard ceiling on forward base speed; Unitree's high-level examples cap at 0.3"},
     "base_vy_max":                {"value": 0.2,   "unit": "m/s",   "source": "guess",      "note": "hard ceiling on sideways base speed; never tested on the robot"},
@@ -39,7 +39,7 @@
 
     "max_decisions":              {"value": 30,    "unit": "count", "source": "guess",      "note": "model decisions per run, rejected replies included (gpt-policy uses 100)"},
     "step_timeout_s":             {"value": 60.0,  "unit": "s",     "source": "guess",      "note": "longest wait for one decision before the run fails"},
-    "max_time_s":                 {"value": 120.0, "unit": "s",     "source": "repo",       "note": "longest a policy may run before the runner stops it (raise it for search)"},
+    "max_time_s":                 {"value": 120.0, "unit": "s",     "source": "repo",       "note": "longest a program may run before the runner stops it (raise it for search)"},
     "settle_min_s":               {"value": 0.5,   "unit": "s",     "source": "guess",      "note": "shortest stand-still before a frame is taken, so StopMove has landed"},
     "settle_pos_tol_rad":         {"value": 0.03,  "unit": "rad",   "source": "gpt-policy", "note": "settled when every commanded joint is this close to its command; tuned for their arm, sim arms reach 0.019"},
     "settle_vel_tol":             {"value": 0.05,  "unit": "rad/s", "source": "gpt-policy", "note": "settled when every commanded joint is slower than this"},
