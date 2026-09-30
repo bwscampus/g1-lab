@@ -86,7 +86,7 @@ def test_context_renders_catalog_and_rules():
     strict = next(a for a in schema["properties"]["arguments"]["anyOf"] if "seconds" in a["properties"])
     assert strict["required"] == ["seconds", "note"] and strict["properties"]["seconds"]["anyOf"][1] == {"type": "null"}
     check = next(t for t in c.tools if t["function"]["name"] == "check")["function"]["parameters"]
-    assert check["properties"]["tool"]["enum"] == ["move", "arm_path", "hold"]
+    assert check["properties"]["tool"]["enum"] == ["move", "arm_path", "hold", "say"]
     no_base = ctx(False).instructions
     assert "- move:" not in no_base.split("Tools:")[1].split("Every movement")[0]
     assert instructions(menu(True), can_walk=True, max_decisions=5) == build_context(menu(True), can_walk=True, max_decisions=5).instructions

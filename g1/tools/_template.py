@@ -22,7 +22,6 @@ import math
 
 from g1.core.action import Segment
 from g1.core.config import joint_index
-from g1.core.poses import STAND
 from g1.tools.base import Tool, integer, limit, num
 
 WAIST_PITCH = joint_index("waist_pitch")     # + bends forward; limits are +/- 0.52 rad
@@ -53,13 +52,14 @@ class ClassName(Tool):
     def segments(self) -> tuple[Segment, ...]:
         """The motion, from the arguments. Each Segment goes to a pose (joint index -> radians,
         merged onto the previous pose) over a duration; the player eases between them at 50 Hz
-        from wherever the previous tool left the joints. End at STAND so the next tool starts
-        from a known pose."""
-        bowed = {**STAND, WAIST_PITCH: math.radians(self.angle_deg)}
+        from wherever the previous tool left the joints. Touch only the joints your tool is
+        about and leave them where it ends; if it needs a starting pose, make that its first
+        segment (nothing else will put the arms anywhere)."""
+        bowed = {WAIST_PITCH: math.radians(self.angle_deg)}
         out: list[Segment] = []
         for i in range(self.reps):
             out.append(Segment(bowed, self.down_s, label=f"bowing ({i + 1}/{self.reps})"))
             if self.hold_s > 0:
                 out.append(Segment(bowed, self.hold_s, label="holding the bow"))
-            out.append(Segment(STAND, self.up_s, label="straightening up"))
+            out.append(Segment({WAIST_PITCH: 0.0}, self.up_s, label="straightening up"))
         return tuple(out)

@@ -32,7 +32,8 @@ NAMES = (
     "move_dx_max_m", "move_dy_max_m", "move_dyaw_max_deg", "look_yaw_max_deg",
     "arm_path_max_waypoints", "arm_path_seconds_min", "arm_path_seconds_max", "arm_path_seconds_default",
     "hold_seconds_max", "wave_hand_seconds", "shake_hand_seconds", "gesture_seconds_max", "gesture_ramp_s",
-    "bookend_ramp_s", "bookend_to_stand_s", "return_to_stand_s", "return_ramp_s", "return_released_s",
+    "say_max_chars", "speech_chars_per_s", "say_min_s", "say_pause_max_s", "tts_speaker_id",
+    "bookend_ramp_s", "return_to_stand_s", "return_ramp_s", "return_released_s",
     "max_decisions", "step_timeout_s", "max_time_s",
     "settle_min_s", "settle_pos_tol_rad", "settle_vel_tol", "settle_samples", "settle_timeout_s",
     "frame_max_age_s", "frame_timeout_s", "max_failures",
@@ -90,7 +91,7 @@ def _check_consistency(limits: dict, p: Path) -> None:
         if v[low] > v[high]:
             raise ValueError(f"limits file {p}: {low} ({v[low]}) must not exceed {high} ({v[high]})")
     for name in ("control_dt_s", "walk_speed", "side_speed", "turn_rate", "max_decisions", "max_tokens",
-                 "settle_samples", "states_hz", "image_width_px"):
+                 "settle_samples", "states_hz", "image_width_px", "say_max_chars", "speech_chars_per_s"):
         if v[name] <= 0:
             raise ValueError(f"limits file {p}: {name} must be positive")
 

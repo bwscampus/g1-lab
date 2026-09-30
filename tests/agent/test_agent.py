@@ -29,9 +29,10 @@ def red_square(cx, cy, side):
 
 
 class Scripted(ClockedCamera):
-    """Black, then a small centred ball, then a looming one."""
+    """Black, then a small centred ball, then a looming one. The times follow
+    the agent's timeline: a 2 s takeover, then ~2.5 s per decision."""
 
-    def __init__(self, appear=12.0, loom=16.0, fps=10.0):
+    def __init__(self, appear=9.0, loom=13.0, fps=10.0):
         super().__init__(fps)
         self.appear, self.loom = appear, loom
 

@@ -15,7 +15,6 @@ g1 tools                                 # it is offered to the model now
 
 ```python
 from g1.core.action import Segment
-from g1.core.poses import STAND
 from g1.tools.base import Tool, num, integer, text, flag, limit
 
 class Bow(Tool):
@@ -71,8 +70,11 @@ radians, merged onto the previous pose, so a segment may set only some joints) o
 `base=(vx, vy, vyaw)` (a base velocity held for the whole segment), `command=("WaveHand",
 {...})` (one onboard call on the segment's first tick; only `config.LOCO_METHODS`).
 
-* End at `STAND` (`g1/core/poses.py`, the Menagerie stand keyframe) so the next tool starts
-  from a known pose; the bookends go there too.
+* Touch only the joints your tool is about and leave them where it ends. Nothing else ever
+  moves the arms to a neutral pose — not the run's start or end (the bookends only blend
+  the arm_sdk weight in place), not walking — so a tool that needs a starting pose makes it
+  its own first segment (`tpose` raises the arms itself, `sixseven` settles into palms-up
+  first). `g1/core/poses.py` has `STAND` (the Menagerie stand keyframe) if you want it.
 * Joints and conventions: `g1 tools --joints` prints every arm_sdk joint with its limits and
   stand value. Verified on the model: elbow 0 is a 90° bend with the forearm forward, ~1.57
   is a straight arm, more negative bends the forearm up; `shoulder_roll` +1.57 (left) /
@@ -83,12 +85,15 @@ radians, merged onto the previous pose, so a segment may set only some joints) o
   `--walk`; the pinned pelvis slides in sim). Use `g1/tools/move.py`'s `ticks()` so the
   duration is whole ticks and `distance = v * t` is exact; keep speeds under
   `walk_speed`/`side_speed`/`turn_rate` in the limits file. Set `needs_base = True`.
-* Onboard gestures (`g1/tools/gestures.py`): hand the arms to the onboard controller
-  (weight 1→0), one `command`, hold at weight 0, take them back. Only `WaveHand` and
-  `ShakeHand` are allowed; the robot env refuses anything else and sim aborts on any of
-  them. FSM, damp, torque, sit and squat are out of reach by construction — the legs belong
-  to the onboard controller, so a squat is not a tool this robot can be given through
-  arm_sdk.
+* Onboard calls: a segment's `command=(name, kwargs)` is one call on the robot, on the
+  segment's first tick, and only names on an allow-list are accepted (`g1/core/config.py`):
+  `LOCO_METHODS` (`WaveHand`, `ShakeHand` — the gestures in `g1/tools/gestures.py`: hand the
+  arms to the onboard controller, weight 1→0, the call, take them back; `needs_loco = True`,
+  sim aborts on them) and `AUDIO_METHODS` (`TtsMaker` — `say` in `g1/tools/speech.py`: hold
+  the pose for as long as the text takes; sim prints it). The robot env refuses any other
+  name, and a tool declaring one fails at import. FSM, damp, torque, sit, squat, raw audio
+  playback and volume are out of reach by construction — the legs belong to the onboard
+  controller, so a squat is not a tool this robot can be given through arm_sdk.
 
 ## What happens to it
 

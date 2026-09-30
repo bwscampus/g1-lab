@@ -17,7 +17,7 @@ One class holds everything the model reads and everything the robot runs::
 
         def segments(self):
             return (Segment({WAIST_PITCH: math.radians(self.angle_deg)}, self.down_s, label="bowing"),
-                    Segment(STAND, self.up_s, label="straightening up"))
+                    Segment({WAIST_PITCH: 0.0}, self.up_s, label="straightening up"))
 
 ``params`` maps argument names to JSON-schema fragments (``num``, ``integer``,
 ``text``, ``flag``, or a dict); a property without a ``default`` is required;
@@ -29,7 +29,10 @@ takes a ``note`` — required of the model, defaulted to "" for code and the CLI
 Arguments are validated and clamped at construction (``Turn(angle_deg=45)``)
 and become attributes. The 50 Hz player (``reset``/``step``) is part of the
 class and is not overridden by tools: it interpolates ``segments()`` from the
-pose the tool was seeded with, so tools chain continuously.
+pose the tool was seeded with, so tools chain continuously. A tool touches only
+the joints it is about and leaves them where it ends; nothing else ever moves
+the arms to a neutral pose, so a tool that needs a starting pose makes it its
+own first segment.
 """
 from __future__ import annotations
 
@@ -40,7 +43,7 @@ import numpy as np
 
 from g1.core import limits
 from g1.core.action import Action, Obs, Pose, Runnable, Segment, ease
-from g1.core.config import LOCO_METHODS, NUM_JOINTS, UPPER_BODY
+from g1.core.config import AUDIO_METHODS, LOCO_METHODS, NUM_JOINTS, UPPER_BODY
 
 KINDS = ("motion", "query", "terminal")
 _NAME = re.compile(r"[a-z][a-z0-9_]*\Z")
@@ -152,7 +155,7 @@ class Tool(Runnable):
     order: int = 50                     # menu position (lower first; terminal tools go last)
     # -- what the robot runs -----------------------------------------------------------
     joints: list[int] = UPPER_BODY
-    command: Optional[str] = None       # the LocoClient method a gesture calls, once (config.LOCO_METHODS)
+    command: Optional[str] = None       # the onboard method a tool calls, once (config.LOCO_METHODS | AUDIO_METHODS)
     allows_start: bool = False          # may use the reserved "start" segment goal (the takeover bookend)
     note: str = ""                      # the model's evidence + intent, bound like any argument
 
@@ -213,9 +216,10 @@ class Tool(Runnable):
                 raise ValueError(f"{src}{cls.name}.{key}: a spec needs a type (use num/integer/text/flag)")
             if spec["type"] in ("number", "integer") and ("minimum" not in spec or "maximum" not in spec):
                 raise ValueError(f"{src}{cls.name}.{key}: a number needs minimum and maximum (use num/integer)")
-        if cls.command is not None and cls.command not in LOCO_METHODS:
-            raise ValueError(f"{src}{cls.name} calls {cls.command!r}, not an allowed onboard method {sorted(LOCO_METHODS)}")
-        if cls.command is not None and not cls.needs_loco:
+        if cls.command is not None and cls.command not in LOCO_METHODS | AUDIO_METHODS:
+            raise ValueError(f"{src}{cls.name} calls {cls.command!r}, not an allowed onboard method "
+                             f"{sorted(LOCO_METHODS | AUDIO_METHODS)}")
+        if cls.command in LOCO_METHODS and not cls.needs_loco:
             raise ValueError(f"{src}{cls.name} calls the onboard controller and must set needs_loco = True")
         if any(j < 0 or j >= NUM_JOINTS for j in cls.joints):
             raise ValueError(f"{src}{cls.name}.joints has an invalid joint index")

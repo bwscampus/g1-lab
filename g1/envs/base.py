@@ -54,6 +54,8 @@ def shield_sigint(message: str):
 class Env:
     name: ClassVar[str] = "env"
     use_camera: bool = False
+    verbose: bool = False              # --verbose: print SDK calls and a health line every second
+    sdk_log: list                      # every SDK call: {at_s, client, name, args, code, elapsed_s}
 
     @property
     def can_walk(self) -> bool:
@@ -79,6 +81,8 @@ class Env:
 
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
+        self.verbose = bool(getattr(args, "verbose", False))
+        self.sdk_log = []
 
     @classmethod
     def add_args(cls, parser: argparse.ArgumentParser) -> None:

@@ -7,6 +7,7 @@
     g1 run    --env robot --tools tpose --iface <iface> --mode standing
     g1 task   run tasks/find_the_mug --env sim --headless      # a task folder: instruction + context
     g1 tools  [--json] [--joints]                              # the menu; the catalog the model reads
+    g1 status --iface <iface>                                  # read-only: link ok / robot refuses / no link
     g1 limits [--source guess]                                 # every tunable number
     g1 camera | decide | episode | demo | scene                # the other entry points
     g1 new tool NAME | g1 new task NAME                        # scaffold a tool file or a task folder
@@ -51,6 +52,9 @@ def run_parser(prog: str = "g1 run") -> argparse.ArgumentParser:
     p.add_argument("--record", nargs="?", const="auto", default=None, metavar="PATH",
                    help="record every camera frame to an .mp4 (PyAV): into the run directory as camera.mp4, or "
                         "runs/<ts>_<env>_<name>.mp4 for a chain, or the given PATH")
+    p.add_argument("--verbose", "-v", action="store_true",
+                   help="print every SDK call with its return code and a health line every second "
+                        "(LowState rate, ticks, overruns, base RPC, camera)")
     p.add_argument("--max-time", type=float, default=limits.get("max_time_s"),
                    help="stop (and return to a safe state) if the program runs longer than this many seconds "
                         "(default: limit max_time_s)")
@@ -202,6 +206,8 @@ def run(program: Runnable, env: Env, max_time: float = limits.get("max_time_s"))
         with env:
             obs = env.observe(env.reset())
             taps = _taps(env.args, env, program)
+            if hasattr(program, "attach"):
+                program.attach(env)
             program.reset(obs)
             n = 0
             last: Optional[Action] = None
@@ -346,6 +352,7 @@ def new_main(argv: list[str]) -> int:
 COMMANDS = {
     "run": "run a tool, a chain of tools, the agent (search) or a replay",
     "task": "run, show or evaluate a task folder",
+    "status": "is the robot reachable and what state is it in (read-only)",
     "tools": "list the tools and the catalog the model reads",
     "limits": "print every tunable limit with its source",
     "camera": "smoke-test the robot's head camera (no robot control)",
@@ -377,6 +384,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         return task_main(rest)
     if command == "tools":
         return tools_main(rest)
+    if command == "status":
+        from g1.envs.robot import status_main
+        return status_main(rest)
     if command == "limits":
         from g1.core.limits import main as limits_main
         return limits_main(rest)

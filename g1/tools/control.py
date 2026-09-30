@@ -11,7 +11,6 @@ import numpy as np
 
 from g1.core.action import Obs, Segment
 from g1.core.config import CONTROL_DT, JOINT_NAMES
-from g1.core.poses import STAND
 from g1.tools.base import Tool, limit, num, text
 
 
@@ -108,38 +107,32 @@ class GiveUp(Tool):
 
 class Takeover(Tool):
     """Bookend: ramp the arm_sdk weight 0->1 while holding the pose observed
-    at reset (nothing should move), then go to STAND."""
+    at reset. Nothing moves; the first tool starts from wherever the arms are.
+    (No move to a neutral pose: a tool that needs a starting pose makes it its
+    own first segment.)"""
 
     name = "takeover"
     order = 98
     visible = False
     allows_start = True
-    params = {"ramp_s": num(0.0, 10.0, limit("bookend_ramp_s"), "weight ramp seconds"),
-              "to_stand_s": num(0.0, 10.0, limit("bookend_to_stand_s"), "seconds to reach STAND")}
+    params = {"ramp_s": num(0.0, 10.0, limit("bookend_ramp_s"), "weight ramp seconds")}
 
     def segments(self) -> tuple[Segment, ...]:
-        out = []
-        if self.ramp_s > 0:
-            out.append(Segment("start", self.ramp_s, weight=lambda a: a, label="taking over (hold)"))
-        if self.to_stand_s > 0:
-            out.append(Segment(STAND, self.to_stand_s, label="moving to stand"))
-        return tuple(out)
+        if self.ramp_s <= 0:
+            return ()
+        return (Segment("start", self.ramp_s, weight=lambda a: a, label="taking control"),)
 
 
 class Handback(Tool):
-    """Bookend: go to STAND, then hold it while ramping the weight 1->0 so
-    the onboard controller takes the arms back smoothly."""
+    """Bookend: hold the pose the last tool ended in while ramping the weight
+    1->0, so the onboard controller takes the arms back smoothly from there."""
 
     name = "handback"
     order = 99
     visible = False
-    params = {"to_stand_s": num(0.0, 10.0, limit("bookend_to_stand_s"), "seconds to reach STAND"),
-              "ramp_s": num(0.0, 10.0, limit("bookend_ramp_s"), "weight ramp seconds")}
+    params = {"ramp_s": num(0.0, 10.0, limit("bookend_ramp_s"), "weight ramp seconds")}
 
     def segments(self) -> tuple[Segment, ...]:
-        out = []
-        if self.to_stand_s > 0:
-            out.append(Segment(STAND, self.to_stand_s, label="returning to stand"))
-        if self.ramp_s > 0:
-            out.append(Segment(STAND, self.ramp_s, weight=lambda a: 1.0 - a, label="handing back"))
-        return tuple(out)
+        if self.ramp_s <= 0:
+            return ()
+        return (Segment({}, self.ramp_s, weight=lambda a: 1.0 - a, label="releasing control"),)

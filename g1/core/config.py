@@ -96,6 +96,9 @@ HEAD_CAMERA_SIZE = (480, 640)                     # sim render height, width
 # The only onboard LocoClient calls a tool may make (Action.command). Everything else
 # (FSM, damp, torque, sit, squat, stand height) is unreachable from a model reply by construction.
 LOCO_METHODS = frozenset({"WaveHand", "ShakeHand"})
+# The only call a tool may make on the audio service ("voice"): text-to-speech. PlayStream
+# (arbitrary bytes), SetVolume and LedControl are not reachable from a reply; volume is a flag.
+AUDIO_METHODS = frozenset({"TtsMaker"})
 
 # Base velocity limits for Action.base: |vx| m/s forward, |vy| m/s left, |vyaw| rad/s.
 # Values and their provenance: configs/limits.json.

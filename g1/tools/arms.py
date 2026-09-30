@@ -25,8 +25,9 @@ class ArmPath(Tool):
     prompt = ("Move the waist and arms through 1 to {limit:arm_path_max_waypoints} joint-space waypoints; each gives "
               "joints (name -> radians, see the joint table) and seconds ({limit:arm_path_seconds_min} to "
               "{limit:arm_path_seconds_max}, default {limit:arm_path_seconds_default}). Omitted joints keep their "
-              "current pose. Use waist_yaw alone (positive LEFT) to glance sideways without moving the feet; the "
-              "next arm_path or move may recentre it. Keep the arms clear of the body and the head; the host rejects "
+              "current pose, and joints stay where an arm_path leaves them until another arm_path moves them; "
+              "walking does not change the arms. Use waist_yaw alone (positive LEFT) to glance sideways without "
+              "moving the feet. Keep the arms clear of the body and the head; the host rejects "
               "a path that leaves the joint limits or moves too fast, without moving. A gesture, a glance or a "
               "reach: not a search move.")
     params = {
@@ -80,12 +81,12 @@ class Look(Tool):
     order = 62
     visible = False
     prompt = ("Turn only the waist by yaw_deg degrees (up to {limit:look_yaw_max_deg} either way), positive LEFT, "
-              "over seconds, and hold it; the feet do not move and the next tool recentres the waist.")
+              "over seconds, and hold it; the feet and arms do not move and the waist stays there.")
     params = {"yaw_deg": num(-limit("look_yaw_max_deg"), limit("look_yaw_max_deg"), None, "degrees, + left / - right"),
               "seconds": num(0.5, 5.0, 1.5, "seconds to turn the waist")}
 
     def segments(self) -> tuple[Segment, ...]:
-        return (Segment({**STAND, WAIST_YAW: math.radians(self.yaw_deg)}, self.seconds,
+        return (Segment({WAIST_YAW: math.radians(self.yaw_deg)}, self.seconds,
                         label=f"look {self.yaw_deg:+.0f} deg"),)
 
 

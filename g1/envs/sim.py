@@ -48,7 +48,7 @@ import numpy as np
 
 from g1.camera import Camera, DirCamera
 from g1.core.action import Action
-from g1.core.config import (CONTROL_DT, HEAD_CAMERA_FOVY, HEAD_CAMERA_PITCH, HEAD_CAMERA_POS,
+from g1.core.config import (AUDIO_METHODS, CONTROL_DT, HEAD_CAMERA_FOVY, HEAD_CAMERA_PITCH, HEAD_CAMERA_POS,
                             HEAD_CAMERA_SIZE, NUM_JOINTS)
 from g1.envs.base import Env, EnvAbort
 from g1.envs.monitor import JointMonitor, TooManyViolations
@@ -183,6 +183,7 @@ class SimEnv(Env):
         self.substeps = max(1, int(round(CONTROL_DT / self.model.opt.timestep)))
 
         self._pin_base = not self.args.free_base
+        self._health_at = 0.0          # sim seconds: the health line is keyed to sim time
         self.viewer = None
         if not self.args.headless:
             if sys.platform == "darwin" and not getattr(mujoco.viewer, "_MJPYTHON", None):
@@ -306,7 +307,11 @@ class SimEnv(Env):
                 raise EnvAbort("sim cannot walk: base commands need the pinned base (drop --free-base)")
             self._slide_base(action.base)
         if action.command is not None:
-            raise EnvAbort(f"sim has no onboard gesture {action.command[0]}; that tool is robot-only")
+            name, kw = action.command
+            if name in AUDIO_METHODS:
+                print(f"sim: says {kw.get('text', '')!r}")        # no speaker here: the text is the record
+            else:
+                raise EnvAbort(f"sim has no onboard gesture {name}; that tool is robot-only")
         for _ in range(self.substeps):
             self._physics_tick()
         self._tick += 1
@@ -328,6 +333,12 @@ class SimEnv(Env):
             self.monitor.observe(q, action)
         except TooManyViolations as e:
             raise EnvAbort(str(e)) from None
+        if self.verbose and self.data.time - self._health_at >= 1.0:
+            self._health_at = self.data.time
+            frames = self.camera.count if self.renderer is not None else (self.replay.count if self.replay is not None else 0)
+            print(f"t={self.data.time:6.1f}  ticks {self._tick}  violations {len(self.monitor.violations)}"
+                  + (f"  camera {frames} frames" if frames else "")
+                  + (f"  base ({self._base_pose[0]:+.2f}, {self._base_pose[1]:+.2f})" if self._base_moved else ""))
         return q
 
     # the monitor is the run's verdict; forward what callers and tests read

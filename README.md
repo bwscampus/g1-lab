@@ -16,6 +16,8 @@ g1 task run tasks/find_the_mug --env sim --headless               # the model de
 g1 run  --env robot --tools tpose --iface <iface> --mode standing  # live
 g1 run  ... --view            # the head camera live in a browser (http://127.0.0.1:8765), sim or robot
 g1 run  ... --record          # every camera frame to camera.mp4 in the run directory (PyAV)
+g1 run  ... --verbose         # every SDK call with its return code, and a health line every second
+g1 status --iface <iface>     # read-only: is it the link, or is the robot refusing? (docs/running-on-the-robot.md)
 ```
 
 Two words to know, both GPT-Policy's:
@@ -27,6 +29,9 @@ Two words to know, both GPT-Policy's:
 * a **task** is a folder with an instruction and its context — the sim scene, safety notes,
   a demonstration, the budget — and no code. `g1 task run` runs it, `g1 task eval` scores
   it; **students write tasks** (`g1 new task NAME`).
+
+The menu the model gets: `move`, `arm_path`, `hold`, `check`, `say` (the onboard
+text-to-speech), `wave_hand`/`shake_hand` (robot only), `done`, `give_up`.
 
 ## Setup
 
@@ -72,14 +77,16 @@ class Bow(Tool):
               "up_s": num(0.5, 5.0, 1.5, "seconds to straighten up")}
 
     def segments(self):
-        bowed = {**STAND, WAIST_PITCH: math.radians(self.angle_deg)}
+        bowed = {WAIST_PITCH: math.radians(self.angle_deg)}
         return (Segment(bowed, self.down_s, label="bowing"),
                 Segment(bowed, self.hold_s, label="holding the bow"),
-                Segment(STAND, self.up_s, label="straightening up"))
+                Segment({WAIST_PITCH: 0.0}, self.up_s, label="straightening up"))
 ```
 
 Parameters are numbers with ranges, in seconds, metres and degrees — never a `slow|fast`
-switch — so one tool serves every situation. `{limit:name}` in the prompt and
+switch — so one tool serves every situation. A tool touches only the joints it is about and
+leaves them where it ends: nothing moves the arms to a neutral pose at the start or end of a
+run, or while walking. `{limit:name}` in the prompt and
 `limit("name")` in a range come from `configs/limits.json`, so what the model is told never
 differs from what the host enforces. Try it, chain it, offer it:
 

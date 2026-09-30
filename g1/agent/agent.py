@@ -188,6 +188,20 @@ class Agent(Runnable):
     def _say(self, msg: str) -> None:
         print(f"[{self.name}] {msg}")
 
+    def attach(self, env) -> None:
+        """The env whose SDK calls the record should carry (set by the runner)."""
+        self._env = env
+        self._sdk_seen = 0
+
+    def _record_sdk(self) -> None:
+        env = getattr(self, "_env", None)
+        log = getattr(env, "sdk_log", None)
+        if not log:
+            return
+        for entry in log[self._sdk_seen:]:
+            self._event("sdk_call", {"step": self._env_step, **entry})
+        self._sdk_seen = len(log)
+
     def _event(self, kind: str, payload: Optional[dict] = None) -> None:
         if self.recorder is not None:
             self.recorder.event(kind, payload)
@@ -368,6 +382,7 @@ class Agent(Runnable):
     def step(self, t: float, obs: Obs) -> Optional[Action]:
         if self.recorder is not None:
             self.recorder.state(t, obs.q, self._cmd, obs.qd, self._base_cmd)
+            self._record_sdk()
         st = self._state
         if st in ("takeover", "handback"):
             a = self._sub.step(t - self._t0, obs)

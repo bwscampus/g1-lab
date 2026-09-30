@@ -21,7 +21,12 @@ Everything the envs run is a `Runnable` (`g1/core/action.py`): `reset(obs)` once
 
 * a **Tool** — plays its `segments()` from the pose it was seeded with
 * a **Chain** of tools (`g1/tools/__init__.py`) — the takeover bookend, the tools with a
-  pause between, the handback bookend, as one continuous command stream
+  pause between, the handback bookend, as one continuous command stream. The bookends only
+  blend the arm_sdk weight (0→1 holding the pose the arms are observed in; 1→0 holding the
+  pose the last tool ended in): **nothing moves the arms to a neutral pose**, at the start,
+  at the end, or as a side effect of another tool. A tool touches only the joints it is
+  about and leaves them where it ends; one that needs a starting pose makes it its own
+  first segment (`tpose` raises the arms itself).
 * the **Agent** (`g1/agent/agent.py`) — the decision loop below, which runs one tool at a time
 
 ```
@@ -76,12 +81,16 @@ arm_path(waypoints)             joint-space waypoints over waist + arms -> arm_s
 hold(seconds)                   stand still
 check(tool, arguments)          dry-run without moving                                          ≙ check_path
 wave_hand / shake_hand          the onboard controller's own gestures (robot only)               ≙ set_gripper
+say(text, pause_s)              the onboard text-to-speech; sim prints it                        ours, not in GPT-Policy
 done(summary, hindsight) / give_up(reason, hindsight)
 ```
 
 Presets (`visible = False`: CLI chains and replay only): `walk_forward`, `turn`, `look`,
-`tpose`, `sixseven`; bookends `takeover`, `handback`. Nothing else on the SDK — FSM, damp,
-torque, sit, squat, stand height — is reachable from a reply. There is no `locate_point`:
+`tpose`, `sixseven`; bookends `takeover`, `handback`. An onboard call a tool may make is
+allow-listed by service: `config.LOCO_METHODS` (`WaveHand`, `ShakeHand`) and
+`config.AUDIO_METHODS` (`TtsMaker`); the robot env routes by name and refuses the rest.
+Nothing else on the SDK — FSM, damp, torque, sit, squat, stand height, raw audio playback,
+volume, the LED strip — is reachable from a reply. There is no `locate_point`:
 the head camera is monocular, there is no metric pixel query to offer honestly.
 
 ## Envs

@@ -1,7 +1,7 @@
 """Base motion: a segment that holds a base velocity (LocoClient.Move on the
-robot, a slide of the pinned pelvis in sim). Durations round up to whole
-ticks so ``distance = v * t`` is exact and the dead-reckoned end pose is the
-request."""
+robot, a slide of the pinned pelvis in sim) and leaves every joint where it
+is. Durations round up to whole ticks so ``distance = v * t`` is exact and the
+dead-reckoned end pose is the request."""
 from __future__ import annotations
 
 import math
@@ -9,7 +9,6 @@ import math
 from g1.core import limits
 from g1.core.action import Segment
 from g1.core.config import CONTROL_DT
-from g1.core.poses import STAND
 from g1.tools.base import Tool, limit, num
 
 WALK_SPEED = limits.get("walk_speed")
@@ -51,15 +50,15 @@ class Move(Tool):
         out = []
         if abs(self.dx_m) > 1e-6 or abs(self.dy_m) > 1e-6:
             duration = ticks(max(abs(self.dx_m) / WALK_SPEED, abs(self.dy_m) / SIDE_SPEED))
-            out.append(Segment(STAND, duration, base=(self.dx_m / duration, self.dy_m / duration, 0.0),
+            out.append(Segment({}, duration, base=(self.dx_m / duration, self.dy_m / duration, 0.0),
                                label=f"move {self.dx_m:+.2f} m forward, {self.dy_m:+.2f} m left"))
         rad = math.radians(self.dyaw_deg)
         if abs(rad) > 1e-6:
             duration = ticks(abs(rad) / TURN_RATE)
-            out.append(Segment(STAND, duration, base=(0.0, 0.0, rad / duration),
+            out.append(Segment({}, duration, base=(0.0, 0.0, rad / duration),
                                label=f"turn {self.dyaw_deg:+.0f} deg"))
         if not out:
-            out.append(Segment(STAND, MIN_SEGMENT, label="move 0"))
+            out.append(Segment({}, MIN_SEGMENT, label="move 0"))
         return tuple(out)
 
 
@@ -77,7 +76,7 @@ class WalkForward(Tool):
     def segments(self) -> tuple[Segment, ...]:
         duration = ticks(self.distance_m / WALK_SPEED)
         v = self.distance_m / duration
-        return (Segment(STAND, duration, base=(v, 0.0, 0.0), label=f"walk {self.distance_m:.2f} m"),)
+        return (Segment({}, duration, base=(v, 0.0, 0.0), label=f"walk {self.distance_m:.2f} m"),)
 
 
 class Turn(Tool):
@@ -94,7 +93,7 @@ class Turn(Tool):
     def segments(self) -> tuple[Segment, ...]:
         rad = math.radians(self.angle_deg)
         if abs(rad) < 1e-6:
-            return (Segment(STAND, MIN_SEGMENT, label="turn 0"),)
+            return (Segment({}, MIN_SEGMENT, label="turn 0"),)
         duration = ticks(abs(rad) / TURN_RATE)
-        return (Segment(STAND, duration, base=(0.0, 0.0, rad / duration),
+        return (Segment({}, duration, base=(0.0, 0.0, rad / duration),
                         label=f"turn {self.angle_deg:+.0f} deg"),)

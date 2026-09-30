@@ -30,8 +30,10 @@ g1 run --env sim --tools tpose --headless                        # one tool, ful
 g1 run --env sim --tools walk_forward:0.5,hold:1,turn:45 --headless   # a chain (--pause between)
 g1 run --env sim --tools 'move:1:0.3:-45,arm_path:waypoints=[{"joints":{"left_elbow":-0.4}}]' --headless
 mjpython -m g1 run --env sim --tools tpose                        # macOS: the viewer only works under mjpython
-g1 run --env robot --tools tpose --iface <iface_or_ip> --mode gantry|standing   # --mode is required
+g1 run --env robot --tools tpose --iface <iface_or_ip> --mode gantry|standing   # --mode is required; --iface and
+                                                                                # --camera-ip default to $UNITREE_IFACE / $UNITREE_ROBOT_IP (.env)
 g1 run --env robot --tools search -i "find the mug" --iface <iface> --mode standing --camera-ip <ip> --walk
+g1 run --env robot --tools 'say:text=hello' --iface <iface> --mode standing --volume 60   # hear the TTS; then fix limits
 
 HF_TOKEN=hf_... g1 run --env sim --scene room --tools search --instruction "find the mug" \
         --sim-objects mug@1.5,1.2 --camera-size 720x1280 --headless --max-time 600
@@ -44,6 +46,8 @@ g1 run ... --view [PORT]     # the head camera live at http://127.0.0.1:8765 (MJ
 g1 run ... --record [PATH]   # every frame to camera.mp4 in the run dir (PyAV, H.264, stamps on the env clock)
 
 g1 tools [--json | --joints | --prompts]   # the menu; the catalog the model reads; the joint table
+g1 status --iface <iface> [--json]         # read-only: link ok / robot refuses / no link (LowState rate + GetFsmId)
+g1 run ... --verbose|-v                    # every SDK call with its named code + a health line every second
 g1 limits [--source guess]                 # every tunable number (configs/limits.json)
 g1 new tool NAME | g1 new task NAME        # scaffold from g1/tools/_template.py | tasks/_template/
 g1 decide runs/head.png --instruction "find the mug"   # one real model decision from a frame
@@ -65,8 +69,10 @@ g1/core/           config (joint table, STAND_Q, UPPER_BODY, LOCO_METHODS, BASE_
 g1/tools/          __init__: discovery (TOOLS), menu(), the three renderings, parse_tool/parse_chain/chain_spec, Chain
                    base: the Tool contract + the segment player + validate_args + num/integer/text/flag/limit
                    move (move, walk_forward, turn) · arms (arm_path, look, tpose, sixseven) · gestures (wave_hand,
-                   shake_hand) · control (hold, check + dry_run, done, give_up, takeover, handback) · _template (bow)
-g1/envs/           base (Env, EnvAbort, shield_sigint), monitor (JointMonitor), sim, scene (the room, assets/), robot
+                   shake_hand) · speech (say: AudioClient.TtsMaker; sim prints) · control (hold, check + dry_run, done,
+                   give_up, takeover, handback) · _template (bow)
+g1/envs/           base (Env, EnvAbort, shield_sigint, verbose, sdk_log), monitor (JointMonitor), sim, scene (the room),
+                   robot (RobotEnv, ArmSdk, BaseCommander, Health, probe/status_main), sdk (RPC_CODES, explain, call, FSM_NAMES)
 g1/camera.py       Frame, Camera (+subscribe), DirCamera, WebRTCCamera, Viewer (--view), Recorder (--record)
 g1/vlm.py          VLMClient (Hugging Face), load_dotenv
 g1/agent/          agent (Agent, build_search, build_replay, AGENTS), decider (AgentContext/AgentTurn/Decision,
@@ -94,13 +100,27 @@ root via `pythonpath`. `limits.ROOT` is the repo root (configs/, tasks/, assets/
   `segments()`. Query tools implement `query(cmd, joints)`; terminal tools end the run.
 - **Seed from the last commanded q, never the measured one** when composing (Chain composes segments;
   the Agent seeds each tool from its own `_cmd`). On the robot the measured pose lags by gravity sag.
+- **Never ignore an SDK return code.** Every LocoClient/AudioClient call goes through `envs/sdk.call`
+  (`RobotEnv._call`): timed, code normalised and named (`sdk.explain`: 3102/3104 = the DDS link, other codes =
+  the robot refused), appended to `env.sdk_log` (the Agent writes each as an `sdk_call` event). In `setup` a
+  failure raises `SystemExit` with a hint **before** arm_sdk is touched (`_require`); in teardown it is printed,
+  never raised. `--mode standing` refuses a robot not in `sdk.STANDING_FSMS` and restores only such an FSM.
+  `g1 status` is the read-only probe; `--verbose` prints every call and a per-second health line.
+- **No pose reset.** The bookends only blend the weight (`takeover`: 0→1 holding the observed pose;
+  `handback`: 1→0 holding the last pose); walking tools use `{}` (base only); only `arm_path` and the arm
+  presets move the arms, and a tool that needs a starting pose makes it its own first segment. No
+  countdown; the bring-up says "entering control mode (FSM 200)" and skips the transition when already
+  there. The Ctrl-C safe return is the one deliberate exception (it ends at STAND).
 - **Every movement is dry-run before it executes** (`g1/tools/control.py:dry_run` through a
   `JointMonitor` from the commanded pose); a violation is `motion_not_executed`, spends a decision,
   moves nothing. **Errors are feedback**: no re-ask loop.
 - **Ctrl-C runs the safe return to completion** (`cli.safe_return`: last commanded pose → STAND 3 s,
   weight → 0 over 2 s, base stopped, SIGINT shielded). Never add a second-Ctrl-C release or a keypress
   escape. Never call the SDK from `step`. Walking is `LocoClient.Move` behind `--walk` only; no
-  low-level leg control; only `WaveHand`/`ShakeHand` may be called (`config.LOCO_METHODS`).
+  low-level leg control. Onboard calls are allow-listed per service — `config.LOCO_METHODS`
+  (`WaveHand`, `ShakeHand`; `needs_loco`) and `config.AUDIO_METHODS` (`TtsMaker`; `say`) — routed by name
+  in `RobotEnv._command`; a failed speech warns and continues, a failed gesture raises. `--volume` is
+  a robot flag; `PlayStream`/`SetVolume`/`LedControl` are never reachable from a reply.
 - **Frames are RGB everywhere**; image I/O only through `g1/core/images.py` (Pillow). OpenCV is not
   used and must not be imported (its bundled ffmpeg collides with PyAV's, which decodes the robot's video).
 - **Taps never touch the tick.** `--view`/`--record` subscribe to the env's camera slot (`Env.source()`,

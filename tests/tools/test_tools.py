@@ -32,9 +32,9 @@ EXTREMES = {                       # (extreme args, cheap args for the pairwise 
 }
 
 
-def bookended(*tools, ramp=0.2, to_stand=0.5):
+def bookended(*tools, ramp=1.0):
     """The tools with short bookends, as one program."""
-    parts = [Takeover(ramp_s=ramp, to_stand_s=to_stand), *tools, Handback(to_stand_s=to_stand, ramp_s=ramp)]
+    parts = [Takeover(ramp_s=ramp), *tools, Handback(ramp_s=ramp)]
     segs, joints = [], set()
     for part in parts:
         joints.update(part.joints)
@@ -83,10 +83,22 @@ def test_walk_and_turn_drive_the_base():
     assert {v.kind for v in env.violations} == {"base_vx"}
 
 
-def test_look_holds_and_next_tool_recentres():
+def test_nothing_resets_the_pose_but_the_tool_itself():
+    """No move to neutral at the start or the end, and walking keeps whatever the arms are doing."""
+    assert Takeover().duration == limits.get("bookend_ramp_s") and Takeover().segments()[0].goal == "start"
+    assert Handback().duration == limits.get("bookend_ramp_s") and Handback().segments()[0].goal == {}
+    assert [s.label for s in Takeover().segments()] == ["taking control"]
     yaws = [a.q[WAIST_YAW] for a in play(bookended(TOOLS["look"](yaw_deg=40), TOOLS["walk_forward"](distance_m=0.1)))]
     assert max(yaws) == pytest.approx(math.radians(40), abs=1e-6)
-    assert yaws[-1] == pytest.approx(0.0, abs=1e-6)
+    assert yaws[-1] == pytest.approx(math.radians(40), abs=1e-6)          # the walk did not recentre it
+    env = sim_env()
+    raised = TOOLS["arm_path"](waypoints=[{"joints": {"left_elbow": -0.4}, "seconds": 1.0}])
+    assert run(bookended(raised, TOOLS["move"](dx_m=0.3, dyaw_deg=20), TOOLS["hold"](seconds=0.3)), env) is True
+    assert env.violations == [] and env.cmd_min[18] == pytest.approx(-0.4, abs=1e-6)
+    cmds = [a for a in play(bookended(raised, TOOLS["move"](dx_m=0.3)))]
+    assert cmds[-1].q[18] == pytest.approx(-0.4, abs=1e-6) and cmds[-1].weight == pytest.approx(0.0, abs=1e-3)   # released there
+    for name in ("move", "walk_forward", "turn"):
+        assert all(s.goal == {} for s in TOOLS[name](**EXTREMES[name][1]).segments())
 
 
 def test_move_ends_exactly_where_asked():
@@ -141,7 +153,7 @@ def test_gestures_emit_one_onboard_call_and_sim_refuses(capsys):
         DampGesture.check_definition()
     with pytest.raises(ValueError, match="needs_loco"):
         NoLoco.check_definition()
-    assert [t["function"]["name"] for t in function_schemas(menu(True))] == ["move", "arm_path", "hold", "check", "done", "give_up"]
+    assert [t["function"]["name"] for t in function_schemas(menu(True))] == ["move", "arm_path", "hold", "check", "say", "done", "give_up"]
     assert [t["function"]["name"] for t in function_schemas(menu(True, True))][4:6] == ["wave_hand", "shake_hand"]
 
 
@@ -168,10 +180,10 @@ def test_validate_args():
 
 
 def test_menu_and_parse():
-    assert [t.name for t in menu(False)] == ["arm_path", "hold", "check", "done", "give_up"]
-    assert [t.name for t in menu(True)] == ["move", "arm_path", "hold", "check", "done", "give_up"]
+    assert [t.name for t in menu(False)] == ["arm_path", "hold", "check", "say", "done", "give_up"]
+    assert [t.name for t in menu(True)] == ["move", "arm_path", "hold", "check", "say", "done", "give_up"]
     assert [t.name for t in menu(True, True)] == ["move", "arm_path", "hold", "check", "wave_hand", "shake_hand",
-                                                 "done", "give_up"]
+                                                 "say", "done", "give_up"]
     assert {n for n in TOOLS if not TOOLS[n].visible} == {"walk_forward", "turn", "look", "tpose", "sixseven",
                                                           "takeover", "handback"}
     m = parse_tool("move:1:0.3:-45")
@@ -346,6 +358,7 @@ def test_a_scaffolded_tool_is_discovered_and_runs(tmp_path):
         assert run(parse_chain("bow:20:1:0.5:1,hold:0.5,bow:angle_deg=10:reps=2", pause=0.5), env) is True
         assert env.violations == [] and env.cmd_max[14] == pytest.approx(math.radians(20), abs=1e-6)
         assert env.q_max[14] > math.radians(15)                                # the waist really bent
+        assert env.cmd_min[16] == env.cmd_max[16]                              # and the arms were left alone
         b = parse_tool("bow")
         assert b.duration == pytest.approx(1.5 + 1.0 + 1.5) and cls(hold_s=0).duration == pytest.approx(3.0)
     finally:
@@ -368,3 +381,56 @@ def test_new_tool_scaffolder_writes_and_refuses(tmp_path, monkeypatch, capsys):
         main(["new", "tool", "move"])                              # a built-in
     with pytest.raises(SystemExit):
         main(["new", "tool", "Nod-Head"])                          # not snake_case
+
+
+# --------------------------------------------------------------------------
+# The speaker
+# --------------------------------------------------------------------------
+
+def test_say_speaks_once_and_waits_for_the_text(capsys):
+    from g1.agent.decider import Decision, ProtocolError, build_context, AgentTurn
+    from g1.core.config import AUDIO_METHODS
+    say = TOOLS["say"]
+    assert say in menu(False) and "say" in [f["function"]["name"] for f in function_schemas(menu(False))]
+    s = say(text="I found the mug on the floor")                       # 28 chars
+    assert s.seconds == pytest.approx(max(limits.get("say_min_s"), 28 / limits.get("speech_chars_per_s")))
+    assert say(text="hi").seconds == pytest.approx(limits.get("say_min_s"))
+    assert say(text="hi", pause_s=2.5).seconds == pytest.approx(limits.get("say_min_s") + 2.5)
+    cmds = [a.command for a in play(s)]
+    assert cmds[0] == ("TtsMaker", {"text": "I found the mug on the floor", "speaker_id": int(limits.get("tts_speaker_id"))})
+    assert cmds.count(cmds[0]) == 1 and "TtsMaker" in AUDIO_METHODS
+    long = say(text="x" * 500)
+    assert len(long.text) == limits.get("say_max_chars") and long.notes            # code and the CLI: clamped with a note
+    with pytest.raises(ValueError):
+        say(text="   ")
+    ctx = build_context(menu(False), can_walk=False, max_decisions=5)
+    turn = AgentTurn("{}", {})
+    d = Decision.parse('{"name": "say", "arguments": {"text": "hello", "note": "a person ahead"}}', turn, ctx)
+    assert d.name == "say" and d.arguments["pause_s"] == 0.0
+    with pytest.raises(ProtocolError):                                            # the model: rejected, not clamped
+        Decision.parse('{"name": "say", "arguments": {"text": "%s", "note": "n"}}' % ("x" * 500), turn, ctx)
+    with pytest.raises(ProtocolError):
+        Decision.parse('{"name": "say", "arguments": {"text": "", "note": "n"}}', turn, ctx)
+    # sim speaks by printing and does not abort, unlike a gesture
+    env = sim_env()
+    assert run(bookended(s, TOOLS["hold"](seconds=0.2)), env) is True and env.violations == [] and env.base_ticks == 0
+    out = capsys.readouterr().out
+    assert "sim: says 'I found the mug on the floor'" in out and "robot-only" not in out
+
+
+class Loud(TOOLS["say"]):
+    name = "loud"
+    command = "PlayStream"
+
+
+class Silent(TOOLS["say"]):
+    name = "silent"
+    needs_loco = False          # an audio command needs no LocoClient
+
+
+def test_audio_allow_list():
+    with pytest.raises(ValueError, match="allowed onboard method"):
+        Loud.check_definition()
+    Silent.check_definition()
+    with pytest.raises(ValueError, match="needs_loco"):
+        NoLoco.check_definition()          # a LocoClient gesture still must say so

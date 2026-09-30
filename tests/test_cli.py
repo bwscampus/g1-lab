@@ -60,7 +60,7 @@ def returned(env, n_before):
 
 
 def test_ctrl_c_returns_to_stand_and_hands_back():
-    pol = Interrupting(Chain(TOOLS["tpose"](hold_s=2.0, rise_s=2.0)), at=6.5)   # mid-raise, weight 1
+    pol = Interrupting(Chain(TOOLS["tpose"](hold_s=2.0, rise_s=2.0)), at=3.5)   # mid-raise, weight 1
     env, ok = env_with(pol)
     assert ok is False
     after = returned(env, pol.n_before)
@@ -80,7 +80,7 @@ def test_interrupt_mid_takeover_never_raises_the_weight():
 
 
 def test_sigint_during_the_return_is_ignored(capsys):
-    pol = Interrupting(Chain(TOOLS["tpose"](hold_s=2.0, rise_s=2.0)), at=6.5)
+    pol = Interrupting(Chain(TOOLS["tpose"](hold_s=2.0, rise_s=2.0)), at=3.5)
     env = scripted_sim(Scripted())
     fired = []
     original = env.step
@@ -98,7 +98,7 @@ def test_sigint_during_the_return_is_ignored(capsys):
 
 
 def test_errors_and_max_time_also_return():
-    pol = Interrupting(Chain(TOOLS["hold"](seconds=3.0)), at=5.5, exc=RuntimeError)
+    pol = Interrupting(Chain(TOOLS["hold"](seconds=3.0)), at=3.5, exc=RuntimeError)
     env = scripted_sim(Scripted())
     with pytest.raises(RuntimeError, match="test"):
         run(pol, env)
@@ -181,3 +181,29 @@ def test_view_and_record_flags(tmp_path, capsys, monkeypatch):
                  "--log", str(tmp_path / "runs")]) == 0
     (run_dir,) = (tmp_path / "runs").iterdir()
     assert run_dir.name.endswith("_unreviewed") and (run_dir / "camera.mp4").stat().st_size > 0
+
+
+def test_agent_records_sdk_calls_and_verbose_health(tmp_path, capsys):
+    """Every SDK call an env makes lands in events.jsonl; -v prints the health line."""
+    import json
+    from g1.tools import TOOLS, menu
+    dec = Sequence([("hold", {"seconds": 0.3}), ("done", {"summary": "s", "hindsight": "h"})])
+    rec = EpisodeWriter(tmp_path, env="sim", instruction="g", model="sequence", tools=list(TOOLS), threaded=False)
+    agent = Agent("g", dec, menu(True), recorder=rec, verdict=lambda: None)
+    env = scripted_sim(Scripted())
+    env.verbose = True
+    original = env.step
+
+    def step(action):                                                   # an env that talks to an SDK
+        if len(env.actions) == 5:
+            env.sdk_log.append({"at_s": 0.0, "client": "LocoClient", "name": "StopMove", "args": [], "kwargs": {},
+                                "code": 3104, "elapsed_s": 0.5})
+        return original(action)
+    env.step = step
+    assert run(agent, env, max_time=60) is True
+    agent.close()
+    events = [json.loads(l) for l in (rec.dir / "events.jsonl").read_text().splitlines()]
+    calls = [e for e in events if e["event"] == "sdk_call"]
+    assert len(calls) == 1 and calls[0]["name"] == "StopMove" and calls[0]["code"] == 3104 and "step" in calls[0]
+    out = capsys.readouterr().out
+    assert "t=   1.0  ticks 50" in out                                  # the sim's health line, keyed to sim time
