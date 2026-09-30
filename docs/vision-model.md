@@ -75,6 +75,9 @@ Before the first observation the model can be shown a previous episode, prefixed
 
 `--demo-frames` caps the keyframes (12, max 24); video keyframes are cached by content hash
 under `runs/.cache/video`; the exact request is archived in the run as `input/input.json`.
+A run made with `--record` leaves `camera.mp4` in its directory — the full 15 fps stream,
+not just the decision frames — and that file is a demonstration too (`--demo
+runs/<dir>/camera.mp4`); in sim it plays at sim speed, so a headless run is watchable.
 
 ```
 g1 demo prepare --instruction "find the mug" --demo runs/<good run> out/   # compile once

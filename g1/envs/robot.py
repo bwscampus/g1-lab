@@ -323,6 +323,9 @@ class RobotEnv(Env):
     def frame(self):
         return None if self.camera is None else self.camera.latest()
 
+    def source(self):
+        return self.camera
+
     @property
     def can_walk(self) -> bool:
         return bool(self.args.walk)

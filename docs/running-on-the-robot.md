@@ -25,6 +25,12 @@ for control; for the camera, `unitree_webrtc_connect` (from
   front.
 * the camera: close the Unitree app (the robot takes one WebRTC client), then `g1 camera`
   — frame size, fps and gaps for 5 s, no robot control. Expect `(720, 1280, 3)` at ~15 fps.
+* the spotter's view: add `--view` to any run and open `http://127.0.0.1:8765` on the laptop
+  (`--view 0` picks a free port; the URL is printed). Because the robot takes one WebRTC
+  client, this is the only live picture there is — the app cannot watch at the same time.
+  It reads the same latest-only frame slot the agent does, on its own thread, and adds no
+  latency to control; the stream itself is ~100–200 ms behind reality. `--record` writes
+  every frame to `camera.mp4` in the run directory (PyAV, H.264, real-time stamps).
 
 ## `--mode` (required, no default)
 

@@ -14,6 +14,8 @@ g1 run  --env sim --tools walk_forward:0.5,hold:1,turn:45 --headless   # a chain
 mjpython -m g1 run --env sim --tools tpose                         # the same in the viewer (macOS needs mjpython)
 g1 task run tasks/find_the_mug --env sim --headless               # the model decides (needs $HF_TOKEN)
 g1 run  --env robot --tools tpose --iface <iface> --mode standing  # live
+g1 run  ... --view            # the head camera live in a browser (http://127.0.0.1:8765), sim or robot
+g1 run  ... --record          # every camera frame to camera.mp4 in the run directory (PyAV)
 ```
 
 Two words to know, both GPT-Policy's:
@@ -122,7 +124,7 @@ g1/
   tools/          STUDENTS WRITE: one file per tool, found by import; base.py is the contract,
                   move / arms / gestures / control are the built-ins, _template.py is `g1 new tool`
   envs/           base (Env), monitor (the per-tick safety check), sim (MuJoCo), scene (the room), robot
-  camera.py       the robot's head camera over WebRTC; DirCamera replays frames
+  camera.py       the robot's head camera over WebRTC; DirCamera replays frames; the --view and --record taps
   vlm.py          the Hugging Face client
   agent/          agent (settle -> snapshot -> think -> act -> feedback), decider (the model I/O
                   contract), demo (turn-0 demonstrations), episode (the run record), task

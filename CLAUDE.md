@@ -40,6 +40,8 @@ g1 task eval tasks/find_the_mug -n 5 --env sim --headless       # success rate, 
 g1 task show tasks/find_the_mug
 g1 run --env sim --tools replay --episode runs/<dir> --headless  # a saved run, no camera or model
 g1 run ... --tools search --demo runs/<earlier run> | walk.mp4 | out/demo.json   # demonstration on turn 0
+g1 run ... --view [PORT]     # the head camera live at http://127.0.0.1:8765 (MJPEG, browser); works in sim
+g1 run ... --record [PATH]   # every frame to camera.mp4 in the run dir (PyAV, H.264, stamps on the env clock)
 
 g1 tools [--json | --joints | --prompts]   # the menu; the catalog the model reads; the joint table
 g1 limits [--source guess]                 # every tunable number (configs/limits.json)
@@ -65,7 +67,8 @@ g1/tools/          __init__: discovery (TOOLS), menu(), the three renderings, pa
                    move (move, walk_forward, turn) · arms (arm_path, look, tpose, sixseven) · gestures (wave_hand,
                    shake_hand) · control (hold, check + dry_run, done, give_up, takeover, handback) · _template (bow)
 g1/envs/           base (Env, EnvAbort, shield_sigint), monitor (JointMonitor), sim, scene (the room, assets/), robot
-g1/camera.py       Frame, Camera, DirCamera, WebRTCCamera        g1/vlm.py   VLMClient (Hugging Face), load_dotenv
+g1/camera.py       Frame, Camera (+subscribe), DirCamera, WebRTCCamera, Viewer (--view), Recorder (--record)
+g1/vlm.py          VLMClient (Hugging Face), load_dotenv
 g1/agent/          agent (Agent, build_search, build_replay, AGENTS), decider (AgentContext/AgentTurn/Decision,
                    observation(), instructions(), VLMDecider), demo, episode (EpisodeWriter, StepRecord), task
 tasks/             _template/, find_the_mug/; runs and results.jsonl inside are git-ignored
@@ -99,7 +102,12 @@ root via `pythonpath`. `limits.ROOT` is the repo root (configs/, tasks/, assets/
   escape. Never call the SDK from `step`. Walking is `LocoClient.Move` behind `--walk` only; no
   low-level leg control; only `WaveHand`/`ShakeHand` may be called (`config.LOCO_METHODS`).
 - **Frames are RGB everywhere**; image I/O only through `g1/core/images.py` (Pillow). OpenCV is not
-  used and must not be imported (its bundled ffmpeg collides with PyAV's).
+  used and must not be imported (its bundled ffmpeg collides with PyAV's, which decodes the robot's video).
+- **Taps never touch the tick.** `--view`/`--record` subscribe to the env's camera slot (`Env.source()`,
+  `Camera.subscribe`: called on the producer's thread, must only enqueue), run on their own threads and
+  drop frames when behind; `cli.run` starts them after `env.reset()` and stops them inside `with env`
+  and before `program.close()` (the Agent's close renames the run directory the mp4 sits in). The robot
+  takes one WebRTC client, so the view must come out of our process.
 - **Hugging Face only** for the model (`HF_TOKEN`, `VLM_MODEL`, `VLM_BASE_URL`); no other providers,
   no Anthropic SDK. Fakes are test doubles only (`tests/doubles.py`); `search` always uses the real model.
 - Sim blend semantics are emulated (`cmd = (1-w)*hold + w*target`), `hold` = the Menagerie stand

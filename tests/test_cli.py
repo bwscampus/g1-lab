@@ -156,3 +156,28 @@ def test_env_variables_are_the_defaults(monkeypatch, capsys):
     monkeypatch.setenv("G1_TOOLS", "hold:0.2")
     assert main(["run", "--headless"]) == 0
     assert "== hold @ sim ==" in capsys.readouterr().out
+
+
+def test_view_and_record_flags(tmp_path, capsys, monkeypatch):
+    av = pytest.importorskip("av")
+    out = tmp_path / "chain.mp4"
+    assert main(["run", "--env", "sim", "--headless", "--tools", "hold:0.5", "--view", "0", "--record", str(out)]) == 0
+    text = capsys.readouterr().out
+    assert "view: http://127.0.0.1:" in text and f"recording: {out}" in text and "dropped ->" in text
+    c = av.open(str(out))
+    assert sum(1 for _ in c.decode(c.streams.video[0])) > 10             # the camera was opened for a chain
+    c.close()
+    with pytest.raises(SystemExit, match="--camera off"):
+        main(["run", "--env", "sim", "--headless", "--tools", "hold:0.2", "--view", "0", "--camera", "off"])
+    # --record with no path: a chain lands under --log, an agent inside its (renamed) run directory
+    assert main(["run", "--env", "sim", "--headless", "--tools", "hold:0.2", "--record", "--log", str(tmp_path)]) == 0
+    files = list(tmp_path.glob("*_sim_hold.mp4"))
+    assert len(files) == 1
+    from g1.agent import agent as agent_module
+    from tests.agent.test_agent import Sequence
+    dec = Sequence([("done", {"summary": "s", "hindsight": "h"})])
+    monkeypatch.setattr(agent_module.VLMDecider, "from_env", classmethod(lambda cls, *a, **k: dec))
+    assert main(["run", "--env", "sim", "--headless", "--tools", "search", "-i", "g", "--record", "--no-verdict",
+                 "--log", str(tmp_path / "runs")]) == 0
+    (run_dir,) = (tmp_path / "runs").iterdir()
+    assert run_dir.name.endswith("_unreviewed") and (run_dir / "camera.mp4").stat().st_size > 0

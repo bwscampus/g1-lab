@@ -273,6 +273,11 @@ class SimEnv(Env):
             return self.replay.poll(self.clock())
         return self.camera.latest()
 
+    def source(self):
+        if self.replay is not None:
+            return self.replay
+        return self.camera if self.renderer is not None else None
+
     def clock(self) -> float:
         return float(self.data.time)
 

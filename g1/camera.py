@@ -9,6 +9,13 @@ whatever is there, so nothing queues up behind a slow 20 ms tick, and
   WebRTCCamera  the G1 head camera over unitree_webrtc_connect (robot env)
   DirCamera     replays image files from a directory on the env's clock (sim, tests)
 
+Two **taps** hang off any slot without touching the control loop, each on its
+own thread, dropping frames when it falls behind:
+
+  Viewer        ``--view``: an MJPEG server on localhost; open it in a browser
+  Recorder      ``--record``: every frame to an .mp4 with PyAV, timestamped on the
+                env's clock, so a sim run plays back at sim speed
+
 Smoke-test the robot stream without touching any joint:
     g1 camera --ip 192.168.123.164
 """
@@ -18,10 +25,14 @@ import argparse
 import asyncio
 import math
 import os
+import queue
 import threading
 import time
 from dataclasses import dataclass
+from fractions import Fraction
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Callable, Optional
 
 import numpy as np
 
@@ -42,6 +53,7 @@ class Camera:
         self._lock = threading.Lock()
         self._frame: Frame | None = None
         self._seq = 0
+        self._subscribers: list[Callable[[Frame], None]] = []
 
     def start(self) -> None: ...
     def stop(self) -> None: ...
@@ -52,8 +64,27 @@ class Camera:
             raise ValueError(f"frame must be (H, W, 3) uint8 RGB, got {image.shape} {image.dtype}")
         with self._lock:
             self._seq += 1
-            self._frame = Frame(image, float(stamp), self._seq)
-            return self._frame
+            self._frame = frame = Frame(image, float(stamp), self._seq)
+            subscribers = list(self._subscribers)
+        for fn in subscribers:
+            try:
+                fn(frame)                    # on the producer's thread: a subscriber only enqueues
+            except Exception as e:
+                print(f"camera: subscriber {getattr(fn, '__name__', fn)} failed and was dropped: {e}")
+                self.unsubscribe(fn)
+        return frame
+
+    def subscribe(self, fn: Callable[[Frame], None]) -> None:
+        """Call ``fn(frame)`` on every publish, on the producer's thread. It must
+        return at once (the taps only enqueue); one that raises is dropped."""
+        with self._lock:
+            if fn not in self._subscribers:
+                self._subscribers.append(fn)
+
+    def unsubscribe(self, fn: Callable[[Frame], None]) -> None:
+        with self._lock:
+            if fn in self._subscribers:
+                self._subscribers.remove(fn)
 
     def latest(self) -> Frame | None:
         with self._lock:
@@ -201,6 +232,211 @@ class WebRTCCamera(Camera):
         if not loop.is_running():
             loop.close()
         self.thread = None
+
+
+# --------------------------------------------------------------------------
+# Taps: a live view and a recording, off the slot, never on the tick
+# --------------------------------------------------------------------------
+
+class Viewer:
+    """``--view``: an MJPEG server on ``127.0.0.1:port`` (0 = any free port).
+    ``/`` is a page showing the stream, ``/stream`` the multipart stream (a
+    new JPEG whenever the slot's seq changes; a slow browser skips frames),
+    ``/frame`` one JPEG. Encoding happens on the request's thread."""
+
+    def __init__(self, camera: Camera, port: int = 8765, *, width: int = 960, quality: int = 80,
+                 title: str = "g1", host: str = "127.0.0.1") -> None:
+        self.camera = camera
+        self.width = width
+        self.quality = quality
+        self.title = title
+        self.host = host
+        self.port = port
+        self.server: ThreadingHTTPServer | None = None
+        self.thread: threading.Thread | None = None
+
+    @property
+    def url(self) -> str:
+        return f"http://{self.host}:{self.port}/"
+
+    def jpeg(self) -> tuple[Optional[bytes], int]:
+        f = self.camera.latest()
+        if f is None:
+            return None, 0
+        from g1.core import images
+        return images.encode_jpeg(f.image, self.width, self.quality), f.seq
+
+    def start(self) -> None:
+        viewer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args) -> None:      # quiet
+                pass
+
+            def do_GET(self) -> None:
+                if self.path.startswith("/stream"):
+                    self.send_response(200)
+                    self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+                    self.send_header("Cache-Control", "no-cache")
+                    self.end_headers()
+                    last = 0
+                    try:
+                        while viewer.server is not None:
+                            data, seq = viewer.jpeg()
+                            if data is None or seq == last:
+                                time.sleep(1 / 30)
+                                continue
+                            last = seq
+                            self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n"
+                                             + f"Content-Length: {len(data)}\r\n\r\n".encode() + data + b"\r\n")
+                            self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError):
+                        return
+                elif self.path.startswith("/frame"):
+                    data, _ = viewer.jpeg()
+                    if data is None:
+                        self.send_error(503, "no frame yet")
+                        return
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/jpeg")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                else:
+                    page = (f"<!doctype html><title>{viewer.title}</title><body style='margin:0;background:#111'>"
+                            f"<img src='/stream' style='max-width:100vw;max-height:100vh'></body>").encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Content-Length", str(len(page)))
+                    self.end_headers()
+                    self.wfile.write(page)
+
+        self.server = ThreadingHTTPServer((self.host, self.port), Handler)
+        self.server.daemon_threads = True
+        self.port = self.server.server_address[1]
+        self.thread = threading.Thread(target=self.server.serve_forever, name="viewer", daemon=True)
+        self.thread.start()
+
+    def stop(self) -> None:
+        server, self.server = self.server, None
+        if server is None:
+            return
+        server.shutdown()
+        server.server_close()
+        if self.thread is not None:
+            self.thread.join(timeout=2.0)
+            self.thread = None
+
+
+class Recorder:
+    """``--record``: every published frame to an .mp4 (PyAV, libx264, yuv420p),
+    variable frame rate with each frame's own stamp as its time, so a headless
+    sim run plays back at sim speed and a robot run at real time. Frames are
+    queued from the producer's thread (bounded; the oldest is dropped when the
+    encoder falls behind) and encoded on this thread."""
+
+    def __init__(self, camera: Camera, path: Path | str, *, codec: Optional[str] = None, queue_size: int = 8) -> None:
+        try:
+            import av  # noqa: F401
+        except ImportError:
+            raise RuntimeError("--record needs PyAV: pip install av") from None
+        self.camera = camera
+        self.path = Path(path)
+        self.codec = codec
+        self._q: "queue.Queue[Optional[Frame]]" = queue.Queue(maxsize=queue_size)
+        self._thread: threading.Thread | None = None
+        self.frames = 0
+        self.dropped = 0
+        self.duration_s = 0.0
+        self.error: Optional[BaseException] = None
+
+    def _on_frame(self, frame: Frame) -> None:
+        try:
+            self._q.put_nowait(frame)
+        except queue.Full:
+            try:
+                self._q.get_nowait()          # drop the oldest, keep the newest
+                self.dropped += 1
+            except queue.Empty:
+                pass
+            try:
+                self._q.put_nowait(frame)
+            except queue.Full:
+                self.dropped += 1
+
+    def start(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._thread = threading.Thread(target=self._run, name="recorder", daemon=True)
+        self._thread.start()
+        self.camera.subscribe(self._on_frame)
+
+    def stop(self, join: float = 30.0) -> None:
+        self.camera.unsubscribe(self._on_frame)
+        if self._thread is None:
+            return
+        self._q.put(None)                     # blocks until there is room: nothing is lost at the end
+        self._thread.join(timeout=join)
+        self._thread = None
+
+    def summary(self) -> str:
+        if self.error is not None:
+            return f"recording failed: {self.error}"
+        return (f"recorded {self.frames} frames, {self.duration_s:.1f} s, {self.dropped} dropped -> {self.path}")
+
+    def _run(self) -> None:
+        import av
+        container = None
+        stream = None
+        t0: Optional[float] = None
+        last_pts = -1
+        try:
+            while True:
+                frame = self._q.get()
+                if frame is None:
+                    break
+                h, w = frame.image.shape[:2]
+                image = frame.image[:h - h % 2, :w - w % 2]      # yuv420p needs even sides
+                if container is None:
+                    container = av.open(str(self.path), mode="w")
+                    stream = _add_stream(container, self.codec, image.shape[1], image.shape[0])
+                    t0 = frame.stamp
+                pts = max(last_pts + 1, round((frame.stamp - t0) * 1000))
+                last_pts = pts
+                vf = av.VideoFrame.from_ndarray(np.ascontiguousarray(image), format="rgb24")
+                vf.pts = pts
+                vf.time_base = Fraction(1, 1000)
+                for packet in stream.encode(vf):
+                    container.mux(packet)
+                self.frames += 1
+                self.duration_s = pts / 1000
+        except Exception as e:
+            self.error = e
+            print(f"recorder: {e}")
+        finally:
+            if container is not None:
+                try:
+                    for packet in stream.encode(None):
+                        container.mux(packet)
+                finally:
+                    container.close()
+
+
+def _add_stream(container, codec: Optional[str], width: int, height: int):
+    """libx264 when PyAV has it, else mpeg4; ``codec`` forces one."""
+    import av
+    names = [codec] if codec else ["libx264", "mpeg4"]
+    for name in names:
+        try:
+            stream = container.add_stream(name, rate=30)       # nominal; frames carry their own pts
+        except Exception:
+            continue
+        stream.width, stream.height = width, height
+        stream.pix_fmt = "yuv420p"
+        stream.time_base = Fraction(1, 1000)
+        if name == "libx264":
+            stream.options = {"preset": "veryfast", "crf": "23"}
+        return stream
+    raise RuntimeError(f"no video encoder available among {names} (av {av.__version__})")
 
 
 def main(argv: list[str] | None = None) -> int:

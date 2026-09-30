@@ -19,6 +19,8 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from g1.agent.agent import AGENTS
@@ -42,6 +44,13 @@ def run_parser(prog: str = "g1 run") -> argparse.ArgumentParser:
     p.add_argument("--pause", type=float, default=1.0, help="seconds to hold between chained tools (default 1.0)")
     p.add_argument("--camera", choices=("auto", "on", "off"), default="auto",
                    help="open the env's camera: auto = only if the program uses it (default)")
+    p.add_argument("--view", type=int, nargs="?", const=8765, default=None, metavar="PORT",
+                   help="show the head camera live at http://127.0.0.1:PORT (default 8765; 0 = any free port); "
+                        "opens the camera even for a chain")
+    p.add_argument("--view-width", type=int, default=960, help="width of the live view's JPEGs (default 960)")
+    p.add_argument("--record", nargs="?", const="auto", default=None, metavar="PATH",
+                   help="record every camera frame to an .mp4 (PyAV): into the run directory as camera.mp4, or "
+                        "runs/<ts>_<env>_<name>.mp4 for a chain, or the given PATH")
     p.add_argument("--max-time", type=float, default=limits.get("max_time_s"),
                    help="stop (and return to a safe state) if the program runs longer than this many seconds "
                         "(default: limit max_time_s)")
@@ -131,22 +140,68 @@ def _return_to_safety(program: Runnable, env: Env, last: Optional[Action], obs: 
     program.on_returned(outcome)
 
 
+def _taps(args, env: Env, program: Runnable) -> list:
+    """``--view`` / ``--record``: start the taps on the env's camera slot."""
+    from g1.camera import Recorder, Viewer
+    view = getattr(args, "view", None)
+    record = getattr(args, "record", None)
+    if view is None and record is None:
+        return []
+    source = env.source()
+    if source is None:
+        raise SystemExit("--view/--record need the camera, but the env opened none")
+    taps = []
+    if view is not None:
+        viewer = Viewer(source, view, width=getattr(args, "view_width", 960), title=f"{program.name} @ {env.name}")
+        viewer.start()
+        print(f"view: {viewer.url}")
+        taps.append(viewer)
+    if record is not None:
+        if record == "auto":
+            recorder = getattr(program, "recorder", None)
+            if recorder is not None:
+                path = Path(recorder.dir) / "camera.mp4"
+            else:
+                stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+                name = "".join(c if c.isalnum() or c in "+-_" else "_" for c in program.name)[:40]
+                path = Path(getattr(args, "log", "runs")) / f"{stamp}_{env.name}_{name}.mp4"
+        else:
+            path = Path(record)
+        try:
+            rec = Recorder(source, path)
+        except RuntimeError as e:
+            raise SystemExit(str(e)) from None
+        rec.start()
+        print(f"recording: {path}")
+        taps.append(rec)
+    return taps
+
+
 def run(program: Runnable, env: Env, max_time: float = limits.get("max_time_s")) -> bool:
     """The one loop every env shares:
 
         with env: obs = env.observe(env.reset()); program.reset(obs)
                   loop: action = program.step(t, obs); obs = env.observe(env.step(action))
         env.report()
+
+    ``--view`` / ``--record`` taps start after the camera is up and stop before
+    the env is left and before ``program.close()`` (which may rename the run
+    directory the recording is in).
     """
     duration = getattr(program, "duration", None)
     if duration is not None and duration > max_time:
         print(f"warning: {program.name} lasts {duration:.1f}s but --max-time is {max_time:.0f}s; "
               f"it will be cut short")
     mode = getattr(env.args, "camera", "auto")
-    env.use_camera = program.uses_camera if mode == "auto" else mode == "on"
+    tapped = getattr(env.args, "view", None) is not None or getattr(env.args, "record", None) is not None
+    if mode == "off" and tapped:
+        raise SystemExit("--camera off but --view/--record need frames; drop --camera off")
+    env.use_camera = (program.uses_camera or tapped) if mode == "auto" else mode == "on"
+    taps: list = []
     try:
         with env:
             obs = env.observe(env.reset())
+            taps = _taps(env.args, env, program)
             program.reset(obs)
             n = 0
             last: Optional[Action] = None
@@ -173,6 +228,11 @@ def run(program: Runnable, env: Env, max_time: float = limits.get("max_time_s"))
                 print(f"\nerror: {e}")
                 _return_to_safety(program, env, last, obs, "error", repr(e))
                 raise
+            finally:
+                for tap in taps:
+                    tap.stop()
+                    if hasattr(tap, "summary"):
+                        print(tap.summary())
     finally:
         program.close()
     return env.report()

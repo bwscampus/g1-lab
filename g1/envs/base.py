@@ -25,7 +25,7 @@ from typing import ClassVar
 
 import numpy as np
 
-from g1.camera import Frame
+from g1.camera import Camera, Frame
 from g1.core.action import Action, Obs
 
 
@@ -109,6 +109,11 @@ class Env:
     # -- observation -------------------------------------------------------
     def frame(self) -> Frame | None:
         """Latest camera frame, or None. Never blocks."""
+        return None
+
+    def source(self) -> Camera | None:
+        """The camera slot a tap (Viewer, Recorder) may subscribe to, once
+        ``setup`` has opened it; None when there is no camera."""
         return None
 
     def clock(self) -> float:
