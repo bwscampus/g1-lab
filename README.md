@@ -33,33 +33,113 @@ Two words to know, both GPT-Policy's:
 The menu the model gets: `move`, `arm_path`, `hold`, `check`, `say` (the onboard
 text-to-speech), `wave_hand`/`shake_hand` (robot only), `done`, `give_up`.
 
-## Setup
+## Install
 
-Python 3.10+ on macOS or Linux.
+Three tiers; each one builds on the one before. Python 3.10+ on macOS or Linux (developed on
+macOS, Python 3.10 in conda).
+
+### 1. Sim — everyone
 
 ```
-conda create -n g1 python=3.10 -y && conda activate g1     # or a venv
-git clone <this repo> g1-lab && cd g1-lab
-pip install -e ".[sim,dev]"                                # MuJoCo (with mjpython on macOS), pytest
+conda create -n g1 python=3.10 -y && conda activate g1     # or: python3 -m venv .venv && source .venv/bin/activate
+git clone https://github.com/bwscampus/g1-lab.git && cd g1-lab
+pip install -e ".[sim,dev]"                                # numpy, jsonschema, Pillow, MuJoCo (+ mjpython on macOS), pytest
 git clone --depth 1 https://github.com/google-deepmind/mujoco_menagerie.git ~/Robotics/mujoco_menagerie
 ```
 
-The sim looks for `~/Robotics/mujoco_menagerie/unitree_g1/scene.xml`; set `G1_MJCF` to keep
-the clone elsewhere. Then:
+The sim loads the Menagerie `unitree_g1` scene from `~/Robotics/mujoco_menagerie/unitree_g1/
+scene.xml` (the `mujoco-menagerie` package on PyPI does not ship the G1 model, so the clone is
+needed); set `G1_MJCF=/path/to/unitree_g1/scene.xml` to keep it elsewhere. Check:
 
 ```
 g1 tools                                   # the menu the model sees, and the CLI-only presets
-g1 run --env sim --tools tpose --headless  # a checked run: the joint table and PASS
-pytest                                     # ~100 tests, all through headless sim (~3 min)
+g1 run --env sim --tools tpose --headless  # a checked run: prints the joint table and PASS
+mjpython -m g1 run --env sim --tools tpose # the same in the viewer (macOS: mjpython; Linux: python -m g1)
+pytest                                     # ~130 tests, all through headless sim (~3 min)
 ```
 
-For the model: `cp .env.example .env` and put a Hugging Face token in it (`HF_TOKEN`; the
-model is `VLM_MODEL`, see `docs/vision-model.md`). Then `g1 scene fetch` once (~35 MB of
-room textures and object meshes, git-ignored) and `g1 task run tasks/find_the_mug --env sim
---headless`, or `g1 decide runs/head.png --instruction "find the mug"` for one decision on a
-saved frame. The robot stage needs `unitree_sdk2py` and, for the camera,
-`unitree_webrtc_connect` plus `pip install -e ".[camera]"` (neither is on PyPI); see
-`docs/running-on-the-robot.md`.
+Optional: `ffmpeg` on the PATH (`brew install ffmpeg` / `apt install ffmpeg`) is needed only
+to use a phone video as a demonstration (`--demo walk.mp4`); recording a run (`--record`)
+uses PyAV, which the `camera` extra below installs (`pip install av` on its own works too).
+
+### 2. The model — to run a task
+
+```
+cp .env.example .env            # git-ignored; exported variables win over it
+```
+
+Put a Hugging Face token in it (`HF_TOKEN=hf_...`; a fine-grained token with "Make calls to
+Inference Providers", from https://huggingface.co/settings/tokens) and, optionally, the model
+(`VLM_MODEL`, default `Qwen/Qwen3-VL-30B-A3B-Instruct`; see `docs/vision-model.md`). Then:
+
+```
+g1 scene fetch                                              # once: room textures + object meshes (~35 MB, git-ignored)
+g1 decide runs/head.png --instruction "find the mug"        # one real decision on a saved frame: the cheapest check
+g1 task run tasks/find_the_mug --env sim --headless         # a whole task; you give the verdict at the end
+```
+
+### 3. The robot — control, then the camera
+
+**Network.** Plug into the G1 (or join its network) so the laptop has an address on
+`192.168.123.x`; `ifconfig`/`ip a` shows the interface (`en7`, `eth0`, ...). Put it in `.env`
+as `UNITREE_IFACE=en7` — `--iface` defaults to it — and the robot's address as
+`UNITREE_ROBOT_IP=192.168.123.161` for the camera.
+
+**Control: `unitree_sdk2py`.** Not on PyPI. It needs CycloneDDS 0.10.x, which on macOS (and
+on Linux without a system package) is built from source first:
+
+```
+cd ~/Robotics
+git clone https://github.com/eclipse-cyclonedds/cyclonedds -b releases/0.10.x
+cd cyclonedds && mkdir build install && cd build
+cmake .. -DCMAKE_INSTALL_PREFIX=../install && cmake --build . --target install
+export CYCLONEDDS_HOME=~/Robotics/cyclonedds/install            # needed for the next step
+
+cd ~/Robotics
+git clone https://github.com/unitreerobotics/unitree_sdk2_python.git
+cd unitree_sdk2_python && pip install -e .                      # installs cyclonedds==0.10.2 against CYCLONEDDS_HOME
+```
+
+Check without moving anything: `g1 status` (read-only; prints the LowState rate, the FSM and
+a one-line verdict — `docs/running-on-the-robot.md` says what each means). Then the first
+motion, in `--mode standing` on a robot already standing under its own controller:
+
+```
+g1 run --env robot --tools tpose --mode standing                # takes the arms where they are, raises and lowers them, hands back
+```
+
+**Camera: `unitree_webrtc_connect`.** Also not on PyPI; it brings `aiortc` and PyAV, which
+decode the robot's H.264 stream. (It also pulls in `opencv-python` as a dependency of its own;
+this repo never imports it — see `docs/architecture.md` — and the two coexist as long as
+nothing loads `cv2` into a running process.)
+
+```
+cd ~/Robotics
+git clone https://github.com/legion1581/go2_webrtc_connect.git
+cd go2_webrtc_connect && pip install -e .
+cd ~/Robotics/g1-lab && pip install -e ".[camera]"
+```
+
+Firmware 1.5.1 and later needs the robot's AES-128 key; it is per device and does not change.
+Fetch it once with the account the robot is bound to in the Unitree Explorer app and put it in
+`.env`:
+
+```
+unitree-fetch-aes-key --email you@example.com --sn <serial> --quiet      # --region cn for the Chinese cloud
+# .env:  UNITREE_AES_128_KEY=<32 hex characters>
+```
+
+Close the Unitree app (the robot takes one WebRTC client), then check the stream without
+touching the robot — `(720, 1280, 3)` at ~15 fps is right:
+
+```
+g1 camera                                                       # fps and frame gaps for 5 s; --save frame.png keeps one
+g1 run --env robot --tools say:text=hello --mode standing --volume 60   # hear the speaker
+g1 task run tasks/find_the_mug --env robot --mode standing --walk --view    # the real thing, spotter on L2+B
+```
+
+`docs/running-on-the-robot.md` has the pre-flight for walking, what the two modes do, and
+what to do when the robot seems stuck.
 
 ## Write a tool
 
