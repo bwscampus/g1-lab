@@ -1,0 +1,13 @@
+{
+  "instruction": "Find the table in the room. Your starting position is (0, 0), facing positive X. The table center is approximately (2.2, -1.5). Move to the left side of the table as viewed from your starting direction, meaning the side with the more positive Y coordinate. Your target stopping position is approximately (2.2, -0.4), about 0.75 meters from the table's edge. At the destination, face the table center (toward negative Y). Avoid collisions with furniture and walls. Use movements no longer than 0.5 meters. When a target is to the right of the camera image, turn right using negative dyaw_deg; when it is to the left, turn left using positive dyaw_deg. Do not alternate between opposite turns without making progress. Before calling done, compare your estimated position and heading with the target and verify that you are on the correct side of the table.",
+  "scene": "room",
+  "objects": [],
+  "safety_notes": [],
+  "demo": null,
+  "demo_mode": null,
+  "refs": [],
+  "success": "human",
+  "max_decisions": 30,
+  "max_time_s": 600,
+  "notes": "A new task, from `g1 new task NAME`. Every key but instruction is optional. instruction: what the model is asked to do, in one sentence. scene/objects: the sim room and what to put in it (g1 scene fetch once); on the robot they are ignored. safety_notes: physical facts the camera cannot see, added to the prompt. demo: a video, a runs/<dir> or a demo.json shown on turn 0, relative to this folder. refs: photos of the goal. success: the human verdict asked after the run. notes: for people; the model never sees them. Run it: g1 task run tasks/NAME --env sim --headless"
+}
