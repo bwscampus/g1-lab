@@ -101,13 +101,15 @@ def test_tpose_passes_in_sim():
     r = Chain(TPose())
     assert run(r, env) is True
     assert env.violations == [] and env.ticks == round(r.duration / 0.02)
-    assert env.q_max[16] == pytest.approx(1.57, abs=0.05)        # measured tracks the command
+    assert env.q_max[16] == pytest.approx(1.57, abs=0.15)        # measured tracks the command, sagging at kp 60
     assert env.cmd_max[16] == pytest.approx(1.57)
 
 
 def test_out_of_bounds_fails_in_sim():
     env = sim_env()
-    oob = Tool.of([Segment({16: 3.0}, 3.0)], joints=LEFT_ARM, name="oob")   # left_shoulder_roll limit is 2.2515
+    # all 17 arm_sdk joints, as every real tool does: a joint left out of the message has kp 0 at weight 1,
+    # and the twin (like the robot) lets it go limp
+    oob = Tool.of([Segment({16: 3.0}, 3.0)], joints=UPPER_BODY, name="oob")   # left_shoulder_roll limit is 2.2515
     assert run(oob, env) is False
     kinds = {v.kind for v in env.violations}
     assert "target_above" in kinds                 # the policy asked for it
@@ -115,9 +117,9 @@ def test_out_of_bounds_fails_in_sim():
 
 
 def test_physics_violation_needs_no_command():
-    """A joint the policy never commands can still leave its bounds: with the
-    base free the legs collapse under gravity, and only the measured angles see it."""
-    env = sim_env("--free-base")
+    """A joint the program never commands is still watched: the legs belong to the
+    twin's onboard controller, and only the measured angles see where they went."""
+    env = sim_env()
     p = Tool.of([Segment({}, 6.0)], joints=[])
     ok = run(p, env)
     assert env.monitor.commanded == set()                         # nothing was commanded at all

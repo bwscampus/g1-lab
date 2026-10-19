@@ -1,6 +1,7 @@
 """Onboard gestures: the LocoClient does the motion, arm_sdk lets go meanwhile
 (GPT-Policy's ``set_gripper``: a bounded SDK call with a measured result).
-Robot only; sim has no onboard gestures and aborts on the call."""
+The twin plays a keyframed stand-in for each (``g1/twin/onboard.py``), so they run
+in sim too; the real gestures' shape and length are the robot's."""
 from __future__ import annotations
 
 from g1.core import limits

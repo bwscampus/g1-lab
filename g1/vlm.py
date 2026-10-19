@@ -14,8 +14,6 @@ Configured by environment:
 
 A ``.env`` file in the repo root (copy ``.env.example``) is read on first use;
 exported variables win over it.
-
-    HF_TOKEN=hf_... g1 decide frame.png --instruction "find the mug"
 """
 from __future__ import annotations
 

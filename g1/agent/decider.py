@@ -4,8 +4,8 @@ shape, and the session that carries it.
   AgentContext   the system prompt (conventions, safety notes, the tool
                  catalog as bullets and as JSON, the rules), the function
                  schemas and the output schema — built once per run
-  AgentTurn      one observation: the JSON text (``observation()``), the
-                 named images, and on turn 0 any demonstration content
+  AgentTurn      one observation: the JSON text (``observation()``) and the
+                 named images
   Decision       the validated ``{"name", "arguments"}`` reply
 
 The observation is one JSON object: ``instruction``, ``images`` (name, size,
@@ -19,13 +19,10 @@ schema (jsonschema, Draft 2020-12); every movement tool carries a ``note``.
 ``VLMDecider`` keeps one conversation per run: the system prompt once, then
 each observation and the model's own reply, so the model has its history.
 Only the last ``live_image_window`` observations keep their image (their
-``live_image_window``); demonstration images are never dropped.
-
-    HF_TOKEN=hf_... g1 decide step_0003.png --instruction "find the mug"    # one real decision
+``live_image_window``).
 """
 from __future__ import annotations
 
-import argparse
 import json
 import math
 import time
@@ -39,7 +36,7 @@ from g1.core import limits
 from g1.core.config import HEAD_CAMERA_FOVY, NUM_JOINTS
 from g1.core.worker import Worker
 from g1.tools import Tool, function_schemas, joint_table, menu, output_schema, parameters, prompt_catalog, validate_args
-from g1.vlm import DEFAULT_MODEL, IMAGE_WIDTH, RequestError, VLMClient, image_part
+from g1.vlm import IMAGE_WIDTH, VLMClient, image_part
 
 
 
@@ -71,7 +68,6 @@ class AgentContext:
 class AgentTurn:
     observation: str                                 # the JSON text, exactly as sent
     images: dict[str, np.ndarray] = field(default_factory=dict)   # name -> RGB frame
-    content: tuple = ()                              # demonstration parts, turn 0 only
     request_id: int = 0
     step: int = 0
     frame_seq: Optional[int] = None
@@ -321,8 +317,6 @@ class VLMDecider(Decider):
     # -- the conversation --------------------------------------------------
     def _user_message(self, turn: AgentTurn) -> tuple[dict, Optional[int]]:
         blocks: list[dict] = []
-        for part in turn.content:
-            blocks.extend(part.blocks(self.max_width))
         blocks.append({"type": "text", "text": turn.observation})
         image_at = None
         for name, image in turn.images.items():
@@ -383,53 +377,3 @@ class VLMDecider(Decider):
     def _call_details(self) -> dict:
         return {"usage": self.client.last_usage, "response_mode": self.client.response_mode,
                 "request_elapsed_s": round(self.client.last_elapsed, 6)}
-
-
-# --------------------------------------------------------------------------
-# One decision from a saved frame
-# --------------------------------------------------------------------------
-
-def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(prog="g1 decide",
-                                description="one real decision from a saved frame (needs $HF_TOKEN)")
-    p.add_argument("image", help="png/jpg, e.g. a step_NNNN.png from runs/")
-    p.add_argument("--instruction", "-i", required=True, help='the goal text, e.g. "find the mug"')
-    p.add_argument("--model", default=None, help=f"model id (default: $VLM_MODEL or {DEFAULT_MODEL})")
-    p.add_argument("--no-base", action="store_true", help="hide the walking tools, as on a robot without --walk")
-    args = p.parse_args(argv)
-    from g1.core import images
-    from g1.vlm import load_dotenv
-    load_dotenv()
-    try:
-        image = images.read_rgb(args.image)
-    except IOError as e:
-        p.error(str(e))
-    try:
-        dec = VLMDecider.from_env(args.model, on_text=lambda s: print(s, end="", flush=True))
-    except RuntimeError as e:
-        p.error(str(e))
-    context = build_context(menu(not args.no_base), can_walk=not args.no_base, max_decisions=30)
-    dec.start(context)
-    h, w = image.shape[:2]
-    state = {"joint_pos": [0.0] * NUM_JOINTS, "joint_vel": [0.0] * NUM_JOINTS, "joint_torque": None,
-             "waist_yaw_deg": 0.0, "base_pose_cmd": [0.0, 0.0, 0.0], "base_pose_env": None}
-    obs = observation(args.instruction, state, [{"name": "head", "width": w, "height": h, "captured_age_s": 0.0}],
-                      {"env_step": 0, "decisions_left": 30, "can_walk": not args.no_base})
-    print(f"{dec.provider}: model {dec.model}; instruction {args.instruction!r}; image {w}x{h}")
-    t0 = time.monotonic()
-    try:
-        d = dec.decide(AgentTurn(obs, {"head": image}))
-    except ProtocolError as e:
-        print(f"\n-- rejected after {time.monotonic() - t0:.2f}s: {e}")
-        return 1
-    except RequestError as e:
-        print(f"\n-- request failed after {time.monotonic() - t0:.2f}s ({type(e).__name__}): {e}")
-        return 1
-    print(f"\n-- {time.monotonic() - t0:.2f}s ({dec.client.response_mode}, usage {dec.client.last_usage})")
-    print(f"tool:  {d.name}({ {k: v for k, v in d.arguments.items() if k != 'note'} })  {' '.join(d.notes)}")
-    print(f"note:  {d.note}")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

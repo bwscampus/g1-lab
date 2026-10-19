@@ -20,9 +20,8 @@ handback, plus ``wait`` for the backoff before a model retry (each retry
 re-observes; no robot action is ever replayed). ``done`` / ``give_up`` end
 the run with the model's conclusion; the *label* is the human's, asked at
 close. Every tool is seeded from the agent's own last *commanded* q, never
-the measured one (the same rule as a Chain). ``search`` drives it with the
-vision model; ``replay`` rebuilds a saved run as a plain Chain and needs
-neither camera nor model.
+the measured one (the same rule as a Chain). ``build_agent`` makes one for a
+task with an instruction.
 """
 from __future__ import annotations
 
@@ -36,11 +35,11 @@ import numpy as np
 
 from g1.agent.decider import (AgentContext, AgentTurn, Decider, Decision, ProtocolError, VLMDecider, build_context,
                               observation)
-from g1.agent.episode import EpisodeWriter, StepRecord, chain_of, load_episode
+from g1.agent.episode import EpisodeWriter, StepRecord
 from g1.core import limits
 from g1.core.action import EPS, Action, Obs, Runnable
 from g1.core.config import CONTROL_DT, UPPER_BODY, joint_index
-from g1.tools import STEP_MAX, Chain, Tool, menu, parse_chain, prefixed
+from g1.tools import STEP_MAX, Tool, menu, prefixed
 from g1.tools.control import Handback, Takeover, dry_run
 from g1.vlm import Overloaded, QuotaExceeded
 
@@ -68,7 +67,7 @@ class Agent(Runnable):
                  frame_max_age: float = limits.get("frame_max_age_s"),
                  frame_timeout: float = limits.get("frame_timeout_s"),
                  max_failures: int = limits.get("max_failures"),
-                 can_walk: bool = True, has_loco: bool = False, safety_notes: Sequence[str] = (), content: Sequence = (),
+                 can_walk: bool = True, has_loco: bool = False, safety_notes: Sequence[str] = (),
                  verdict: Optional[Callable[[], Optional[str]]] = None, name: str = "search",
                  retry_delays: Sequence[float] = RETRY_DELAYS, recovery_timeout: float = RECOVERY_TIMEOUT) -> None:
         self.instruction = instruction
@@ -88,7 +87,6 @@ class Agent(Runnable):
         self.can_walk = can_walk
         self.has_loco = has_loco
         self.safety_notes = list(safety_notes)
-        self.content = tuple(content)
         self.verdict = verdict
         self.name = name
         self.retry_delays = tuple(retry_delays)
@@ -305,15 +303,13 @@ class Agent(Runnable):
             extra["attempt"] = self._attempt
         text = observation(self.instruction, self._state_payload(obs), images_meta, extra, self._previous)
         self._request_id += 1
-        self._turn = AgentTurn(text, images, self.content if self._env_step == 0 and not self._attempt else (),
-                               request_id=self._request_id, step=self._env_step,
+        self._turn = AgentTurn(text, images, request_id=self._request_id, step=self._env_step,
                                frame_seq=None if frame is None else frame.seq,
                                frame_stamp=None if frame is None else frame.stamp)
         self._observe_prep = time.perf_counter() - t0
         self._event("observation", {"step": self._env_step, "input_json": text, "state": self._state_payload(obs),
                                     "images": [{**m, "path": f"step_{self._step:04d}.png"} for m in images_meta],
-                                    **({"attempt": self._attempt} if self._attempt else {}),
-                                    **({"content": _content_records(self._turn.content)} if self._turn.content else {})})
+                                    **({"attempt": self._attempt} if self._attempt else {})})
         self._wall0 = time.monotonic()
         if not self.decider.request(self._turn):
             self._say("decider busy; will retry")
@@ -552,14 +548,25 @@ class Agent(Runnable):
         return self.step(t, obs)
 
 
-def _content_records(parts) -> list:
-    from g1.agent.demo import content_records
-    return content_records(parts)
-
-
 # --------------------------------------------------------------------------
 # CLI builders
 # --------------------------------------------------------------------------
+
+def ask_save() -> bool:
+    """After a robot run: keep it? Without a terminal it is kept (unreviewed); EOF/Ctrl-C keeps it."""
+    import sys
+    if not sys.stdin.isatty():
+        return True
+    while True:
+        try:
+            answer = input("Save this run? [y / n]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return True
+        if answer in ("y", "yes"):
+            return True
+        if answer in ("n", "no"):
+            return False
+
 
 def ask_verdict() -> Optional[str]:
     """Their terminal prompt: success or failed, nothing else; EOF/Ctrl-C skips."""
@@ -567,73 +574,29 @@ def ask_verdict() -> Optional[str]:
     if not sys.stdin.isatty():
         return None
     while True:
-        answer = input("Task result [s success / f failed]: ").strip().lower()
+        try:
+            answer = input("Task result [s success / f failed]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return None
         if answer in ("s", "success"):
             return "success"
         if answer in ("f", "failed", "fail"):
             return "failed"
 
 
-def build_search(args, can_walk: bool, has_loco: bool = False) -> Agent:
-    from g1.agent.demo import DEFAULT_FRAMES, MAX_FRAMES, VideoPart, build_request, build_selector, prepare, save_input
-    if not getattr(args, "instruction", None) and not getattr(args, "input_json", None):
-        raise ValueError("search needs --instruction, e.g. --instruction \"find the mug\" (or --input-json)")
-    request = build_request(getattr(args, "instruction", None), manifest=getattr(args, "input_json", None),
-                            demo=getattr(args, "demo", None), mode=getattr(args, "demo_mode", None),
-                            refs=getattr(args, "ref", None) or [])
-    args.instruction = request.instruction
-    echo = (lambda s: print(s, end="", flush=True)) if getattr(args, "echo", False) else None
-    decider = VLMDecider.from_env(getattr(args, "model", None), on_text=echo,
-                                  live_image_window=getattr(args, "live_image_window", limits.get("live_image_window")),
-                                  fresh_turns=getattr(args, "fresh_turns", False))
+def build_agent(task: dict, *, env_name: str, can_walk: bool, has_loco: bool, runs: Path | str) -> Agent:
+    """The agent for a task with an instruction: the vision model ($VLM_MODEL), the menu
+    this env allows, the scene's and the task's safety notes, recorded under ``runs``. It asks
+    nothing at the end: ``g1 run`` asks, on the robot only (save it? then the verdict)."""
+    decider = VLMDecider.from_env()
     tools = menu(can_walk, has_loco)
     from g1.envs.scene import safety_notes
-    notes = safety_notes(getattr(args, "scene", None)) + list(getattr(args, "safety_note", None) or [])
-    recorder = None
-    if not getattr(args, "no_log", False):
-        recorder = EpisodeWriter(getattr(args, "log", "runs"), env=args.env, instruction=args.instruction,
-                                 model=decider.model, tools=[t.name for t in tools], allow_base=can_walk,
-                                 extra={"max_decisions": args.max_decisions, "step_timeout": args.step_timeout,
-                                        "live_image_window": getattr(decider, "live_image_window", None),
-                                        "fresh_turns": getattr(decider, "fresh_turns", False), "safety_notes": notes,
-                                        "request": request.record()})
-        print(f"recording to {recorder.dir}")
-    # demonstrations and reference images: compiled before any device opens, archived with the run
-    content = ()
-    if request.content:
-        import tempfile
-        frames = max(1, min(MAX_FRAMES, getattr(args, "demo_frames", DEFAULT_FRAMES)))
-        selector = None
-        if any(isinstance(p, VideoPart) for p in request.content):
-            selector = build_selector(getattr(args, "demo_select", "auto"), frames, getattr(args, "model", None))
-        where = recorder.dir / "input" if recorder is not None else Path(tempfile.mkdtemp(prefix="g1-demo-"))
-        prepared, reports = prepare(request, where, selector=selector, max_frames=frames)
-        content = prepared.content
-        for r in reports:
-            print(f"demonstration {r['source']}: {r['keyframes']} keyframe(s), {r['mode']}; {r['summary'][:160]}")
-        if recorder is not None:
-            save_input(prepared, where)
-            recorder.event("input_manifest", {**prepared.record(), "reports": reports})
-            if selector is not None:
-                for call in getattr(selector, "calls", []):
-                    recorder.usage(call)
-    verdict = None if getattr(args, "no_verdict", False) else ask_verdict
-    return Agent(args.instruction, decider, tools, recorder=recorder, max_decisions=args.max_decisions,
-                 step_timeout=args.step_timeout, can_walk=can_walk, has_loco=has_loco, safety_notes=notes,
-                 verdict=verdict, content=content)
-
-
-def build_replay(args, can_walk: bool, has_loco: bool = False) -> Chain:
-    if not getattr(args, "episode", None):
-        raise ValueError("replay needs --episode runs/<dir>")
-    meta, steps = load_episode(args.episode, images=False)
-    chain = chain_of(steps)
-    if not chain:
-        raise ValueError(f"{args.episode}: no completed tools to replay")
-    program = parse_chain(chain, pause=getattr(args, "pause", 1.0))
-    program.name = f"replay:{Path(args.episode).name}"
-    print(f"replaying {len(steps)} recorded step(s) of {meta.get('instruction')!r}: {chain}")
-    return program
-
-
-AGENTS = {"search": build_search, "replay": build_replay}
+    notes = safety_notes(task["scene"]) + list(task["safety_notes"])
+    recorder = EpisodeWriter(runs, env=env_name, instruction=task["instruction"], model=decider.model,
+                             tools=[t.name for t in tools], allow_base=can_walk,
+                             extra={"task": task["name"], "max_decisions": task["max_decisions"],
+                                    "step_timeout": limits.get("step_timeout_s"), "safety_notes": notes})
+    print(f"recording to {recorder.dir}")
+    return Agent(task["instruction"], decider, tools, recorder=recorder, max_decisions=task["max_decisions"],
+                 step_timeout=limits.get("step_timeout_s"), can_walk=can_walk, has_loco=has_loco,
+                 safety_notes=notes, verdict=None)

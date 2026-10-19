@@ -5,8 +5,6 @@ Nothing else in the repo holds a limit. Each entry there has a ``value``, a
 bounds). Code reads a value with ``limits.get("name")``; a tool's parameters
 refer to one with ``limit("name")`` and its prompt text with ``{limit:name}``.
 
-    g1 limits                        # the table, guesses first
-    g1 limits --source guess         # only the numbers nobody has checked
     G1_LIMITS=my_limits.json g1 ...  # another file for one run
 
 A missing or misspelt name fails at import, naming it: a limit is never
@@ -14,19 +12,18 @@ silently defaulted.
 """
 from __future__ import annotations
 
-import argparse
 import json
 import os
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]          # the repo
 PATH = ROOT / "configs" / "limits.json"
-SOURCES = ("guess", "gpt-policy", "repo", "measured", "user", "robot")     # least to most trusted
+SOURCES = ("guess", "gpt-policy", "repo", "unitree", "measured", "user", "robot")     # least to most trusted
 
 # Every name the code reads. The file must define exactly these.
 NAMES = (
-    "control_dt_s", "record_step_s",
+    "control_dt_s", "chain_pause_s", "camera_timeout_s", "record_step_s",
     "base_vx_max", "base_vy_max", "base_vyaw_max", "walk_speed", "side_speed", "turn_rate", "min_segment_s",
     "joint_margin_rad", "command_vel_max", "max_violations",
     "move_dx_max_m", "move_dy_max_m", "move_dyaw_max_deg", "look_yaw_max_deg",
@@ -34,14 +31,16 @@ NAMES = (
     "hold_seconds_max", "wave_hand_seconds", "shake_hand_seconds", "gesture_seconds_max", "gesture_ramp_s",
     "say_max_chars", "speech_chars_per_s", "say_min_s", "say_pause_max_s", "tts_speaker_id",
     "bookend_ramp_s", "return_to_stand_s", "return_ramp_s", "return_released_s",
+    "twin_physics_dt_s", "twin_fsm_delay_s", "twin_lock_stand_s", "twin_damp_kd", "twin_fall_z_m",
+    "twin_fall_tilt_deg", "twin_band_kp", "twin_band_kd", "twin_waist_kp", "twin_waist_kd", "twin_walk_waist_kp", "twin_waist_hold_s", "twin_arm_kp",
+    "twin_arm_kd", "twin_vel_feedback", "twin_vel_integral", "twin_walk_blend_s", "twin_stand_blend_s",
+    "twin_stop_speed", "twin_domain", "twin_lowstate_hz", "twin_camera_fps",
     "max_decisions", "step_timeout_s", "max_time_s",
     "settle_min_s", "settle_pos_tol_rad", "settle_vel_tol", "settle_samples", "settle_timeout_s",
     "frame_max_age_s", "frame_timeout_s", "max_failures",
     "max_tokens", "request_timeout_s", "image_width_px", "jpeg_quality", "live_image_window",
     "retry_max", "retry_delay_base_s", "retry_delay_cap_s", "recovery_timeout_s",
-    "states_hz", "demo_frames", "demo_frames_max",
-    "video_fps", "video_candidates_per_window", "video_window_s", "video_keyframes_per_window",
-    "video_candidate_width_px", "video_keyframe_width_px", "video_max_duration_s",
+    "states_hz",
 )
 
 
@@ -84,14 +83,14 @@ def _check_consistency(limits: dict, p: Path) -> None:
     v = {k: e["value"] for k, e in limits.items()}
     rules = [("walk_speed", "base_vx_max"), ("side_speed", "base_vy_max"), ("turn_rate", "base_vyaw_max"),
              ("arm_path_seconds_min", "arm_path_seconds_default"), ("arm_path_seconds_default", "arm_path_seconds_max"),
-             ("demo_frames", "demo_frames_max"), ("video_keyframes_per_window", "video_candidates_per_window"),
              ("wave_hand_seconds", "gesture_seconds_max"), ("shake_hand_seconds", "gesture_seconds_max"),
              ("settle_min_s", "settle_timeout_s"), ("retry_delay_base_s", "retry_delay_cap_s")]
     for low, high in rules:
         if v[low] > v[high]:
             raise ValueError(f"limits file {p}: {low} ({v[low]}) must not exceed {high} ({v[high]})")
     for name in ("control_dt_s", "walk_speed", "side_speed", "turn_rate", "max_decisions", "max_tokens",
-                 "settle_samples", "states_hz", "image_width_px", "say_max_chars", "speech_chars_per_s"):
+                 "settle_samples", "states_hz", "image_width_px", "say_max_chars", "speech_chars_per_s",
+                 "twin_physics_dt_s", "twin_lowstate_hz", "twin_camera_fps"):
         if v[name] <= 0:
             raise ValueError(f"limits file {p}: {name} must be positive")
 
@@ -110,28 +109,3 @@ def use(path: Path | str | None) -> None:
     new = load(path)
     LIMITS.clear()
     LIMITS.update(new)
-
-
-def describe(source: Optional[str] = None) -> str:
-    rows = [(n, e) for n, e in LIMITS.items() if source is None or e["source"] == source]
-    rows.sort(key=lambda r: (SOURCES.index(r[1]["source"]), NAMES.index(r[0])))
-    width = max((len(n) for n, _ in rows), default=4)
-    lines = [f"{'limit':<{width}}  {'value':>8}  {'unit':<6}  {'source':<10}  note"]
-    for n, e in rows:
-        lines.append(f"{n:<{width}}  {e['value']:>8g}  {e['unit']:<6}  {e['source']:<10}  {e['note']}")
-    return "\n".join(lines)
-
-
-def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(prog="g1 limits", description="every tunable limit, and where it came from")
-    p.add_argument("--source", choices=SOURCES, default=None, help="only limits from this source (guess: never checked)")
-    args = p.parse_args(argv)
-    print(f"{os.environ.get('G1_LIMITS') or PATH}\n")
-    print(describe(args.source))
-    counts = {s: sum(e["source"] == s for e in LIMITS.values()) for s in SOURCES}
-    print("\n" + ", ".join(f"{c} {s}" for s, c in counts.items() if c))
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

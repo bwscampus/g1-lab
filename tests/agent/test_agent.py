@@ -5,16 +5,16 @@ import time
 import numpy as np
 import pytest
 
-from g1.agent.agent import AGENTS, Agent, build_replay
+from g1.agent.agent import Agent
 from g1.agent.decider import Decider, ProtocolError
-from g1.agent.episode import EpisodeWriter, chain_of, load_episode
+from g1.agent.episode import EpisodeWriter, load_episode
 from g1.camera import ClockedCamera
-from g1.cli import main, run, run_parser
+from g1.cli import run
 from g1.core.config import CONTROL_DT, STAND_Q
 from g1.tools import STEP_MAX, TOOLS, menu
 from g1.tools.control import dry_run
 from g1.vlm import Overloaded, QuotaExceeded
-from tests.doubles import RedBallDecider, scripted_sim, select, sim_env
+from tests.doubles import RedBallDecider, scripted_sim, select
 
 
 def solid(color=(0, 0, 0), h=48, w=64):
@@ -50,8 +50,8 @@ class NoFrames(ClockedCamera):
         return None
 
 
-def check(cam=None, *extra):
-    return scripted_sim(cam or Scripted(), *extra)
+def check(cam=None, **settings):
+    return scripted_sim(cam or Scripted(), **settings)
 
 
 class Sequence(Decider):
@@ -113,8 +113,8 @@ def test_search_finds_the_ball_and_records(tmp_path):
     assert np.array_equal(steps[-2].image, red_square(32, 24, 5))             # the frame it walked on
     assert steps[-2].decision["name"] == "move" and steps[-2].decision["model"] == "red-ball-rules"
     assert "floor clear" in steps[-2].decision["arguments"]["note"]
-    assert steps[0].base_pose["env_start"] == [0.0, 0.0, 0.0]
-    assert math.hypot(*steps[-1].base_pose["env_end"][:2]) == pytest.approx(0.5, abs=1e-6)
+    assert steps[0].base_pose["env_start"] == pytest.approx([0.0, 0.0, 0.0], abs=0.01)   # the twin's truth
+    assert math.hypot(*steps[-1].base_pose["env_end"][:2]) == pytest.approx(0.5, abs=0.15)
     # the base is never commanded while the agent is thinking, so StopMove lands before each frame
     idx = [i for i, a in enumerate(env.actions) if a.base is not None]
     assert all(env.actions[i].base is None for i in range(idx[-1] + 1, len(env.actions)))
@@ -132,18 +132,23 @@ def test_observation_and_feedback_follow_the_contract():
     assert o[0]["images"] == [{"name": "head", "width": 64, "height": 48, "captured_age_s": o[0]["images"][0]["captured_age_s"]}]
     st = o[0]["state"]
     assert len(st["joint_pos"]) == 29 and len(st["joint_vel"]) == 29 and len(st["joint_torque"]) == 29
-    assert st["base_pose_cmd"] == [0.0, 0.0, 0.0] and st["base_pose_env"] == [0.0, 0.0, 0.0]
+    assert st["base_pose_cmd"] == [0.0, 0.0, 0.0] and st["base_pose_env"] == pytest.approx([0.0, 0.0, 0.0], abs=0.01)
     assert o[0]["extra"] == {"env_step": 0, "decisions_left": 10, "can_walk": True}
     prev = o[1]["previous_result"]
     fb = prev["result"]["execution_feedback"]
     assert prev["tool"] == "move" and prev["result"]["status"] == "completed"
     assert fb["base_target_pose"][2] == pytest.approx(30.0, abs=1e-6)
-    assert fb["base_measured_source"] == "env" and max(abs(v) for v in fb["base_error"]) < 1e-6
+    assert fb["base_measured_source"] == "env"                     # the twin's truth: a real, small error
+    assert max(abs(v) for v in fb["base_error"][:2]) < 0.15 and abs(fb["base_error"][2]) < 10
     assert fb["max_joint_residual_rad"] < 0.05 and len(fb["joint_residual_rad"]) == 29
     assert fb["joint_residual_rad"][0] is None                     # legs are not commanded
     assert "motion_progress" not in fb                              # recorded, hidden from the model
-    assert fb["settle"]["settled"] is True and fb["settle"]["max_velocity_rad_s"] <= 0.05
-    assert "required_samples" not in fb["settle"]                   # bookkeeping dropped once settled
+    # after a walk the waist at arm_sdk's kp 60 / kd 1.5 is underdamped and may not settle in 3 s: reported, either way
+    st = fb["settle"]
+    if st["settled"]:
+        assert st["max_velocity_rad_s"] <= 0.05 and "required_samples" not in st   # bookkeeping dropped once settled
+    else:
+        assert st["observed_s"] == pytest.approx(3.0, abs=0.05) and st["required_samples"] == 10   # the 3 s timeout
     assert o[2]["previous_result"]["tool"] == "move"
     assert o[2]["state"]["base_pose_cmd"][0] == pytest.approx(0.3 * math.cos(math.radians(30)), abs=1e-6)
     # the context the decider was started with
@@ -151,7 +156,7 @@ def test_observation_and_feedback_follow_the_contract():
     assert "a wall behind" in ctx.instructions and "Robot tool catalog:" in ctx.instructions
     assert [t["function"]["name"] for t in ctx.tools] == [s.name for s in menu(True)]
     assert ctx.output_schema["properties"]["name"]["enum"] == [s.name for s in menu(True)]
-    assert dec.turns[0].content == () and agent.result == "completed"
+    assert agent.result == "completed"
 
 
 def test_long_skill_runs_as_three_second_chunks(tmp_path):
@@ -175,9 +180,10 @@ def test_long_skill_runs_as_three_second_chunks(tmp_path):
     assert tpose[1].t["think_wall"] is None                        # only the first chunk thought
     # the arms never pause at a chunk boundary: the joint keeps moving through it
     arm = [s.q_end[16] for s in tpose]
-    assert arm[0] < arm[1] and max(arm) > 1.5
+    assert arm[0] < arm[1] and max(arm) > 1.4                     # 1.57 commanded; it sags at kp 60
     _, steps = load_episode(rec.dir, images=False)
-    assert chain_of(steps) == "tpose:hold_s=5.0:rise_s=3.0"         # one entry for the whole tool, no note
+    done = [s for s in steps if s.tool["name"] == "tpose" and s.outcome.get("status") == "completed"]
+    assert len(done) == 1 and {k: v for k, v in done[0].tool["args"].items() if k != "note"} == {"hold_s": 5.0, "rise_s": 3.0}
 
 
 def test_search_without_base_skills_looks_instead():
@@ -235,7 +241,7 @@ def test_too_fast_or_out_of_reach_motion_is_not_executed():
     err = o[1]["previous_result"]
     assert err["tool"] == "arm_path" and err["error"] == "motion_not_executed" and err["n_violations"] > 0
     assert "velocity" in err["violations"][0] and err["requested_motion"] == fast
-    assert agent.steps[0].outcome["status"] == "rejected" and env.cmd_max[18] == pytest.approx(1.28, abs=1e-6)
+    assert agent.steps[0].outcome["status"] == "rejected" and env.cmd_max[18] == pytest.approx(1.28, abs=0.01)   # the observed pose, held
     assert env.violations == []
 
 
@@ -246,9 +252,10 @@ def test_gestures_need_the_onboard_controller(capsys):
     assert run(agent, env, max_time=120) is True
     assert "no onboard controller" in observations(dec)[1]["previous_result"]["error"] and agent.result == "completed"
     env = check()
-    agent = Agent("g", Sequence([("wave_hand", {"seconds": 1.0})]), menu(True, True), max_decisions=5, has_loco=True)
-    run(agent, env, max_time=120)                                     # sim refuses the onboard call itself
-    assert "robot-only" in capsys.readouterr().out and agent.result is None
+    agent = Agent("g", Sequence([("wave_hand", {"seconds": 1.0}), ("done", {"summary": "s", "hindsight": ""})]),
+                  menu(True, True), max_decisions=5, has_loco=True)
+    assert run(agent, env, max_time=120) is True                      # the twin plays the onboard gesture
+    assert agent.result == "completed" and any(c["api"] == 7106 for c in env.twin.services.log)
     agent.close()
 
 
@@ -343,6 +350,7 @@ def test_run_files_and_human_verdict(tmp_path):
             "usage.json", "status.json", "episode.json", "step_0001.json", "step_0001.png"} <= names
     events = [json.loads(l) for l in (d / "events.jsonl").read_text().splitlines()]
     kinds = [e["event"] for e in events]
+    kinds = [k for k in kinds if k != "sdk_call"]                       # the bring-up's GetVolume, GetFsmId
     assert kinds[:3] == ["run_started", "protocol", "observation"]
     assert kinds.count("observation") == 3 and kinds.count("model_decision") == 2 and kinds.count("tool_error") == 1
     assert {"decision_timing", "tool_timing", "execution_result", "terminal", "return_home", "execution_finished",
@@ -380,37 +388,3 @@ def test_give_up_and_skipped_verdict(tmp_path):
     events = [json.loads(l) for l in (rec.dir / "events.jsonl").read_text().splitlines()]
     assert any(e["event"] == "human_evaluation_skipped" for e in events)
     assert events[-1]["model_outcome"] == "give_up" and events[-1]["status"] == "give_up"
-
-
-def test_replay_reproduces_a_recorded_run(tmp_path):
-    env = check()
-    rec = recorder(tmp_path, RedBallDecider())
-    agent = Agent("g", RedBallDecider(), menu(True), recorder=rec)
-    run(agent, env, max_time=120)
-    agent.close()
-    args = run_parser().parse_args(["--env", "sim", "--headless", "--tools", "replay", "--episode", str(rec.dir)])
-    program = build_replay(args, True)
-    assert program.name.startswith("replay:")
-    names = [t.name for t in program.tools]
-    assert set(names) == {"move"} and program.tools[-1].dx_m == 0.5
-    env2 = sim_env()
-    assert run(program, env2) is True and env2.violations == []
-    assert env2.base_path == pytest.approx(env.base_path)
-    assert env2.base_pose()[2] == pytest.approx(env.base_pose()[2])
-    with pytest.raises(ValueError):
-        build_replay(run_parser().parse_args(["--env", "sim", "--tools", "replay"]), True)
-    assert main(["run", "--env", "sim", "--headless", "--tools", "replay", "--episode", str(rec.dir)]) == 0
-
-
-def test_cli_search_needs_instruction_and_token(monkeypatch, capsys):
-    monkeypatch.delenv("HF_TOKEN", raising=False)
-    with pytest.raises(SystemExit):
-        main(["run", "--env", "sim", "--headless", "--tools", "search", "--no-log"])
-    assert "needs --instruction" in capsys.readouterr().err
-    with pytest.raises(SystemExit):
-        main(["run", "--env", "sim", "--headless", "--tools", "search", "--instruction", "x", "--no-log"])
-    assert "HF_TOKEN" in capsys.readouterr().err
-    assert set(AGENTS) == {"search", "replay"}
-    with pytest.raises(SystemExit):
-        main(["run", "--env", "sim", "--headless", "--tools", "fly:1"])
-    assert "unknown tool" in capsys.readouterr().err

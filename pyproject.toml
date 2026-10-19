@@ -14,9 +14,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# MuJoCo stage. unitree_sdk2py is not on PyPI; install it from
-# https://github.com/unitreerobotics/unitree_sdk2_python for --env robot.
-sim = ["mujoco>=3.2", "mujoco-menagerie"]
+# The twin (--env sim, g1 twin): MuJoCo, and torch for Unitree's gait network. Its model and
+# walker are fetched with `g1 twin fetch`. unitree_sdk2py is not on PyPI; install it from
+# https://github.com/unitreerobotics/unitree_sdk2_python for --env robot and g1 twin.
+sim = ["mujoco>=3.2", "torch"]
 # Camera feed. unitree_webrtc_connect is not on PyPI either; install it from
 # https://github.com/legion1581/go2_webrtc_connect for --env robot with the camera.
 camera = ["aiortc", "av"]
@@ -31,3 +32,5 @@ include = ["g1*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = ["dds: the robot path against g1 twin in its own process over DDS (slow; needs unitree_sdk2py)"]
+addopts = "-m 'not dds'"

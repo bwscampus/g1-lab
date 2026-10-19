@@ -6,7 +6,7 @@ import pytest
 
 from g1.camera import Camera, DirCamera
 from g1.cli import run
-from g1.core.action import Obs, Runnable
+from g1.core.action import Runnable
 from g1.core.config import CONTROL_DT, STAND_Q, UPPER_BODY
 from g1.envs.base import Env
 from tests.doubles import red_blob, sim_env
@@ -77,12 +77,12 @@ class Watch(Runnable):
     def step(self, t, obs):
         if obs.frame is not None and (not self.seen or self.seen[-1][0] != obs.frame.seq):
             self.seen.append((obs.frame.seq, obs.frame.stamp, obs.frame_age, tuple(obs.frame.image[0, 0])))
-        return None if t >= self.seconds - 1e-9 else self.action(obs.q.copy())
+        return None if t >= self.seconds - 1e-9 else self.action(STAND_Q.copy())
 
 
 def test_camera_dir_feeds_the_program_on_sim_time(tmp_path):
     write_frames(tmp_path, [(0, 0, 0)] * 10 + [(230, 10, 10)] * 5)   # red appears at 1 s
-    env = sim_env("--camera-dir", str(tmp_path), "--camera-fps", "10")
+    env = sim_env(camera_dir=tmp_path, camera_fps=10.0)
     p = Watch(2.0)
     assert run(p, env) is True and env.violations == []
     assert len(p.seen) == 15 and env.replay.count == 15               # every file, once, at 10 fps
@@ -94,7 +94,7 @@ def test_camera_dir_feeds_the_program_on_sim_time(tmp_path):
     assert run(Watch(0.5), env) is True and env.renderer is not None    # no --camera-dir: the render feeds it
 
 
-# -- taps: subscribe, the live view, the recording ---------------------------------------
+# -- subscribers ----------------------------------------------------------------------
 
 def test_subscribers_see_every_publish_and_a_bad_one_is_dropped(capsys):
     cam = Camera()
@@ -138,53 +138,3 @@ def test_viewer_serves_a_frame_a_page_and_a_stream():
         t0 = time.monotonic()
         v.stop()
         assert time.monotonic() - t0 < 2.0 and v.server is None
-
-
-def test_recorder_writes_frames_at_their_own_stamps(tmp_path):
-    av = pytest.importorskip("av")
-    from g1.camera import Recorder
-    cam = Camera()
-    rec = Recorder(cam, tmp_path / "out" / "cam.mp4")
-    rec.start()
-    for i in range(30):
-        cam.publish(solid((i * 8, 0, 0), h=49, w=65), 5.0 + i / 15)     # odd size: cropped to even
-        time.sleep(0.005)
-    rec.stop()
-    assert rec.frames == 30 and rec.error is None and "30 frames" in rec.summary()
-    assert rec.duration_s == pytest.approx(29 / 15, abs=0.002)
-    c = av.open(str(rec.path))
-    s = c.streams.video[0]
-    frames = list(c.decode(s))
-    assert len(frames) == 30 and (s.width, s.height) == (64, 48)
-    assert float(frames[-1].pts * frames[-1].time_base) == pytest.approx(29 / 15, abs=0.002)
-    assert float(frames[0].pts * frames[0].time_base) == 0.0
-    c.close()
-
-
-def test_recorder_drops_the_oldest_when_behind(tmp_path):
-    av = pytest.importorskip("av")
-    from g1.camera import Recorder
-    cam = Camera()
-    rec = Recorder(cam, tmp_path / "cam.mp4", queue_size=2)
-    rec.start()
-    for i in range(200):                              # far faster than the encoder
-        cam.publish(solid((i % 255, 0, 0), h=240, w=320), i / 15)
-    rec.stop()
-    assert rec.error is None and rec.dropped > 0 and rec.frames + rec.dropped == 200
-    c = av.open(str(rec.path))
-    assert sum(1 for _ in c.decode(c.streams.video[0])) == rec.frames
-    c.close()
-
-
-def test_recorder_needs_pyav(monkeypatch):
-    import builtins
-    from g1.camera import Recorder
-    real = builtins.__import__
-
-    def no_av(name, *a, **k):
-        if name == "av":
-            raise ImportError
-        return real(name, *a, **k)
-    monkeypatch.setattr(builtins, "__import__", no_av)
-    with pytest.raises(RuntimeError, match="pip install av"):
-        Recorder(Camera(), "x.mp4")

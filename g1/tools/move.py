@@ -1,7 +1,8 @@
-"""Base motion: a segment that holds a base velocity (LocoClient.Move on the
-robot, a slide of the pinned pelvis in sim) and leaves every joint where it
-is. Durations round up to whole ticks so ``distance = v * t`` is exact and the
-dead-reckoned end pose is the request."""
+"""Base motion: a segment that holds a base velocity (LocoClient.Move, on the
+robot and on the twin in sim) and leaves every joint where it is. Durations
+round up to whole ticks so ``distance = v * t`` is exact and the dead-reckoned
+end pose is the request; where the robot actually ends is a few cm and degrees
+off, as the twin shows."""
 from __future__ import annotations
 
 import math
@@ -63,7 +64,7 @@ class Move(Tool):
 
 
 class WalkForward(Tool):
-    """A preset (CLI chains and replay): ``move`` with only dx."""
+    """A preset (tools chains): ``move`` with only dx."""
 
     name = "walk_forward"
     order = 60
