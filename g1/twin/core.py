@@ -34,6 +34,7 @@ SETTLE_S = 1.0                    # dropped onto its feet and let settle before 
 START_Z = 0.80                    # pelvis height it is dropped from (stands at about 0.78)
 BAND_KP = limits.get("twin_band_kp")
 BAND_KD = limits.get("twin_band_kd")
+ROPE_SLACK = 0.03                 # m below the standing torso: slack in any stance, so the feet carry it
 
 
 @dataclass
@@ -73,14 +74,16 @@ class Twin:
             d.qpos[2] = START_Z
             d.qpos[7:7 + NUM_JOINTS] = STAND
             self.mujoco.mj_forward(m, d)
-            self.onboard.reset(FSM_MAIN)            # stand it up, whatever it will start in
-            self._anchor = None
-            for _ in range(int(SETTLE_S / twin_model.PHYSICS_DT)):
-                self._substep()
+            self.onboard.reset(FSM_MAIN)            # stand it up, whatever it will start in: the walker
+            self._anchor = None                     # balances it through its full loop, 50 Hz and 500 Hz
+            for _ in range(int(round(SETTLE_S / CONTROL_DT))):
+                self.onboard.tick(d, float(d.time))
+                for _ in range(SUBSTEPS):
+                    self._substep()
             self._anchor = (float(d.xpos[self.torso][0]), float(d.xpos[self.torso][1]),
-                            float(d.xpos[self.torso][2]) - 0.01)
+                            float(d.xpos[self.torso][2]) - ROPE_SLACK)
             d.time = 0.0
-            self.onboard.reset(self.start_fsm)
+            self.onboard.reset(self.start_fsm, keep_gait=True)   # the walker keeps its history
             self.services.log.clear()
             self.steps = 0
             self.mark_start()
@@ -134,6 +137,7 @@ class Twin:
         vel = np.zeros(6)
         self.mujoco.mj_objectVelocity(self.model, d, self.mujoco.mjtObj.mjOBJ_BODY, b, vel, 0)
         f = np.zeros(3)
+        self.onboard.hanging = bool(z < az)          # the rope carries it: a tilt is a swing, not a fall
         if z < az:
             f[2] = BAND_KP * (az - z) - BAND_KD * vel[5]
             f[0] = 0.2 * BAND_KP * (ax - x) - 0.2 * BAND_KD * vel[3]
@@ -175,8 +179,6 @@ class Twin:
                  f"base at ({x:+.2f}, {y:+.2f}) m yaw {math.degrees(yaw):+.0f} deg (truth)"]
         if o.walk_ticks:
             parts.append(f"walked {o.walk_ticks * CONTROL_DT:.1f} s")
-        if o.recoveries:
-            parts.append(f"{o.recoveries} recovery step(s)")
         sat = {i: n for i, n in enumerate(o.saturated) if n}
         if sat:
             from g1.core.config import JOINT_NAMES
@@ -184,8 +186,8 @@ class Twin:
             parts.append("torque limit hit: " + ", ".join(f"{JOINT_NAMES[i]} {n * twin_model.PHYSICS_DT:.2f} s"
                                                           for i, n in worst))
         if o.waist_raised:
-            parts.append(f"waist held at kp >= {limits.get('twin_walk_waist_kp'):g} while walking, "
-                         f"{o.waist_raised * twin_model.PHYSICS_DT:.1f} s (limit twin_walk_waist_kp)")
+            parts.append(f"waist held by the walker over arm_sdk for {o.waist_raised * twin_model.PHYSICS_DT:.1f} s "
+                         f"(the robot holds it steady while it walks)")
         if o.fallen_at is not None:
             parts.append(f"FELL at t = {o.fallen_at:.2f} s")
         return "; ".join(parts)

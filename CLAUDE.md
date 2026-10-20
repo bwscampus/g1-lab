@@ -11,7 +11,8 @@ to settle and reports. The same tools chain without a model. `g1 run TASK` runs 
 robot (`RobotEnv`, live via `unitree_sdk2py`); `--sim` runs the *same* `RobotEnv` code over DDS
 against the **twin** (`g1/twin/`): unitree_mujoco's 29-DoF G1 with a free base and torque
 motors, behind a stand-in onboard controller that answers LocoClient/AudioClient, blends
-arm_sdk, stands, and walks with Unitree's trained gait network. Nothing is pinned or slid.
+arm_sdk, stands and walks with NVIDIA's GR00T whole-body controller (Balance and Walk networks,
+onnxruntime). Nothing is pinned or slid.
 Run it with `--sim` before the robot for anything new.
 
 ## Vocabulary (GPT-Policy's; use these words in code, CLI, docs)
@@ -31,7 +32,7 @@ Do not add flags; add a task.json key, a limit or an environment variable.
 
 ```
 pip install -e ".[sim,dev]"          # unitree_sdk2py (needed for --sim too) / unitree_webrtc_connect come from their repos
-g1 twin fetch                        # once: the twin's model (unitree_mujoco), walker (unitree_rl_gym) and room into assets/
+g1 twin fetch                        # once: the twin's model (unitree_mujoco), walker (NVIDIA GR00T) and room into assets/
 
 g1 run TASK --sim [--mode gantry]    # the twin in the MuJoCo window (always; mjpython): starts it (TwinProcess),
                                      # runs RobotEnv over DDS on lo0, stops it. Headless only in tests: G1_TWIN_HEADLESS=1
@@ -63,7 +64,7 @@ g1/tools/          __init__: discovery (TOOLS), menu(), the three renderings, pa
 g1/envs/           base (Env, EnvAbort, shield_sigint, verbose, sdk_log), monitor (JointMonitor), scene (the room),
                    robot (RobotEnv, ArmSdk, BaseCommander, Health, probe/status_main), sdk (RPC_CODES, explain, call, FSM_NAMES),
                    link (DdsLink: the SDK seam), sim (SimEnv = RobotEnv on the in-process twin: the tests' env), trace
-g1/twin/           assets (g1 twin fetch), model (unitree_mujoco G1 + head camera), walker (the gait network),
+g1/twin/           assets (g1 twin fetch), model (unitree_mujoco G1 + head camera), walker (GR00T: Balance + Walk),
                    onboard (the stand-in onboard controller: FSM, arm_sdk blend, stand/walk, gestures, falls),
                    services (sport/voice/motion_switcher/twin handlers), core (Twin), loopback (in-process link, lockstep),
                    bridge (DDS servers + rt/lowstate + rt/arm_sdk), shm (camera frames), main (TwinProcess, serve, fetch)
@@ -126,12 +127,14 @@ root via `pythonpath`. `limits.ROOT` is the repo root (configs/, tasks/, assets/
   `SimEnv` subclasses `RobotEnv` and only swaps the link (`envs/link.py`). Never give sim its own path for
   something the robot does. Robot code takes every SDK object, sleep and clock read from `self.link`. The
   twin is where sim-only behaviour lives (`g1/twin/onboard.py`), and every number it adds is a `twin_*`
-  limit. Its gait network's trained constants are in `g1/twin/walker.py:Trained` (fixed by training, not
-  tunable). Call it the *walker* or the *gait network*.
+  limit. The walker's trained constants are in `g1/twin/walker.py:Trained` (fixed by training, not
+  tunable). Call it the *walker* or the *gait network* (never a policy). It drives legs and waist in FSM 4
+  (Balance only) and 200/500; `Onboard.tick` corrects its command with the twin's velocity estimate
+  (`twin_vel_feedback`, `twin_vel_integral`), only while walking, never pushing a walk into Balance.
 - The twin blends arm_sdk as the robot does: target, kp and kd all `(1-w)*onboard + w*arm_sdk`, so the arms
   sag under gravity at kp 60 in sim too, and a joint left out of the message (kp 0 at weight 1) goes limp.
-  While it walks, the onboard controller holds the waist (yaw, roll, pitch) at least `twin_walk_waist_kp` stiff,
-  as the real G1's does (its waist is not locked); standing, arm_sdk's gains apply as sent, so at kp 60 / kd 1.5
+  While it walks, the walker holds the waist (yaw, roll, pitch) whatever arm_sdk sends, as the real G1's
+  controller does (its waist is not locked); standing, arm_sdk's gains apply as sent, so at kp 60 / kd 1.5
   the waist sags under the torso and is underdamped (it can take more than the agent's 3 s settle after a walk).
   The report says when the hold applied. One deliberate departure: the strict sim monitor
   holds the legs to the hardware limits without the joint margin (they belong to the onboard controller).

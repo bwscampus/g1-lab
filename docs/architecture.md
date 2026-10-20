@@ -112,8 +112,10 @@ own process for the task's scene, on the loopback interface and a private DDS do
 same `RobotEnv` against it in real time, and stops it. The twin is unitree_mujoco's 29-DoF G1
 (free base, torque motors at the real limits, a PD loop every 2 ms physics step) behind a
 stand-in for the onboard controller (`g1/twin/onboard.py`): the FSM (0, 1, 4, 200, 500), the
-arm_sdk blend of target, kp and kd, a stand controller, and Unitree's trained gait network
-(unitree_rl_gym) for walking, its velocity loop closed on the twin's estimate. Move is a 1 s
+arm_sdk blend of target, kp and kd, and NVIDIA's GR00T whole-body controller for the legs and
+waist (a Balance network at zero command, a Walk network otherwise; it sees all 29 joints, so
+it accounts for the arms), its velocity command corrected by the twin's own velocity estimate.
+FSM 4 eases into the stand pose and holds it with Balance. Move is a 1 s
 dead-man, gestures are keyframed, a fall damps it, and `--mode gantry` hangs it from a rope.
 Nothing is pinned or slid.
 
@@ -130,11 +132,17 @@ and two runs are bit-identical. Every run writes `trace.npz`; `g1 trace compare`
 the twin's joints are from the robot's on the same task, and the twin's `twin_*` limits are
 what to tune until they agree.
 
-Where the twin knowingly departs from the robot: its gait network is not Unitree's onboard
-controller (it was trained with the arms fixed); the gestures are stand-ins; video comes over
-shared memory, not WebRTC. Like the robot's controller, it holds the waist steady while it walks
-(`twin_walk_waist_kp`, faded out over `twin_waist_hold_s` after a stop) and leaves it to arm_sdk's
-gains while standing, so the waist at kp 60 sags and wobbles in sim as it would on the robot.
+Where the twin knowingly departs from the robot: its walker is not Unitree's onboard controller
+(GR00T stands at a 0.75 m pelvis height, the robot's controller its own); the gestures are
+stand-ins; video comes over shared memory, not WebRTC. Like the robot's controller, it holds the
+waist steady while it walks (the walker takes it from arm_sdk over `twin_walk_blend_s` and hands
+it back over `twin_waist_hold_s` after a stop) and leaves it to arm_sdk's gains while standing, so
+the waist at kp 60 sags and wobbles in sim as it would on the robot.
+
+Why GR00T: on the twin it stood 7x calmer than the previous walker (unitree_rl_gym's) after a
+move, stood still within about a second of a stop instead of three, took a 120 N sideways push
+the old one fell to, and landed a 3 m walk within 4 cm. Its weights are under the NVIDIA Open
+Model License; `g1 twin fetch` downloads them, they are never committed.
 
 **Ctrl-C, the task's `max_time_s` and any exception** run `safe_return` first: from the last commanded
 pose to STAND over 3 s, the weight from where it was to 0 over 2 s, base stopped, at 50 Hz

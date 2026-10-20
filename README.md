@@ -14,7 +14,7 @@ g1 run find_the_mug --sim            # the model searches a room (needs HF_TOKEN
 g1 run tpose --mode gantry           # the robot, hanging in a gantry (never walks)
 g1 run find_the_mug --mode standing --view   # the robot on its own feet (may walk); its camera in a browser
 g1 status                            # read-only: is it the link, or is the robot refusing?
-g1 twin fetch                        # once: the twin's model, gait network and room
+g1 twin fetch                        # once: the twin's model, walker and room
 g1 trace compare RUN_A RUN_B         # how far the twin is from the robot on the same task
 ```
 
@@ -44,8 +44,8 @@ Python 3.10+ on macOS or Linux (developed on macOS, Python 3.10 in conda).
 ```
 conda create -n g1 python=3.10 -y && conda activate g1     # or: python3 -m venv .venv && source .venv/bin/activate
 git clone https://github.com/bwscampus/g1-lab.git && cd g1-lab
-pip install -e ".[sim,dev]"                                # numpy, jsonschema, Pillow, MuJoCo (+ mjpython on macOS), torch, pytest
-g1 twin fetch                                              # the twin's G1 model, gait network and room, into assets/
+pip install -e ".[sim,dev]"                                # numpy, jsonschema, Pillow, MuJoCo (+ mjpython on macOS), onnxruntime, pytest
+g1 twin fetch                                              # the twin's G1 model, walker and room, into assets/
 ```
 
 `--sim` needs `unitree_sdk2py` too (step 3, the control part): the twin is a separate process the
@@ -53,11 +53,12 @@ robot code talks to over DDS on the loopback interface, exactly as it talks to t
 
 The twin is unitree_mujoco's 29-DoF G1 (free base, torque motors at the real limits) behind a
 stand-in for the onboard controller, which answers LocoClient and AudioClient, blends arm_sdk,
-stands, and walks with Unitree's trained gait network from unitree_rl_gym. Nothing is pinned or
+stands, and walks with NVIDIA's GR00T whole-body controller (two small networks, Balance and
+Walk, on the CPU; they see the arms, so a moving arm doesn't knock it over). Nothing is pinned or
 slid: a base command makes it step, the arms sag at arm_sdk's kp 60 as the robot's do, and a bad
 motion can knock it over, which fails the run. `g1 twin fetch` copies the model from a
 `unitree_mujoco` clone next to this repo if there is one, else downloads it and the walker from
-pinned commits (sha256-checked). Check:
+pinned commits (sha256-checked; the walker's weights are under the NVIDIA Open Model License). Check:
 
 ```
 g1 run tpose --sim                   # the MuJoCo window opens, the arms go out to a T and back, PASS, it closes

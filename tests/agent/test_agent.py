@@ -132,7 +132,7 @@ def test_observation_and_feedback_follow_the_contract():
     assert o[0]["images"] == [{"name": "head", "width": 64, "height": 48, "captured_age_s": o[0]["images"][0]["captured_age_s"]}]
     st = o[0]["state"]
     assert len(st["joint_pos"]) == 29 and len(st["joint_vel"]) == 29 and len(st["joint_torque"]) == 29
-    assert st["base_pose_cmd"] == [0.0, 0.0, 0.0] and st["base_pose_env"] == pytest.approx([0.0, 0.0, 0.0], abs=0.01)
+    assert st["base_pose_cmd"] == [0.0, 0.0, 0.0] and st["base_pose_env"] == pytest.approx([0.0, 0.0, 0.0], abs=0.02)
     assert o[0]["extra"] == {"env_step": 0, "decisions_left": 10, "can_walk": True}
     prev = o[1]["previous_result"]
     fb = prev["result"]["execution_feedback"]

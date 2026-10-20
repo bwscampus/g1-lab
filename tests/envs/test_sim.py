@@ -19,7 +19,7 @@ def sim(**settings):
 def test_tpose_on_the_twin_keeps_it_standing_and_sags_like_the_robot():
     env = sim()
     assert run(Chain(TPose()), env) is True
-    assert env.twin.pelvis_z == pytest.approx(0.78, abs=0.02) and env.twin.onboard.fallen_at is None
+    assert env.twin.pelvis_z == pytest.approx(0.75, abs=0.02) and env.twin.onboard.fallen_at is None   # GR00T's height
     x, y, yaw = env.base_pose()
     assert math.hypot(x, y) < 0.02 and abs(yaw) < math.radians(2)       # an arm tool does not move the base
     # the arms are on arm_sdk's kp 60 now, not stiff servos: the measured pose sags below the command
@@ -44,7 +44,7 @@ def test_move_steps_the_robot_to_the_target():
     x, y, yaw = env.base_pose()                                             # where the twin actually went
     assert x == pytest.approx(0.6, abs=0.12) and abs(y) < 0.12
     assert math.degrees(yaw) == pytest.approx(30, abs=10)
-    assert env.twin.onboard.walk_ticks > 0 and env.twin.onboard.legs == "stand"   # it stepped, then stood
+    assert env.twin.onboard.walk_ticks > 0 and not env.twin.onboard.walking   # it stepped (Walk), then stood (Balance)
 
 
 def test_damp_drops_it_unless_it_hangs_in_the_gantry():
@@ -62,11 +62,13 @@ def test_the_dead_man_stops_the_base_a_second_after_the_last_move():
     from g1.twin.core import Twin
     twin = Twin()
     twin.call("sport", 7105, '{"velocity": [0.2, 0, 0], "duration": 1}')
-    twin.advance(1.5)
-    assert twin.onboard.legs != "stand"
+    twin.advance(0.5)
+    assert twin.onboard.walking
+    twin.advance(1.0)
+    assert not twin.onboard.walking                     # the 1 s dead-man ran out: Balance, at once
     twin.advance(3.0)
     x = twin.base_pose()[0]
-    assert 0.1 < x < 0.4 and twin.onboard.legs == "stand"
+    assert 0.1 < x < 0.4 and not twin.onboard.walking
     twin.advance(2.0)
     assert twin.base_pose()[0] == pytest.approx(x, abs=0.01)
 
@@ -108,3 +110,21 @@ def test_a_fall_fails_the_run_through_the_twins_summary(capsys):
     assert run(Chain(Hold(seconds=0.3), pause=0.0), env) is False
     out = capsys.readouterr().out
     assert "PASS" in out and "FAIL: the robot fell at t = 1.23 s" in out and "twin: pelvis z =" in out
+
+
+def test_it_stands_still_while_the_arms_swing_and_takes_a_push():
+    """GR00T's Balance network: no marching in place, no drift, and a shove does not floor it."""
+    from g1.tools.arms import SixSeven
+    env = sim()
+    assert run(Chain(SixSeven(reps=2, settle_s=1.0, hold_s=0.1)), env) is True
+    x, y, yaw = env.base_pose()
+    assert math.hypot(x, y) < 0.05 and abs(math.degrees(yaw)) < 3 and env.twin.onboard.walk_ticks == 0
+    from g1.twin.core import Twin
+    for force in ((60.0, 0, 0), (0, 120.0, 0)):           # the old walker fell to the 120 N side push
+        twin = Twin()
+        twin.advance(1.0)
+        twin.data.xfrc_applied[twin.torso, :3] = force
+        twin.advance(0.1)
+        twin.data.xfrc_applied[twin.torso, :3] = 0
+        twin.advance(4.0)
+        assert twin.onboard.fallen_at is None and twin.pelvis_z > 0.7, force

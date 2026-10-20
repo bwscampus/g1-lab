@@ -2,8 +2,8 @@
 
   the robot   unitree_mujoco's 29-DoF G1 (torque motors with the real limits, the
               DDS joint order) and its flat scene, BSD-3, Unitree Robotics
-  the walker  unitree_rl_gym's trained G1 gait network (TorchScript), BSD-3,
-              Unitree Robotics
+  the walker  NVIDIA's GR00T whole-body controller for the G1 (two ONNX networks,
+              Balance and Walk), NVIDIA Open Model License
 
 Both come from pinned commits and are checked by sha256. A local clone of
 unitree_mujoco next to this repo (or at $G1_UNITREE_MUJOCO) is copied instead
@@ -27,13 +27,17 @@ ASSETS = limits.ROOT / "assets"
 MODEL_DIR = ASSETS / "g1_29dof"
 SCENE_XML = MODEL_DIR / "scene_29dof.xml"
 WALKER_DIR = ASSETS / "walker"
-WALKER = WALKER_DIR / "motion.pt"
+WALKER_BALANCE = WALKER_DIR / "GR00T-WholeBodyControl-Balance.onnx"
+WALKER_WALK = WALKER_DIR / "GR00T-WholeBodyControl-Walk.onnx"
+WALKER_FILES = (WALKER_BALANCE, WALKER_WALK)
 
 UNITREE_MUJOCO = ("unitreerobotics/unitree_mujoco", "ae6a8403e272733e9996ef59990880330496177f")
-RL_GYM = ("unitreerobotics/unitree_rl_gym", "276801e46c5d433564f24658bac64f254b7d2d4b")
+GROOT = ("NVlabs/GR00T-WholeBodyControl", "45c03facbf848e0c743091b7d9c17952096ff908")
+GROOT_DIR = "decoupled_wbc/sim2mujoco/resources/robots/g1/policy"
 SHA256 = {
     "g1_29dof.xml": "423e28bd718b19f7a65cda539b6f794ddbb268b4b9bdbd85f4bd982b30729617",
-    "motion.pt": "cf668f75b90d1abf73d2b87612a6e76bccc61ff7e083b63582d3f6aaa3c1759d",
+    "GR00T-WholeBodyControl-Balance.onnx": "f645da599d4ca3d29ed273c8f4712620bb680d34977469ca3aeabe5bb9631c18",
+    "GR00T-WholeBodyControl-Walk.onnx": "7c82255b6905ffcc4468fa7f8ddcf7b70db168cf1042107ccab887cb6a8e5407",
 }
 
 
@@ -75,7 +79,7 @@ def missing() -> list[str]:
         out.append("robot")
     elif any(not (MODEL_DIR / "meshes" / m).exists() for m in meshes(MODEL_DIR / "g1_29dof.xml")):
         out.append("robot meshes")
-    if not WALKER.exists():
+    if not all(p.exists() for p in WALKER_FILES):
         out.append("walker")
     return out
 
@@ -116,17 +120,18 @@ def fetch(force: bool = False) -> None:
         (MODEL_DIR / "ATTRIBUTION.md").write_text(
             f"G1 29-DoF model from https://github.com/{UNITREE_MUJOCO[0]} at {UNITREE_MUJOCO[1]}\n"
             "(unitree_robots/g1), BSD-3-Clause, Copyright Unitree Robotics. See LICENSE.\n", encoding="utf-8")
-    if force or not WALKER.exists():
-        print(f"walker: unitree_rl_gym@{RL_GYM[1][:7]}")
-        _download(_raw(RL_GYM, "deploy/pre_train/g1/motion.pt"), WALKER)
-        got = _sha256(WALKER)
-        if got != SHA256["motion.pt"]:
-            WALKER.unlink()
-            raise RuntimeError(f"motion.pt sha256 {got} does not match the pinned walker")
-        _download(_raw(RL_GYM, "LICENSE"), WALKER_DIR / "LICENSE")
+    if force or not all(p.exists() for p in WALKER_FILES):
+        print(f"walker: GR00T-WholeBodyControl@{GROOT[1][:7]} (NVIDIA Open Model License)")
+        for path in WALKER_FILES:              # Git LFS: the media host serves the file, raw only the pointer
+            _download(f"https://media.githubusercontent.com/media/{GROOT[0]}/{GROOT[1]}/{GROOT_DIR}/{path.name}", path)
+            got = _sha256(path)
+            if got != SHA256[path.name]:
+                path.unlink()
+                raise RuntimeError(f"{path.name} sha256 {got} does not match the pinned walker")
+        _download(_raw(GROOT, f"{GROOT_DIR}/NVIDIA%20Open%20Model%20License"), WALKER_DIR / "LICENSE")
         (WALKER_DIR / "ATTRIBUTION.md").write_text(
-            f"G1 gait network from https://github.com/{RL_GYM[0]} at {RL_GYM[1]}\n"
-            "(deploy/pre_train/g1/motion.pt), BSD-3-Clause, Copyright Unitree Robotics. See LICENSE.\n",
+            f"G1 whole-body controller (Balance, Walk) from https://github.com/{GROOT[0]} at {GROOT[1]}\n"
+            f"({GROOT_DIR}), NVIDIA Open Model License, Copyright NVIDIA Corporation. See LICENSE.\n",
             encoding="utf-8")
     print("twin assets: " + ("complete" if not missing() else f"still missing {missing()}"))
 
@@ -134,7 +139,7 @@ def fetch(force: bool = False) -> None:
 def status() -> int:
     need = missing()
     print(f"robot:  {MODEL_DIR}" + ("  MISSING" if "robot" in need or "robot meshes" in need else "  ok"))
-    print(f"walker: {WALKER}" + ("  MISSING" if "walker" in need else "  ok"))
+    print(f"walker: {WALKER_DIR}" + ("  MISSING" if "walker" in need else "  ok"))
     if need:
         print("run: g1 twin fetch")
     return 1 if need else 0
