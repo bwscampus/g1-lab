@@ -6,9 +6,8 @@ Assets are fetched on demand into ``assets/`` (git-ignored) with attribution:
   Poly Haven textures (CC0)                 https://polyhaven.com
   YCB object meshes (CC-BY 4.0, Calli et al.)  https://www.ycbbenchmarks.com
 
-    g1 scene fetch            # everything (about 40 MB)
-    g1 scene fetch mug pencil # just what a run needs (pencil is built from primitives)
-    g1 scene status
+    g1 twin fetch             # with the twin's model (about 40 MB for the room)
+    g1 twin status
 
 Robot frame: it starts at the origin facing +x. The room spans x -2..4,
 y -3..3, 2.5 m high, with a doorway in the +x wall.
@@ -17,9 +16,7 @@ from __future__ import annotations
 
 import argparse
 import math
-import os
 import re
-import sys
 import tarfile
 import urllib.request
 from pathlib import Path
@@ -129,7 +126,7 @@ def fetch(objects: Sequence[str] = tuple(YCB), force: bool = False) -> None:
             t.extractall(ASSETS / "ycb", members=members)
         tgz.unlink()
     (ASSETS / "ATTRIBUTION.md").write_text(
-        "# Third-party assets (downloaded by `g1 scene fetch`, not part of this repo)\n\n"
+        "# Third-party assets (downloaded by `g1 twin fetch`, not part of this repo)\n\n"
         "## Textures — Poly Haven, CC0 (https://polyhaven.com/license)\n"
         + "".join(f"- {slug}: {url}\n" for slug, url in TEXTURES.values())
         + "\n## Object meshes — YCB Object and Model Set, CC-BY 4.0\n"
@@ -170,7 +167,7 @@ def build_room(spec, objects: Sequence[tuple[str, float, float, Optional[float]]
 
     need = missing([o[0] for o in objects])
     if need:
-        raise FileNotFoundError(f"room assets missing ({', '.join(need)}); run: g1 scene fetch")
+        raise FileNotFoundError(f"room assets missing ({', '.join(need)}); run: g1 twin fetch")
     if camera_size is not None:
         spec.visual.global_.offheight = max(spec.visual.global_.offheight, camera_size[0])
         spec.visual.global_.offwidth = max(spec.visual.global_.offwidth, camera_size[1])
@@ -190,7 +187,7 @@ def build_room(spec, objects: Sequence[tuple[str, float, float, Optional[float]]
     w = spec.worldbody
     cx, cy = (ROOM_X[0] + ROOM_X[1]) / 2, (ROOM_Y[0] + ROOM_Y[1]) / 2
     hx, hy = (ROOM_X[1] - ROOM_X[0]) / 2, (ROOM_Y[1] - ROOM_Y[0]) / 2
-    # The slab's top is exactly z = 0 so objects placed at z = 0 rest on it; the Menagerie
+    # The slab's top is exactly z = 0 so objects placed at z = 0 rest on it; the model's
     # ground plane goes 2 cm below so nothing z-fights. The slab collides, so a free base stands on it.
     for g in spec.geoms:
         if g.name == "floor":
@@ -240,24 +237,3 @@ def build_room(spec, objects: Sequence[tuple[str, float, float, Optional[float]]
             body.add_geom(name=f"{tag}_eraser", type=C, size=[0.0037, 0.008], pos=[-0.093, 0, 0], quat=lying, rgba=[0.95, 0.55, 0.6, 1])
             body.add_geom(name=f"{tag}_ferrule", type=C, size=[0.0037, 0.004], pos=[-0.081, 0, 0], quat=lying, rgba=[0.75, 0.75, 0.78, 1])
             body.add_geom(name=f"{tag}_tip", type=C, size=[0.002, 0.008], pos=[0.093, 0, 0], quat=lying, rgba=[0.85, 0.7, 0.5, 1])
-
-
-def main(argv: Optional[list[str]] = None) -> int:
-    p = argparse.ArgumentParser(prog="g1 scene", description="fetch or inspect the room's assets")
-    p.add_argument("command", choices=("fetch", "status"))
-    p.add_argument("objects", nargs="*", help=f"object names to fetch (default: all of {list(YCB)})")
-    p.add_argument("--force", action="store_true")
-    args = p.parse_args(argv)
-    if args.command == "fetch":
-        bad = [o for o in args.objects if o not in OBJECTS]
-        if bad:
-            p.error(f"unknown objects {bad}; choose from {OBJECTS}")
-        fetch(args.objects or tuple(YCB), force=args.force)
-        print(f"assets in {ASSETS}; attribution in {ASSETS / 'ATTRIBUTION.md'}")
-    need = missing(tuple(YCB))
-    print("missing: " + (", ".join(need) if need else "nothing") + f"  (objects: {', '.join(OBJECTS)})")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

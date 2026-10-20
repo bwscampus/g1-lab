@@ -2,9 +2,9 @@
 
 Joint indices follow the DDS order used by ``LowCmd_.motor_cmd`` /
 ``LowState_.motor_state`` (see unitree_mujoco's g1_joint_index_dds.md), which
-is also the joint/actuator order of the MuJoCo Menagerie ``unitree_g1`` model.
-The limits below were dumped from that model; ``tests/test_config.py`` asserts
-they still match.
+is also the motor order of the twin's model (unitree_mujoco's ``g1_29dof``).
+The limits below were dumped from the Menagerie ``unitree_g1`` model and match
+the twin's; ``tests/core/test_config.py`` asserts they still do.
 """
 from __future__ import annotations
 
@@ -76,7 +76,7 @@ RIGHT_ARM = list(range(22, 29))
 ARMS = LEFT_ARM + RIGHT_ARM
 UPPER_BODY = WAIST + ARMS        # everything arm_sdk may command
 
-# Default "stand" pose (Menagerie keyframe): arms hanging, elbows bent.
+# Default "stand" pose: arms hanging, elbows bent (the twin's onboard controller holds it).
 STAND_Q = np.zeros(NUM_JOINTS)
 STAND_Q[[15, 16, 18]] = [0.2, 0.2, 1.28]
 STAND_Q[[22, 23, 25]] = [0.2, -0.2, 1.28]

@@ -54,7 +54,7 @@ def shield_sigint(message: str):
 class Env:
     name: ClassVar[str] = "env"
     use_camera: bool = False
-    verbose: bool = False              # --verbose: print SDK calls and a health line every second
+    verbose: bool = False              # G1_VERBOSE=1: print SDK calls and a health line every second
     sdk_log: list                      # every SDK call: {at_s, client, name, args, code, elapsed_s}
 
     @property

@@ -4,9 +4,9 @@
 
 | word | meaning here |
 |---|---|
-| **tool** | what the model picks, one per turn, and the host executes: a fixed motion (or a query) computed from its arguments, checked, executed, settled and reported. One class: name, prompt, `params`, `segments()`. Ends by construction. Visible to the model by default; chains on the CLI. |
-| **instruction** | the goal text the model is given (`--instruction`, `task.json`'s `instruction`). |
-| **task** | a folder with an instruction and its context (scene, safety notes, demonstration, budget); no code. |
+| **tool** | what the model picks, one per turn, and the host executes: a fixed motion (or a query) computed from its arguments, checked, executed, settled and reported. One class: name, prompt, `params`, `segments()`. Ends by construction. Visible to the model by default; chains in a task's `tools`. |
+| **instruction** | the goal text the model is given (`task.json`'s `instruction`). |
+| **task** | a folder with an instruction (or a fixed `tools` chain) and its context (scene, safety notes, budget); no code. What `g1 run` runs. |
 | **observation** | the one JSON object a turn sends: instruction, images, measured state, extra, `previous_result`. |
 | **decision** | the model's reply: `{"name": tool, "arguments": {...}}`, validated against the tool's schema. |
 | **execution result** | what the host reports after a tool: residuals, base error, a settle report — or why nothing ran. |
@@ -73,19 +73,19 @@ reason.
 
 ## The menu
 
-`g1 tools`. Offered to the model (`menu(allow_base, has_loco)` hides what an env cannot do):
+Offered to the model (`menu(allow_base, has_loco)` hides what an env cannot do; `--mode gantry` hides walking):
 
 ```
 move(dx_m, dy_m, dyaw_deg)      one base displacement -> LocoClient.Move (translate, then turn)   ≙ move_to
 arm_path(waypoints)             joint-space waypoints over waist + arms -> arm_sdk               ≙ move_eef_chunk
 hold(seconds)                   stand still
 check(tool, arguments)          dry-run without moving                                          ≙ check_path
-wave_hand / shake_hand          the onboard controller's own gestures (robot only)               ≙ set_gripper
-say(text, pause_s)              the onboard text-to-speech; sim prints it                        ours, not in GPT-Policy
+wave_hand / shake_hand          the onboard controller's own gestures (the twin plays stand-ins) ≙ set_gripper
+say(text, pause_s)              the onboard text-to-speech; the twin prints it                   ours, not in GPT-Policy
 done(summary, hindsight) / give_up(reason, hindsight)
 ```
 
-Presets (`visible = False`: CLI chains and replay only): `walk_forward`, `turn`, `look`,
+Presets (`visible = False`: tools chains only): `walk_forward`, `turn`, `look`,
 `tpose`, `sixseven`; bookends `takeover`, `handback`. An onboard call a tool may make is
 allow-listed by service: `config.LOCO_METHODS` (`WaveHand`, `ShakeHand`) and
 `config.AUDIO_METHODS` (`TtsMaker`); the robot env routes by name and refuses the rest.
@@ -95,44 +95,76 @@ the head camera is monocular, there is no metric pixel query to offer honestly.
 
 ## Envs
 
-`sim` (MuJoCo, Menagerie `unitree_g1`) runs the program **and checks it**: the
-`JointMonitor` (`g1/envs/monitor.py`) records every tick the measured angle of every joint
-and the commanded target, and flags a measured or commanded angle outside the limits minus
-`--margin`, a blended-command speed over `--max-vel`, a weight outside [0, 1] and a base
-velocity over `BASE_VEL_MAX`; the run fails on any violation and aborts after
-`--max-violations`. `--headless` is the fast pre-flight; the viewer needs `mjpython` on
-macOS. The pelvis is pinned and a base velocity slides it (legs hold the stand pose: a
-rehearsal of the base commands, not gait). `--scene room` and `--sim-objects` build a
-real-looking room; `--camera-dir` replays recorded frames instead of rendering.
+There is one env class, `RobotEnv` (`g1/envs/robot.py`), and two things it can talk to.
+Every SDK object, sleep and clock read comes from its link (`g1/envs/link.py`).
 
-`robot` uses only high-level control: the camera connects over WebRTC before any FSM
-change; `LocoClient` FSM transitions (`--mode gantry`: Damp → FSM 4 → FSM 200 → run →
-release → Damp; `--mode standing`: remember the FSM → FSM 200 → run → release → restore); then
-arm targets on `rt/arm_sdk`; base velocity through `LocoClient.Move` behind `--walk` (a 1 s
-dead-man re-sent from a 10 Hz thread, `StopMove` before the arms release); the monitor runs
-report-only. Never call the SDK from `step`.
+**The robot** (`g1 run TASK --mode ...`): only high-level control. The camera connects over
+WebRTC before any FSM change; `LocoClient` FSM transitions (`--mode gantry`: Damp → FSM 4 →
+FSM 200 → run → release → Damp; `--mode standing`: remember the FSM → FSM 200 → run → release
+→ restore); then arm targets on `rt/arm_sdk`; base velocity through `LocoClient.Move` in
+standing mode only (a 1 s dead-man re-sent from a 10 Hz thread, `StopMove` before the arms
+release); the monitor runs report-only. Never call the SDK from `step`.
 
-**Ctrl-C, `--max-time` and any exception** run `safe_return` first: from the last commanded
+**The twin** (`g1 run TASK --sim`): `TwinProcess` (`g1/twin/main.py`) starts the twin as its
+own process for the task's scene, on the loopback interface and a private DDS domain
+(`g1/twin/bridge.py`: SDK RPC servers for sport, voice, motion_switcher and the twin's own
+`Summary`, `rt/lowstate` at 500 Hz, `rt/arm_sdk`; the head camera in shared memory), runs the
+same `RobotEnv` against it in real time, and stops it. The twin is unitree_mujoco's 29-DoF G1
+(free base, torque motors at the real limits, a PD loop every 2 ms physics step) behind a
+stand-in for the onboard controller (`g1/twin/onboard.py`): the FSM (0, 1, 4, 200, 500), the
+arm_sdk blend of target, kp and kd, and NVIDIA's GR00T whole-body controller for the legs and
+waist (a Balance network at zero command, a Walk network otherwise; it sees all 29 joints, so
+it accounts for the arms), its velocity command corrected by the twin's own velocity estimate.
+FSM 4 eases into the stand pose and holds it with Balance. Move is a 1 s
+dead-man, gestures are keyframed, a fall damps it, and `--mode gantry` hangs it from a rope.
+Nothing is pinned or slid.
+
+With `--sim` the run is also **checked**: the `JointMonitor` (`g1/envs/monitor.py`) records
+every tick the measured angle of every joint and the commanded target, and flags a measured or
+commanded angle outside the limits minus `joint_margin_rad` (the legs, which the onboard
+controller owns, at the hardware limits), a blended-command speed over `command_vel_max`, a
+weight outside [0, 1] and a base velocity over `BASE_VEL_MAX`; the run fails on any violation
+or a fall (the twin's `Summary`) and aborts after `max_violations`.
+
+The tests use `SimEnv` (`g1/envs/sim.py`), the same `RobotEnv` with the link swapped for an
+in-process loopback that steps the twin in lockstep on sim time: about 30x real time headless,
+and two runs are bit-identical. Every run writes `trace.npz`; `g1 trace compare` reports how far
+the twin's joints are from the robot's on the same task, and the twin's `twin_*` limits are
+what to tune until they agree.
+
+Where the twin knowingly departs from the robot: its walker is not Unitree's onboard controller
+(GR00T stands at a 0.75 m pelvis height, the robot's controller its own); the gestures are
+stand-ins; video comes over shared memory, not WebRTC. Like the robot's controller, it holds the
+waist steady while it walks (the walker takes it from arm_sdk over `twin_walk_blend_s` and hands
+it back over `twin_waist_hold_s` after a stop) and leaves it to arm_sdk's gains while standing, so
+the waist at kp 60 sags and wobbles in sim as it would on the robot.
+
+Why GR00T: on the twin it stood 7x calmer than the previous walker (unitree_rl_gym's) after a
+move, stood still within about a second of a stop instead of three, took a 120 N sideways push
+the old one fell to, and landed a 3 m walk within 4 cm. Its weights are under the NVIDIA Open
+Model License; `g1 twin fetch` downloads them, they are never committed.
+
+**Ctrl-C, the task's `max_time_s` and any exception** run `safe_return` first: from the last commanded
 pose to STAND over 3 s, the weight from where it was to 0 over 2 s, base stopped, at 50 Hz
 with no gap, SIGINT ignored throughout and through the robot's hand-over. There is
 deliberately no second-Ctrl-C escape.
 
 ## The record
 
-`runs/<ts>_<env>_<instruction>_<outcome>/`: `episode.json`, `step_NNNN.json` + `.png` (the
+`tasks/<name>/runs/<ts>_<env>_<instruction>_<outcome>/`: `episode.json`, `step_NNNN.json` + `.png` (the
 frame losslessly), and the run trace — `config.json`, `events.jsonl` (append-only, every
 observation with the verbatim `input_json`, decision, timing, result, error, retry,
 terminal, verdict), `transcript.json`, `protocol.json` (the system prompt and schemas),
-`states.jsonl` (20 Hz), `usage.jsonl`/`usage.json`, `status.json`. The human verdict wins
-the outcome; a model conclusion without one is `unreviewed`. `g1 episode DIR` prints the
-step table and the `--tools` chain that replays it; `g1 run --tools replay --episode DIR`
-runs it with no camera and no model.
+`states.jsonl` (20 Hz), `usage.jsonl`/`usage.json`, `status.json`, `trace.npz`. The human
+verdict wins the outcome; a model conclusion without one is `unreviewed`. A tools run keeps
+`trace.npz` and `status.json` (its checks decide). Each run adds a line to the task's
+`results.jsonl`.
 
 ## Conventions
 
 * Frames are RGB everywhere (`image[row, col, channel]`); image I/O goes through
   `g1/core/images.py` (Pillow). OpenCV is not used.
-* Joint indices are DDS order (`LowCmd_.motor_cmd`), also the Menagerie actuator order;
+* Joint indices are DDS order (`LowCmd_.motor_cmd`), also the twin model's motor order;
   `g1/core/config.py` holds the table and `tests/core/test_config.py` checks it against the
   model. arm_sdk commands only `UPPER_BODY` (waist + arms).
 * The vision model runs only when the agent asks: one request per decision, on a

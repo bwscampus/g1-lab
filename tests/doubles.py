@@ -106,16 +106,16 @@ class RedBallDecider(Decider):
         return d
 
 
-def sim_env(*extra, cls=None):
-    """A headless sim env: the fast, fully checked stage the tests run in."""
-    from g1.cli import run_parser
+def sim_env(cls=None, **settings):
+    """A headless in-process twin: the fast, fully checked stage the tests run in.
+    ``settings`` override ``g1.cli.run_settings`` (mode="gantry", camera="on", camera_dir=..., ...)."""
+    from g1.cli import run_settings
     from g1.envs import SimEnv
-    args = run_parser().parse_args(["--env", "sim", "--tools", "x", "--headless", *extra])
-    return (cls or SimEnv)(args)
+    return (cls or SimEnv)(run_settings(**settings))
 
 
-def scripted_sim(camera, *extra):
-    """A headless sim whose camera feed is scripted, recording every action."""
+def scripted_sim(camera, **settings):
+    """A headless in-process twin whose camera feed is scripted, recording every action."""
     from g1.envs import SimEnv
 
     class ScriptedSim(SimEnv):
@@ -128,4 +128,4 @@ def scripted_sim(camera, *extra):
             self.actions.append(action)
             return super().step(action)
 
-    return sim_env(*extra, cls=ScriptedSim)
+    return sim_env(cls=ScriptedSim, **settings)

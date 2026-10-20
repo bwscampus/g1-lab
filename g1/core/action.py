@@ -32,14 +32,14 @@ class Action:
     joints: indices the program is actually commanding this tick.
     weight: arm_sdk blend in [0, 1]. 1.0 = the program owns the joints, 0.0 =
             the onboard controller owns them. Sim emulates the same blend.
-    kp/kd:  PD gains sent to the robot (sim uses the model's own actuators).
+    kp/kd:  PD gains sent with arm_sdk (the twin applies them as the robot does).
     base:   optional (vx, vy, vyaw) base velocity in m/s, m/s, rad/s (forward,
             left, counter-clockwise), or None for no base command. The robot
-            walks it via LocoClient.Move (needs --walk), sim slides the pinned
-            base, the monitor enforces config.BASE_VEL_MAX.
+            walks it via LocoClient.Move (in --mode standing; --sim walks the twin the same
+            way), the monitor enforces config.BASE_VEL_MAX.
     command: optional one-shot onboard call, ``("WaveHand", {"turn_flag": False})``:
             the robot env calls that LocoClient method once (allow-listed in
-            config.LOCO_METHODS); sim has no equivalent and aborts.
+            config.LOCO_METHODS); the twin plays a stand-in.
     """
 
     q: np.ndarray

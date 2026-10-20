@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 from g1.agent.decider import build_context
-from g1.cli import main
 from g1.core import limits
 from g1.core.config import BASE_VEL_MAX, CONTROL_DT
 from g1.tools import TOOLS, menu, validate_args
@@ -24,7 +23,7 @@ def test_the_file_defines_exactly_the_names_the_code_reads():
 
 def test_code_reads_its_numbers_from_the_file():
     from g1 import cli, vlm
-    from g1.agent import agent, demo, episode
+    from g1.agent import agent, episode
     from g1.envs.monitor import JointMonitor
     from g1.tools import STEP_MAX, move
     assert CONTROL_DT == limits.get("control_dt_s")
@@ -36,7 +35,6 @@ def test_code_reads_its_numbers_from_the_file():
     assert vlm.MAX_TOKENS == limits.get("max_tokens") and vlm.IMAGE_WIDTH == limits.get("image_width_px")
     assert len(agent.RETRY_DELAYS) == limits.get("retry_max") and max(agent.RETRY_DELAYS) == limits.get("retry_delay_cap_s")
     assert agent.RECOVERY_TIMEOUT == limits.get("recovery_timeout_s") and episode.STATES_HZ == limits.get("states_hz")
-    assert demo.DEFAULT_FRAMES == limits.get("demo_frames") and demo.VideoConfig().target_fps == limits.get("video_fps")
     m = JointMonitor()
     assert (m.margin, m.max_vel, m.max_violations) == tuple(
         limits.get(n) for n in ("joint_margin_rad", "command_vel_max", "max_violations"))
@@ -107,12 +105,3 @@ def test_a_bad_limits_file_is_refused_with_the_name(tmp_path):
     broken(lambda d: d.update(version=2), "version 1")
     with pytest.raises(ValueError, match="not found"):
         limits.load(tmp_path / "none.json")
-
-
-def test_cli_prints_the_table(capsys):
-    assert main(["limits"]) == 0
-    out = capsys.readouterr().out
-    assert "move_dx_max_m" in out and "guess" in out and "gpt-policy" in out
-    assert main(["limits", "--source", "guess"]) == 0
-    out = capsys.readouterr().out
-    assert "base_vy_max" in out and "settle_pos_tol_rad" not in out and "guess" in out.splitlines()[-1]

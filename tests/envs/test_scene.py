@@ -18,17 +18,16 @@ def test_room_needs_assets_message(tmp_path, monkeypatch):
     monkeypatch.setattr(scene, "ASSETS", tmp_path)
     assert missing() and missing(["mug"])[-1] == "ycb:mug"
     mujoco = pytest.importorskip("mujoco")
-    with pytest.raises(FileNotFoundError, match="g1 scene fetch"):
+    with pytest.raises(FileNotFoundError, match="g1 twin fetch"):
         build_room(mujoco.MjSpec(), [("mug", 1.0, 0.0, None)])
 
 
 @pytest.mark.skipif(bool(missing(["mug"])), reason="room assets not fetched (g1 scene fetch mug)")
 def test_room_renders_from_the_head_camera():
     pytest.importorskip("mujoco")
-    from g1.cli import run_parser
+    from g1.cli import run_settings
     from g1.envs import SimEnv
-    args = run_parser().parse_args(["--env", "sim", "--tools", "x", "--headless", "--scene", "room",
-                                      "--sim-objects", "mug@0.8,0.25", "pencil@1.0,-0.3", "--camera-size", "720x1280"])
+    args = run_settings({"scene": "room", "objects": ["mug@0.8,0.25", "pencil@1.0,-0.3"], "camera_size": (720, 1280)})
     env = SimEnv(args)
     env.use_camera = True
     with env:
@@ -50,8 +49,8 @@ def test_room_renders_from_the_head_camera():
 
 def test_objects_need_the_room():
     pytest.importorskip("mujoco")
-    from g1.cli import run_parser
+    from g1.cli import run_settings
     from g1.envs import SimEnv
-    args = run_parser().parse_args(["--env", "sim", "--tools", "x", "--headless", "--sim-objects", "pencil@1,0"])
-    with pytest.raises(SystemExit, match="--scene room"):
+    args = run_settings({"objects": ["pencil@1,0"]})
+    with pytest.raises(SystemExit, match='"scene": "room"'):
         SimEnv(args).setup()

@@ -1,13 +1,14 @@
 # Tasks
 
-A task is a folder with an instruction and its context — no code. `g1 new task NAME` copies
-`_template/`; edit `task.json`; then:
+A task is a folder with what to do and its context, no code: `task.json` holds either an
+`instruction` (the vision model decides, needs `HF_TOKEN`) or a fixed `tools` chain (no model).
 
 ```
-g1 task show tasks/NAME                       # what the model will be given, and the score so far
-g1 task run  tasks/NAME --env sim --headless  # one run; flags after the folder override the file
-g1 task eval tasks/NAME -n 5 --env sim --headless   # N runs: success rate, decisions to success
+g1 run tpose --sim                    # on the twin
+g1 run tpose --mode gantry            # on the robot, hanging; --mode standing on its own feet (may walk)
+g1 run find_the_mug --sim             # the model searches the room, in the MuJoCo window
+g1 run find_the_mug --mode standing --view   # on the robot, its head camera in a browser
 ```
 
-Runs land under `tasks/NAME/runs/` (git-ignored) and one line per run in `tasks/NAME/results.jsonl`.
-See `docs/writing-a-task.md`.
+Runs land under `tasks/NAME/runs/` (git-ignored), each with its `trace.npz`, and one line per run
+in `tasks/NAME/results.jsonl`. See `docs/writing-a-task.md`.

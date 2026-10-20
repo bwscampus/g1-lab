@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-from g1.cli import run_parser
+from g1.cli import run_settings
 from g1.core.action import Action
 from g1.core.config import NUM_JOINTS, STAND_Q, UPPER_BODY
 from g1.envs import RobotEnv
@@ -37,8 +37,8 @@ class Arm:
         self.sent.append("release")
 
 
-def robot(*extra):
-    env = RobotEnv(run_parser().parse_args(["--env", "robot", "--tools", "x", "--iface", "lo", "--mode", "standing", *extra]))
+def robot(**settings):
+    env = RobotEnv(run_settings(iface="lo", mode="standing", **settings))
     env.arm, env.loco, env.audio = Arm(), Client(), Client()
     env.monitor, env.base = None, None
     env.audio_calls, env._audio_warned, env.overruns, env.ticks = 0, False, 0, 0
@@ -84,10 +84,6 @@ def test_a_missing_or_failing_speaker_never_stops_the_run(capsys):
         env.step(act(("WaveHand", {"turn_flag": False})))
 
 
-def test_volume_flag_parses():
-    args = run_parser().parse_args(["--env", "robot", "--tools", "x", "--iface", "lo", "--mode", "standing", "--volume", "40"])
-    assert args.volume == 40
-    assert run_parser().parse_args(["--env", "robot", "--tools", "x"]).volume is None
 
 
 class Loco:
@@ -116,7 +112,7 @@ class Loco:
         self.calls.append(("Damp",))
 
 
-def bring_up(monkeypatch, fsm, capsys, set_code=0, get_code=0, extra=(), arm_cls=None):
+def bring_up(monkeypatch, fsm, capsys, set_code=0, get_code=0, arm_cls=None, **settings):
     """setup() with the SDK stubbed out: the FSM handling and the messages."""
     import sys, types
     monkeypatch.setattr("time.sleep", lambda s: None)
@@ -131,11 +127,11 @@ def bring_up(monkeypatch, fsm, capsys, set_code=0, get_code=0, extra=(), arm_cls
         monkeypatch.setitem(sys.modules, name, mod)
     built = []
 
-    def arm_sdk(health=None):
+    def arm_sdk(health=None, link=None):
         built.append(1)
         return Arm()
     monkeypatch.setattr("g1.envs.robot.ArmSdk", arm_cls or arm_sdk)
-    env = RobotEnv(run_parser().parse_args(["--env", "robot", "--tools", "x", "--iface", "lo", "--mode", "standing", *extra]))
+    env = RobotEnv(run_settings(iface="lo", mode="standing", **settings))
     env.setup()
     out = capsys.readouterr().out
     env.arms_built = len(built)
@@ -158,9 +154,6 @@ def test_standing_mode_enters_and_restores_another_fsm(monkeypatch, capsys):
     assert loco.calls[-1] == ("SetFsmId", 500) and "FSM 500 (start) restored" in capsys.readouterr().out
 
 
-def test_countdown_is_gone():
-    with pytest.raises(SystemExit):
-        run_parser().parse_args(["--env", "robot", "--tools", "x", "--countdown", "3"])
 
 
 def test_bring_up_stops_before_the_arms_on_a_failed_transition(monkeypatch, capsys):
@@ -195,7 +188,7 @@ def test_teardown_never_raises(monkeypatch, capsys):
 
 
 def test_verbose_prints_every_call_and_the_health_line(monkeypatch, capsys):
-    env, loco, out = bring_up(monkeypatch, 500, capsys, extra=["--verbose"])
+    env, loco, out = bring_up(monkeypatch, 500, capsys, verbose=True)
     assert "sdk " in out and "LocoClient.GetFsmId() -> 0 (ok)" in out and "fsm at start: 500 (start)" in out
     assert "SetFsmId(200) -> 0 (ok)" in out and "dds: ChannelFactoryInitialize" in out
     env.arm, env.monitor, env.base = Arm(), None, None
@@ -234,20 +227,27 @@ def test_probe_verdicts(monkeypatch, capsys):
     assert run(0, 3104, False)["verdict"].startswith("no link")
     assert "refuses" in run(0, 7001, True)["verdict"]
     assert "no LowState" in run(200, 0, False)["verdict"]
-    monkeypatch.setattr("g1.envs.robot.probe", lambda iface, seconds, verbose: run(200, 0, True))
-    assert status_main(["--iface", "lo"]) == 0
+    monkeypatch.setattr("g1.envs.robot.probe", lambda iface, seconds, verbose, **kw: run(200, 0, True))
+    monkeypatch.setenv("UNITREE_IFACE", "lo")
+    assert status_main([]) == 0
     text = capsys.readouterr().out
-    assert "verdict:  link ok" in text and "lowstate: 10 messages" in text and "battery 77%" in text
-    assert status_main(["--iface", "lo", "--json"]) == 0
-    import json
-    assert json.loads(capsys.readouterr().out)["rpc"]["fsm"] == 200
-    with pytest.raises(SystemExit):
-        status_main([])
-
-
-def test_iface_defaults_to_the_environment(monkeypatch):
-    monkeypatch.setenv("UNITREE_IFACE", "en7")
-    assert run_parser().parse_args(["--env", "robot", "--tools", "x"]).iface == "en7"
-    assert run_parser().parse_args(["--env", "robot", "--tools", "x", "--iface", "lo"]).iface == "lo"
+    assert "verdict:  link ok" in text and "lowstate: 10 messages" in text and "on lo" in text and "battery 77%" in text
     monkeypatch.delenv("UNITREE_IFACE")
-    assert run_parser().parse_args(["--env", "robot", "--tools", "x"]).iface is None
+    with pytest.raises(SystemExit):
+        status_main([])                                                   # the interface comes from .env only
+    assert "UNITREE_IFACE" in capsys.readouterr().err
+
+
+
+def test_settings_come_from_the_environment(monkeypatch):
+    monkeypatch.setenv("UNITREE_IFACE", "en7")
+    monkeypatch.setenv("UNITREE_ROBOT_IP", "192.168.123.164")
+    monkeypatch.setenv("G1_VERBOSE", "1")
+    s = run_settings(mode="gantry")
+    assert (s.iface, s.camera_ip, s.verbose, s.mode) == ("en7", "192.168.123.164", True, "gantry")
+    assert RobotEnv(s).can_walk is False and RobotEnv(run_settings(mode="standing")).can_walk is True
+    monkeypatch.delenv("UNITREE_IFACE")
+    with pytest.raises(SystemExit, match="UNITREE_IFACE"):
+        RobotEnv(run_settings(mode="standing"))._check_args()
+    with pytest.raises(TypeError, match="no setting"):
+        run_settings(walk=True)

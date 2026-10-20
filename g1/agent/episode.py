@@ -11,15 +11,11 @@ A step record holds the joint angles at start and end, the frame it decided
 on, the model's raw reply and parsed decision, the tool that ran and how it
 ended, and the base pose before and after. ``load_episode`` gives the records
 back with the RGB array attached — the dataset a learned controller could be trained on.
-
-    g1 episode runs/<dir>      # step table + the equivalent --tools chain
 """
 from __future__ import annotations
 
-import argparse
 import dataclasses
 import json
-import math
 import queue
 import re
 import subprocess
@@ -321,31 +317,3 @@ def load_episode(directory: Path | str, images: bool = True) -> tuple[dict, list
     steps = [StepRecord.from_json(json.loads(p.read_text()), root if images else None)
              for p in sorted(root.glob("step_*.json"))]
     return meta, steps
-
-
-def chain_of(steps: list[StepRecord]) -> str:
-    """The ``--tools`` chain string that replays the tools that ran."""
-    from g1.tools import chain_spec
-    # one entry per tool: intermediate chunks are "running", only the last "completed"
-    return chain_spec([(s.tool["name"], s.tool["args"]) for s in steps if s.outcome.get("status") == "completed"])
-
-
-def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(prog="g1 episode", description="inspect a recorded run")
-    p.add_argument("dir")
-    args = p.parse_args(argv)
-    meta, steps = load_episode(args.dir, images=False)
-    print(f"{meta['instruction']!r} on {meta['env']} with {meta['model']}: {len(steps)} step(s), result {meta['result']}"
-          + (f", outcome {meta['outcome']} ({meta.get('outcome_source')})" if meta.get("outcome") else ""))
-    for s in steps:
-        d = s.decision or {}
-        tool = s.tool or {}
-        args = {k: v for k, v in tool.get("args", {}).items() if k != "note"}
-        print(f"  #{s.step:>3} {tool.get('name', '-')}({args}) -> {s.outcome['status']:<11} "
-              f"{d.get('latency', 0):.1f}s  {str(d.get('arguments', {}).get('note', ''))[:60]}")
-    print("replay:  --tools " + (chain_of(steps) or "<nothing completed>"))
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
