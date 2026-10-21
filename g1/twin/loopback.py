@@ -18,7 +18,8 @@ from __future__ import annotations
 import json
 import time
 
-from g1.core.config import NUM_JOINTS
+from g1.core import limits
+from g1.core.config import CONTROL_DT, NUM_JOINTS
 from g1.twin.onboard import ArmSdkCommand
 
 MOTORS = 35                       # unitree_hg LowCmd_ / LowState_ carry 35 motor slots
@@ -178,7 +179,8 @@ class LoopbackLink:
     name = "loopback"
 
     def __init__(self, twin, *, realtime: float | None = None, viewer=None, renderer=None, camera=None,
-                 camera_every: int = 3, stamp=None) -> None:
+                 camera_every: int = max(1, round(1.0 / (limits.get("twin_camera_fps") * CONTROL_DT))),
+                 stamp=None) -> None:
         self.twin = twin
         self.stamp = stamp or (lambda: twin.time)     # the clock camera frames are stamped on
         self.realtime = realtime

@@ -37,7 +37,7 @@ class WaveHand(Gesture):
               "hands the arms to the onboard controller for seconds (default {limit:wave_hand_seconds}), then takes "
               "them back. A greeting toward a person; not a search move.")
     params = {"turn_flag": flag(False, "wave with a turn of the hand"),
-              "seconds": num(1.0, limit("gesture_seconds_max"), limit("wave_hand_seconds"), "how long the onboard gesture takes")}
+              "seconds": num(limit("gesture_seconds_min"), limit("gesture_seconds_max"), limit("wave_hand_seconds"), "how long the onboard gesture takes")}
 
     def call_args(self) -> dict:
         return {"turn_flag": bool(self.turn_flag)}
@@ -51,7 +51,7 @@ class ShakeHand(Gesture):
               "The host hands the arms to the onboard controller for seconds (default {limit:shake_hand_seconds}), "
               "then takes them back. Only when a person stands within reach in front of the robot.")
     params = {"stage": integer(-1, 1, -1, "-1: the whole gesture; 0 and 1 are the SDK's two halves"),
-              "seconds": num(1.0, limit("gesture_seconds_max"), limit("shake_hand_seconds"), "how long the onboard gesture takes")}
+              "seconds": num(limit("gesture_seconds_min"), limit("gesture_seconds_max"), limit("shake_hand_seconds"), "how long the onboard gesture takes")}
 
     def call_args(self) -> dict:
         return {"stage": int(self.stage)}

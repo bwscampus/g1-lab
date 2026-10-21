@@ -32,7 +32,8 @@ from g1.core.action import Action
 from g1.core.config import (BASE_VEL_MAX, CONTROL_DT, JOINT_HI, JOINT_LO, JOINT_NAMES, LEGS, NUM_JOINTS,
                             STAND_Q)
 
-MAX_PRINTED = 12
+MAX_PRINTED = int(limits.get("max_printed_violations"))
+MOVED_RAD = limits.get("joint_moved_rad")      # a span above this counts as moved
 
 
 @dataclass
@@ -173,7 +174,7 @@ class JointMonitor:
     # -- reporting ---------------------------------------------------------
     def rows(self) -> list[int]:
         """Joints worth printing: commanded, violated, or actually moved."""
-        moved = np.isfinite(self.q_min) & ((self.q_max - self.q_min) > 5e-3)
+        moved = np.isfinite(self.q_min) & ((self.q_max - self.q_min) > MOVED_RAD)
         out = set(self.commanded) | {v.joint for v in self.violations if v.joint >= 0}
         out |= {j for j in range(NUM_JOINTS) if moved[j]}
         return sorted(out)

@@ -6,7 +6,7 @@ import math
 
 from g1.core import limits
 from g1.core.action import Segment
-from g1.core.config import JOINT_HI, JOINT_LO, joint_index
+from g1.core.config import HEAD_CAMERA_FOV_H, HEAD_CAMERA_PITCH, JOINT_HI, JOINT_LO, joint_index
 from g1.core.poses import ARMS_UP, SIXSEVEN, STAND
 from g1.tools.base import Tool, integer, limit, num
 
@@ -14,6 +14,12 @@ WAIST_YAW = joint_index("waist_yaw")
 L_ELBOW, R_ELBOW = joint_index("left_elbow"), joint_index("right_elbow")
 ELBOW_REST = 0.0      # 90-degree bend, forearm horizontal
 ELBOW_UP = -0.45      # fingertips at shoulder height
+# The right arm pointing (verified on the twin model): shoulder_pitch -1.57 with elbow 1.57
+# holds a straight arm level and forward; each degree less of pitch tips it a degree down.
+R_ARM = [joint_index(f"right_{j}") for j in ("shoulder_pitch", "shoulder_roll", "shoulder_yaw", "elbow",
+                                               "wrist_roll", "wrist_pitch", "wrist_yaw")]
+ELBOW_STRAIGHT = 1.57
+POINT_ROLL = -0.1     # the upper arm a little out, clear of the torso
 
 
 class ArmPath(Tool):
@@ -74,16 +80,58 @@ class ArmPath(Tool):
                      for i, wp in enumerate(self.waypoints))
 
 
+class Point(Tool):
+    """The right arm straight out along the torso's heading, tipped down by
+    ``down_deg``, held, then lowered to the stand pose. The waist is left where
+    it is, so the arm points where the camera looks."""
+
+    name = "point"
+    order = 25
+    prompt = ("Point at something with the right arm: raise it straight out over rise_s seconds along the direction "
+              "the torso (and the camera) faces, tipped down_deg below horizontal (0 to {limit:point_down_deg_max}), "
+              "hold it hold_s seconds, then lower it. It points straight ahead of the torso, so first turn the waist "
+              "(look) until the target is in the middle of the image; then aim down_deg by where it sits: the "
+              f"image's centre row is about {math.degrees(HEAD_CAMERA_PITCH):.0f} degrees below horizontal, a target "
+              "far across the floor about 15-25, one near the feet about 50-60. Only the right arm moves. Point with "
+              "the waist at most 90 degrees round; for a target further round, turn the feet first (move) where "
+              "walking is allowed.")
+    params = {"down_deg": num(0.0, limit("point_down_deg_max"), limit("point_down_deg_default"),
+                              "degrees below horizontal to aim the arm"),
+              "rise_s": num(limit("point_rise_s_min"), limit("point_rise_s_max"), limit("point_rise_s_default"),
+                            "seconds to raise and to lower the arm"),
+              "hold_s": num(limit("point_hold_s_min"), limit("point_hold_s_max"), limit("point_hold_s_default"),
+                            "seconds to hold the point")}
+
+    def segments(self) -> tuple[Segment, ...]:
+        # a straight arm sags under gravity at arm_sdk's gains, most when level: aim that much higher
+        lift = limits.get("point_sag_deg") * math.cos(math.radians(self.down_deg))
+        aim = dict(zip(R_ARM, (-math.radians(90.0 - self.down_deg + lift), POINT_ROLL, 0.0, ELBOW_STRAIGHT,
+                               0.0, 0.0, 0.0)))
+        down = {j: STAND[j] for j in R_ARM}
+        return (Segment(aim, self.rise_s, label=f"pointing {self.down_deg:.0f} deg down"),
+                Segment(aim, self.hold_s, label="holding the point"),
+                Segment(down, self.rise_s, label="arm down"))
+
+
 class Look(Tool):
-    """A preset: turn only the waist and hold it, so the next image looks sideways."""
+    """Turn only the waist and hold it, so the next image looks sideways."""
 
     name = "look"
-    order = 62
-    visible = False
-    prompt = ("Turn only the waist by yaw_deg degrees (up to {limit:look_yaw_max_deg} either way), positive LEFT, "
-              "over seconds, and hold it; the feet and arms do not move and the waist stays there.")
+    order = 22
+    prompt = ("Turn only the waist to yaw_deg degrees from the feet (up to {limit:look_yaw_max_deg} either way), "
+              "positive LEFT, over seconds, and hold it there; the feet and arms do not move. yaw_deg is where to "
+              "look, not a step: look 0 faces the feet again. Search without walking: look in steps of 30-45 "
+              f"degrees and observe between them (the image spans about {HEAD_CAMERA_FOV_H:.0f} degrees); to "
+              "face a visible target, add its bearing to state.waist_yaw_deg. Look back: yaw_deg "
+              "{limit:look_yaw_max_deg} (over the left shoulder) or -{limit:look_yaw_max_deg} (the right) shows "
+              "what is behind; straight behind the feet (180) lies the rest of the way toward the image's edge on "
+              "the side you turned, so a thing straight behind sits off-centre toward that edge. Look back before "
+              "anything that moves the robot into space it cannot see (walking backward or sideways, sitting) and "
+              "after a large turn to check where a target ended up; give a look-back about 2 s per 90 degrees, then "
+              "look 0 before walking (a waist held far round can twist the feet).")
     params = {"yaw_deg": num(-limit("look_yaw_max_deg"), limit("look_yaw_max_deg"), None, "degrees, + left / - right"),
-              "seconds": num(0.5, 5.0, 1.5, "seconds to turn the waist")}
+              "seconds": num(limit("look_seconds_min"), limit("look_seconds_max"), limit("look_seconds_default"),
+                              "seconds to turn the waist")}
 
     def segments(self) -> tuple[Segment, ...]:
         return (Segment({WAIST_YAW: math.radians(self.yaw_deg)}, self.seconds,
@@ -98,8 +146,10 @@ class TPose(Tool):
     visible = False
     prompt = ("Raise both arms straight out to the sides over rise_s seconds, hold for hold_s, then lower them over "
               "rise_s. Needs clear space to both sides at shoulder height.")
-    params = {"hold_s": num(0.5, 30.0, 5.0, "seconds to hold the pose"),
-              "rise_s": num(1.0, 10.0, 3.0, "seconds to raise and to lower")}
+    params = {"hold_s": num(limit("tpose_hold_s_min"), limit("hold_seconds_max"), limit("tpose_hold_s_default"),
+                            "seconds to hold the pose"),
+              "rise_s": num(limit("tpose_rise_s_min"), limit("tpose_rise_s_max"), limit("tpose_rise_s_default"),
+                            "seconds to raise and to lower")}
 
     def segments(self) -> tuple[Segment, ...]:
         return (Segment(ARMS_UP, self.rise_s, label="arms up"),
@@ -123,10 +173,13 @@ class SixSeven(Tool):
     visible = False
     prompt = ("A two-handed see-saw wave with the palms up: reps swings per hand of swing_s seconds each, after "
               "settle_s seconds to reach the palms-up pose and hold_s seconds before and after.")
-    params = {"reps": integer(1, 10, 3, "swings per hand"),
-              "swing_s": num(0.3, 2.0, 0.8, "seconds per swing"),
-              "settle_s": num(0.5, 5.0, 3.0, "seconds to reach the palms-up pose"),
-              "hold_s": num(0.1, 5.0, 1.0, "seconds to hold before and after")}
+    params = {"reps": integer(1, limit("sixseven_reps_max"), limit("sixseven_reps_default"), "swings per hand"),
+              "swing_s": num(limit("sixseven_swing_s_min"), limit("sixseven_swing_s_max"),
+                             limit("sixseven_swing_s_default"), "seconds per swing"),
+              "settle_s": num(limit("sixseven_settle_s_min"), limit("sixseven_settle_s_max"),
+                              limit("sixseven_settle_s_default"), "seconds to reach the palms-up pose"),
+              "hold_s": num(limit("sixseven_hold_s_min"), limit("sixseven_hold_s_max"),
+                            limit("sixseven_hold_s_default"), "seconds to hold before and after")}
 
     def _swings(self) -> tuple[Segment, ...]:
         """Each segment raises one hand while lowering the other, so the next hand
@@ -149,4 +202,4 @@ class SixSeven(Tool):
                 Segment(SIXSEVEN, self.hold_s, label="holding"),
                 *self._swings(),
                 Segment(SIXSEVEN, self.hold_s, label="holding"),
-                Segment(STAND, 1.2, label="arms down"))
+                Segment(STAND, limits.get("sixseven_lower_s"), label="arms down"))

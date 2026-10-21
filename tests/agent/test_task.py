@@ -51,6 +51,10 @@ def test_the_shipped_tasks_load():
     assert load_task(find("tpose"))["tools"] == "tpose"
     t = load_task(find("find_the_mug"))
     assert t["instruction"] and t["scene"] == "room" and t["objects"] == ["mug@1.5,1.2"]
+    t = load_task(find("point_at_the_mug"))
+    assert t["instruction"] and t["scene"] == "room" and t["objects"] == ["mug@1.0,1.5"]
+    t = load_task(find("sit_in_the_chair"))
+    assert t["instruction"] and t["objects"] == ["chair@-1.2,0.8"]
 
 
 def test_record_result_from_an_agent_status_or_the_checks(tmp_path):

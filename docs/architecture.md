@@ -85,12 +85,13 @@ say(text, pause_s)              the onboard text-to-speech; the twin prints it  
 done(summary, hindsight) / give_up(reason, hindsight)
 ```
 
-Presets (`visible = False`: tools chains only): `walk_forward`, `turn`, `look`,
+Presets (`visible = False`: tools chains only): `walk_forward`, `turn`,
 `tpose`, `sixseven`; bookends `takeover`, `handback`. An onboard call a tool may make is
-allow-listed by service: `config.LOCO_METHODS` (`WaveHand`, `ShakeHand`) and
+allow-listed by service: `config.LOCO_METHODS` (`WaveHand`, `ShakeHand`, `Sit`) and
 `config.AUDIO_METHODS` (`TtsMaker`); the robot env routes by name and refuses the rest.
-Nothing else on the SDK — FSM, damp, torque, sit, squat, stand height, raw audio playback,
-volume, the LED strip — is reachable from a reply. There is no `locate_point`:
+`Sit` is the one FSM switch (`config.LOCO_FSM`: sent as `SetFsmId(3)`; the teardown stands
+up with 801). Nothing else on the SDK — other FSMs, damp, torque, squat, stand height, raw
+audio playback, volume, the LED strip — is reachable from a reply. There is no `locate_point`:
 the head camera is monocular, there is no metric pixel query to offer honestly.
 
 ## Envs

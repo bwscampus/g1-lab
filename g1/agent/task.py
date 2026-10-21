@@ -36,7 +36,8 @@ SCHEMA = {
         "max_decisions": {"type": "integer", "minimum": 1, "default": int(limits.get("max_decisions"))},
         "max_time_s": {"type": "number", "minimum": 1, "default": limits.get("max_time_s")},
         "camera_size": {"type": "string", "pattern": "^[0-9]+x[0-9]+$", "default": None,
-                        "description": "the sim head camera, HxW (default 480x640; the robot streams 720x1280)"},
+                        "description": "the sim head camera, HxW (default: twin_camera_height_px x twin_camera_width_px in "
+                                       "configs/limits.json; the robot streams 720x1280)"},
         "notes": {"type": "string", "default": "", "description": "for people; the model never sees it"},
     },
 }

@@ -20,6 +20,7 @@ from typing import Callable, Optional
 import numpy as np
 
 from g1.camera import Frame
+from g1.core import limits
 from g1.core.config import CONTROL_DT, NUM_JOINTS
 
 
@@ -45,8 +46,8 @@ class Action:
     q: np.ndarray
     joints: list[int]
     weight: float = 1.0
-    kp: float = 60.0
-    kd: float = 1.5
+    kp: float = limits.get("arm_sdk_kp")
+    kd: float = limits.get("arm_sdk_kd")
     base: Optional[tuple[float, float, float]] = None
     command: Optional[tuple[str, dict]] = None
 
@@ -95,8 +96,8 @@ class Runnable:
     name: str = "runnable"
     joints: list[int] = []          # joints this program commands
     dt: float = CONTROL_DT
-    kp: float = 60.0
-    kd: float = 1.5
+    kp: float = limits.get("arm_sdk_kp")
+    kd: float = limits.get("arm_sdk_kd")
     uses_camera: bool = False       # the runner only opens a camera for programs that ask
 
     def reset(self, obs: Obs) -> None:

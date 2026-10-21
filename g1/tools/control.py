@@ -17,9 +17,10 @@ from g1.tools.base import Tool, limit, num, text
 class Hold(Tool):
     name = "hold"
     order = 30
-    prompt = ("Stand still for seconds (up to {limit:hold_seconds_max}, default 1) keeping the current pose. Use it "
+    prompt = ("Stand still for seconds (up to {limit:hold_seconds_max}, default {limit:hold_seconds_default}) keeping the current pose. Use it "
               "to wait for a moving obstacle or a person to clear, or to observe again without moving.")
-    params = {"seconds": num(0.1, limit("hold_seconds_max"), 1.0, "how long to wait")}
+    params = {"seconds": num(limit("hold_seconds_min"), limit("hold_seconds_max"), limit("hold_seconds_default"),
+                             "how long to wait")}
 
     def segments(self) -> tuple[Segment, ...]:
         return (Segment({}, self.seconds, label=f"hold {self.seconds:.1f} s"),)
@@ -31,7 +32,7 @@ def dry_run(tool: Tool, cmd: np.ndarray, joints: Sequence[int]) -> dict:
     displacement it would produce. Moves nothing. Every movement the model
     picks goes through this before it executes (their IK check before
     submission); ``check`` exposes it to the model."""
-    from g1.envs.monitor import JointMonitor
+    from g1.envs.monitor import MAX_PRINTED, MOVED_RAD, JointMonitor
     from g1.tools import prefixed
     player = Tool.of(prefixed(tool), joints=list(joints), name="check")
     player.reset(Obs(cmd))
@@ -42,12 +43,12 @@ def dry_run(tool: Tool, cmd: np.ndarray, joints: Sequence[int]) -> dict:
         mon.observe(a.q, a)
         n += 1
     x, y, yaw = mon.base_pose()
-    moved = [JOINT_NAMES[j] for j in mon.rows() if np.isfinite(mon.cmd_min[j]) and mon.cmd_max[j] - mon.cmd_min[j] > 5e-3]
+    moved = [JOINT_NAMES[j] for j in mon.rows() if np.isfinite(mon.cmd_min[j]) and mon.cmd_max[j] - mon.cmd_min[j] > MOVED_RAD]
     return {"status": "ok" if not mon.violations else "rejected",
             "tool": tool.name, "arguments": {k: v for k, v in tool.args.items() if k != "note"},
             "duration_s": n * CONTROL_DT, "base_delta": [x, y, math.degrees(yaw)],
             "peak_command_vel_rad_s": float(mon.peak_vel.max()), "joints_moved": moved,
-            "violations": [str(v) for v in mon.violations[:12]], "n_violations": len(mon.violations)}
+            "violations": [str(v) for v in mon.violations[:MAX_PRINTED]], "n_violations": len(mon.violations)}
 
 
 class Check(Tool):
@@ -115,7 +116,7 @@ class Takeover(Tool):
     order = 98
     visible = False
     allows_start = True
-    params = {"ramp_s": num(0.0, 10.0, limit("bookend_ramp_s"), "weight ramp seconds")}
+    params = {"ramp_s": num(0.0, limit("bookend_ramp_max_s"), limit("bookend_ramp_s"), "weight ramp seconds")}
 
     def segments(self) -> tuple[Segment, ...]:
         if self.ramp_s <= 0:
@@ -130,7 +131,7 @@ class Handback(Tool):
     name = "handback"
     order = 99
     visible = False
-    params = {"ramp_s": num(0.0, 10.0, limit("bookend_ramp_s"), "weight ramp seconds")}
+    params = {"ramp_s": num(0.0, limit("bookend_ramp_max_s"), limit("bookend_ramp_s"), "weight ramp seconds")}
 
     def segments(self) -> tuple[Segment, ...]:
         if self.ramp_s <= 0:

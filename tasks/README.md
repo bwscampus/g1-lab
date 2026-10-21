@@ -8,6 +8,8 @@ g1 run tpose --sim                    # on the twin
 g1 run tpose --mode gantry            # on the robot, hanging; --mode standing on its own feet (may walk)
 g1 run find_the_mug --sim             # the model searches the room, in the MuJoCo window
 g1 run find_the_mug --mode standing --view   # on the robot, its head camera in a browser
+g1 run point_at_the_mug --sim         # demo: turn the waist to find the mug, point at it with the right arm
+g1 run sit_in_the_chair --sim         # demo: find the chair, line up, turn around, back up and sit (standing mode only on the robot)
 ```
 
 Runs land under `tasks/NAME/runs/` (git-ignored), each with its `trace.npz`, and one line per run

@@ -26,15 +26,16 @@ import numpy as np
 from g1.core import limits
 from g1.core.config import CONTROL_DT, NUM_JOINTS
 from g1.twin import model as twin_model
-from g1.twin.onboard import FSM_MAIN, STAND, ArmSdkCommand, Onboard
+from g1.twin.onboard import FSM_MAIN, FSM_SIT, STAND, ArmSdkCommand, Onboard
 from g1.twin.services import Services
 
 SUBSTEPS = int(round(CONTROL_DT / twin_model.PHYSICS_DT))
-SETTLE_S = 1.0                    # dropped onto its feet and let settle before t = 0
-START_Z = 0.80                    # pelvis height it is dropped from (stands at about 0.78)
+SETTLE_S = limits.get("twin_settle_s")         # dropped onto its feet and let settle before t = 0
+START_Z = limits.get("twin_start_z_m")         # pelvis height it is dropped from
 BAND_KP = limits.get("twin_band_kp")
 BAND_KD = limits.get("twin_band_kd")
-ROPE_SLACK = 0.03                 # m below the standing torso: slack in any stance, so the feet carry it
+ROPE_SLACK = limits.get("twin_rope_slack_m")   # below the standing torso: slack in any stance, so the feet carry it
+ROPE_LATERAL = limits.get("twin_rope_lateral")  # sideways stiffness and damping, as a fraction
 
 
 @dataclass
@@ -140,8 +141,8 @@ class Twin:
         self.onboard.hanging = bool(z < az)          # the rope carries it: a tilt is a swing, not a fall
         if z < az:
             f[2] = BAND_KP * (az - z) - BAND_KD * vel[5]
-            f[0] = 0.2 * BAND_KP * (ax - x) - 0.2 * BAND_KD * vel[3]
-            f[1] = 0.2 * BAND_KP * (ay - y) - 0.2 * BAND_KD * vel[4]
+            f[0] = ROPE_LATERAL * (BAND_KP * (ax - x) - BAND_KD * vel[3])
+            f[1] = ROPE_LATERAL * (BAND_KP * (ay - y) - BAND_KD * vel[4])
         d.xfrc_applied[b, :3] = f
 
     # -- what a report needs --------------------------------------------------------------------
@@ -188,6 +189,19 @@ class Twin:
         if o.waist_raised:
             parts.append(f"waist held by the walker over arm_sdk for {o.waist_raised * twin_model.PHYSICS_DT:.1f} s "
                          f"(the robot holds it steady while it walks)")
+        if o.fsm == FSM_SIT and o.fallen_at is None:
+            seat = self.seat()
+            parts.append(f"seated on {seat}" if seat else "seated with no seat under it")
         if o.fallen_at is not None:
             parts.append(f"FELL at t = {o.fallen_at:.2f} s")
         return "; ".join(parts)
+
+    def seat(self) -> str | None:
+        """The chair seat the robot rests on (a ``*_seat`` geom it touches), if any."""
+        m, d = self.model, self.data
+        for c in d.contact[:d.ncon]:
+            for g in (c.geom1, c.geom2):
+                name = m.geom(g).name
+                if name.endswith("_seat"):
+                    return name[:-len("_seat")]
+        return None

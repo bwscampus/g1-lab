@@ -80,8 +80,13 @@ Only the waist and arms are commanded (arm_sdk, 50 Hz, the blend weight in
 `LocoClient.Move` — a 1 s dead-man command re-sent from a 10 Hz thread, clamped to
 `BASE_VEL_MAX`, `StopMove` when a tool's base command clears and again before the arms are
 released. Move works in FSM 200, so walking adds no FSM transition. The onboard gestures a
-tool may call are `WaveHand` and `ShakeHand`, nothing else; FSM, damp, torque, sit and squat
-are unreachable from a tool or a model reply; so are raw audio playback, the volume and the
+tool may call are `WaveHand` and `ShakeHand`, and one FSM: `Sit` (the `sit` tool, `--mode
+standing` only), sent as `SetFsmId(3)`; after it the agent refuses every walking and onboard tool,
+and the teardown sends `SetFsmId(801)` (sit to stand), waits up to `sit_stand_timeout_s` for a
+standing FSM and returns to 200, or warns that the robot is still seated. Try the sit by hand
+first (a `{"tools": "sit"}` task, a chair already behind the heels, a spotter, the remote ready)
+and time it into `sit_seconds`. Any other FSM, damp, torque and squat are unreachable from a
+tool or a model reply; so are raw audio playback, the volume and the
 LED strip (`AUDIO_METHODS` allows only `TtsMaker`). The joint monitor runs report-only over
 the measured angles (teardown already releases the arms; stopping mid-run is its own risk) and
 `report()` counts tick overruns. With `--sim` the same monitor is strict and a fall fails the run.

@@ -6,12 +6,14 @@
     g1 status                              # is the robot reachable, and what state is it in
     g1 twin fetch | status                 # the twin's model, walker and room assets
     g1 trace compare RUN_A RUN_B | show RUN   # how far the twin is from the robot on the same task
+    g1 limits [SOURCE]                     # every number and default, from configs/limits.json
 
 TASK is a folder under tasks/ (or its path): an ``instruction`` the vision model
 works on, or a fixed ``tools`` chain (``g1/agent/task.py``). ``--mode standing``
-lets the base walk; ``gantry`` never does. Every other number is in
-configs/limits.json, the task's task.json or .env; ``G1_VERBOSE=1`` prints every
-SDK call and a health line a second.
+lets the base walk; ``gantry`` never does. Every other number and default is in
+configs/limits.json (``g1 limits``) or the task's task.json; .env holds only what is
+private to this machine (the token, the robot's address and key). ``G1_VERBOSE=1``
+prints every SDK call and a health line a second.
 """
 from __future__ import annotations
 
@@ -135,11 +137,11 @@ def run(program: Runnable, env: Env, max_time: float = limits.get("max_time_s"))
     return env.report()
 
 
-VIEW_PORT = 8765
+VIEW_PORT = limits.get("view_port")
 
 
 def _start_view(env: Env, program: Runnable):
-    """``--view``: the head camera at http://127.0.0.1:8765 (or a free port when that is taken)."""
+    """``--view``: the head camera at http://127.0.0.1:VIEW_PORT (or a free port when that is taken)."""
     from g1.camera import Viewer
     source = env.source()
     if source is None:
@@ -174,7 +176,9 @@ def run_settings(task: Optional[dict] = None, *, sim: bool = False, mode: Option
         scene=task.get("scene") or "none", sim_objects=[parse_object(o) for o in task.get("objects") or []],
         camera_size=task.get("camera_size"),
         # the in-process twin (tests): headless, its own pacing and checks
-        headless=True, realtime=None, hold_end=2.0, camera_every=3, camera_dir=None, camera_fps=15.0,
+        headless=True, realtime=None, hold_end=limits.get("sim_viewer_hold_s"), camera_dir=None,
+        camera_fps=limits.get("twin_camera_fps"),
+        camera_every=max(1, round(1.0 / (limits.get("twin_camera_fps") * limits.get("control_dt_s")))),
         sim_obstacle=None, twin_fsm=None, margin=limits.get("joint_margin_rad"),
         max_vel=limits.get("command_vel_max"), max_violations=int(limits.get("max_violations")),
     )
@@ -260,7 +264,7 @@ def run_main(argv: list[str]) -> int:
                    help="standing: on its own feet, may walk (default with --sim). gantry: hanging; "
                         "Damp, stand, run, Damp; never walks. Required on the robot")
     p.add_argument("--view", action="store_true",
-                   help="the robot: show its head camera live in a browser (http://127.0.0.1:8765). "
+                   help=f"the robot: show its head camera live in a browser (http://127.0.0.1:{VIEW_PORT}). "
                         "--sim always shows the MuJoCo window")
     args = p.parse_args(argv)
     if args.view and args.sim:
@@ -281,6 +285,7 @@ COMMANDS = {
     "status": "is the robot reachable and what state is it in (read-only)",
     "twin": "fetch the twin's model, walker and room assets (fetch | status)",
     "trace": "compare two runs of a task, e.g. the twin's and the robot's (compare | show)",
+    "limits": "print every limit and default in configs/limits.json as one table (or one source: g1 limits guess)",
 }
 
 
@@ -302,6 +307,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     if command == "status":
         from g1.envs.robot import status_main
         return status_main(rest)
+    if command == "limits":
+        return limits.main(rest)
     if command == "twin":
         from g1.twin.main import main as twin_main
         return twin_main(rest)

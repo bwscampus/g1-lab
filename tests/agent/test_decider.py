@@ -83,10 +83,10 @@ def test_context_renders_catalog_and_rules():
     assert json.loads(text.split("Robot tool catalog:\n", 1)[1]) == c.tools
     schema = c.output_schema
     assert schema["required"] == ["name", "arguments"] and schema["additionalProperties"] is False
-    strict = next(a for a in schema["properties"]["arguments"]["anyOf"] if "seconds" in a["properties"])
+    strict = next(a for a in schema["properties"]["arguments"]["anyOf"] if set(a["properties"]) == {"seconds", "note"})   # hold
     assert strict["required"] == ["seconds", "note"] and strict["properties"]["seconds"]["anyOf"][1] == {"type": "null"}
     check = next(t for t in c.tools if t["function"]["name"] == "check")["function"]["parameters"]
-    assert check["properties"]["tool"]["enum"] == ["move", "arm_path", "hold", "say"]
+    assert check["properties"]["tool"]["enum"] == ["move", "arm_path", "look", "point", "hold", "say"]
     no_base = ctx(False).instructions
     assert "- move:" not in no_base.split("Tools:")[1].split("Every movement")[0]
     assert instructions(menu(True), can_walk=True, max_decisions=5) == build_context(menu(True), can_walk=True, max_decisions=5).instructions

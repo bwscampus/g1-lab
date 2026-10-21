@@ -59,8 +59,9 @@ from typing import Optional
 import numpy as np
 
 from g1.camera import WebRTCCamera
+from g1.core import limits
 from g1.core.action import Action
-from g1.core.config import (ARM_SDK_WEIGHT_IDX, AUDIO_METHODS, BASE_VEL_MAX, CONTROL_DT, LOCO_METHODS, NUM_JOINTS,
+from g1.core.config import (ARM_SDK_WEIGHT_IDX, AUDIO_METHODS, BASE_VEL_MAX, CONTROL_DT, FSM_SIT_TO_STAND, LOCO_FSM, LOCO_METHODS, NUM_JOINTS,
                             UPPER_BODY)
 from g1.envs import sdk
 from g1.envs.base import Env, EnvAbort, shield_sigint
@@ -118,17 +119,18 @@ class ArmSdk:
         self.state = msg
         self.health.tick()
 
-    def fresh_state(self, settle: float = 0.5, timeout: float = 5.0, iface: str = "") -> np.ndarray:
+    def fresh_state(self, settle: float = limits.get("lowstate_settle_s"),
+                    timeout: float = limits.get("lowstate_timeout_s"), iface: str = "") -> np.ndarray:
         t0 = self.link.now()
         while self.state is None:
             if self.link.now() - t0 > timeout:
                 raise TimeoutError(f"no LowState received in {timeout:.0f}s on {iface or 'the interface'}: "
                                    "the DDS link (interface, subnet, the robot's services); run g1 status")
-            self.link.sleep(0.05)
+            self.link.sleep(limits.get("lowstate_poll_s"))
         self.link.sleep(settle)
         return np.array([m.q for m in self.state.motor_state[:NUM_JOINTS]])
 
-    def release(self, duration: float = 1.0) -> None:
+    def release(self, duration: float = limits.get("release_s")) -> None:
         """Publish weight=0 with zero gains so ai_sport drops any arm_sdk takeover."""
         for j in UPPER_BODY:
             mc = self.cmd.motor_cmd[j]
@@ -159,10 +161,10 @@ class BaseCommander:
     Without the thread (the lockstep twin) the link calls ``poll(now)`` every tick
     and it sends exactly what the worker would."""
 
-    def __init__(self, loco, period: float = 0.1, limits=BASE_VEL_MAX) -> None:
+    def __init__(self, loco, period: float = limits.get("base_send_period_s"), vel_max=BASE_VEL_MAX) -> None:
         self.loco = loco
         self.period = period
-        self.limits = np.asarray(limits, dtype=float)
+        self.limits = np.asarray(vel_max, dtype=float)
         self._cond = threading.Condition()
         self._cmd = None
         self._changed = False
@@ -327,14 +329,15 @@ class RobotEnv(Env):
         link.init(domain, self.args.iface)
         self.health = Health(clock=link.now)
         self.loco = link.loco()
-        self.loco.SetTimeout(10.0)
+        self.loco.SetTimeout(limits.get("rpc_timeout_s"))
         self.loco.Init()
+        self.seated = False                    # a sit tool sat it down: the teardown stands it up
         self.audio = None
         self.audio_calls = 0
         self._audio_warned = False
         try:
             self.audio = link.audio()
-            self.audio.SetTimeout(10.0)
+            self.audio.SetTimeout(limits.get("rpc_timeout_s"))
             self.audio.Init()
             code, volume = self._call(self.audio, "GetVolume")
             if code == 0:
@@ -347,10 +350,10 @@ class RobotEnv(Env):
 
         if self.args.mode == "gantry":
             self._require(self._call(self.loco, "Damp")[0], "Damp")
-            link.sleep(1.0)
+            link.sleep(limits.get("gantry_damp_s"))
             self._require(self._call(self.loco, "SetFsmId", FSM_LOCKED_STAND)[0], "SetFsmId(4)")
             print(f"fsm: {sdk.fsm_name(FSM_LOCKED_STAND)}")
-            link.sleep(7.0)
+            link.sleep(limits.get("gantry_lock_stand_s"))
             self.initial_fsm = None
         else:  # standing
             self.initial_fsm = self._fsm()
@@ -370,11 +373,11 @@ class RobotEnv(Env):
                 self._say(f"fsm: {sdk.fsm_name(fsm)} after {link.now() - t0:.1f}s")
                 if fsm == FSM_MAIN:
                     break
-                if link.now() - t0 > 3.0:
-                    raise SystemExit(f"the robot did not enter FSM {FSM_MAIN} within 3 s (reports "
+                if link.now() - t0 > limits.get("fsm_enter_timeout_s"):
+                    raise SystemExit(f"the robot did not enter FSM {FSM_MAIN} within {limits.get('fsm_enter_timeout_s'):g} s (reports "
                                      f"{sdk.fsm_name(fsm)}): another controller may own the FSM, or it is in "
                                      "a protection state; check the app and the remote, run g1 status")
-                link.sleep(0.2)
+                link.sleep(limits.get("fsm_poll_s"))
         self.arm = ArmSdk(self.health, link=link)
         self.monitor = self._make_monitor()
         self.base = None
@@ -434,20 +437,25 @@ class RobotEnv(Env):
         arm = getattr(self, "arm", None)
         if arm is not None:
             print("leaving control mode: releasing the arms")
-            arm.release(1.0)
+            arm.release()
         loco = getattr(self, "loco", None)
         if loco is None:
             return
+        if getattr(self, "seated", False):
+            self._stand_up(loco)
         if self.args.mode == "gantry":
             code, _ = self._call(loco, "Damp")
             print("Damp" if code == 0 else f"warning: Damp failed with {sdk.explain(code)}")
-            self.link.sleep(1.0)
+            self.link.sleep(limits.get("gantry_damp_s"))
         else:  # standing
             initial = getattr(self, "initial_fsm", None)
-            if initial is not None and initial != FSM_MAIN:
+            if getattr(self, "seated", False):
+                print(f"warning: the robot is still seated; stand it up with the remote "
+                      f"(SetFsmId({FSM_SIT_TO_STAND}), then FSM {FSM_MAIN})")
+            elif initial is not None and initial != FSM_MAIN:
                 if initial in sdk.STANDING_FSMS:
                     code, _ = self._call(loco, "SetFsmId", initial)
-                    self.link.sleep(3.0)
+                    self.link.sleep(limits.get("restore_fsm_s"))
                     print(f"FSM {sdk.fsm_name(initial)} restored" if code == 0 else
                           f"warning: could not restore FSM {initial}: {sdk.explain(code)}")
                 else:
@@ -456,8 +464,33 @@ class RobotEnv(Env):
         code, fsm = self._call(loco, "GetFsmId")
         print(f"fsm: {sdk.fsm_name(fsm) if code == 0 else sdk.explain(code)}; done")
 
+    def _stand_up(self, loco) -> None:
+        """After a sit: SetFsmId(801), wait for a standing FSM, then back to main operation.
+        Never raises; a robot that does not stand stays seated and ``seated`` stays set."""
+        print("standing up from the sit")
+        code, _ = self._call(loco, "SetFsmId", FSM_SIT_TO_STAND)
+        if code != 0:
+            print(f"warning: sit to stand (SetFsmId({FSM_SIT_TO_STAND})) failed: {sdk.explain(code)}")
+            return
+        end = self.link.now() + limits.get("sit_stand_timeout_s")
+        fsm = None
+        while self.link.now() < end:
+            self.link.sleep(limits.get("fsm_poll_s"))
+            code, fsm = self._call(loco, "GetFsmId")
+            if code == 0 and fsm in sdk.STANDING_FSMS:
+                break
+        else:
+            print(f"warning: no standing FSM within {limits.get('sit_stand_timeout_s')} s "
+                  f"(last {sdk.fsm_name(fsm)})")
+            return
+        if fsm != FSM_MAIN:
+            code, _ = self._call(loco, "SetFsmId", FSM_MAIN)
+            self.link.sleep(limits.get("restore_fsm_s"))
+        self.seated = False
+        print(f"stood up (FSM {sdk.fsm_name(fsm)})")
+
     def reset(self) -> np.ndarray:
-        self.arm.release(1.0)                 # drop any stale arm_sdk takeover
+        self.arm.release()                    # drop any stale arm_sdk takeover
         q0 = self.arm.fresh_state(iface=self.args.iface)
         self._say(f"lowstate: first message, age {self.health.age_ms():.0f} ms, {self.health.rate():.0f}/s")
         self.overruns = 0
@@ -519,7 +552,7 @@ class RobotEnv(Env):
             self.trace.add(self.clock(), action, q, self.joint_vel(), self.joint_torque(),
                            None if imu is None else list(imu.quaternion), self._true_base())
         self.ticks += 1
-        if self.verbose and self.link.now() - self._health_at >= 1.0 - 1e-6:
+        if self.verbose and self.link.now() - self._health_at >= limits.get("health_period_s") - 1e-6:
             self._health_at = self.link.now()
             print(self.health_line())
         return q
@@ -568,6 +601,16 @@ class RobotEnv(Env):
             self.audio_calls += 1
         else:
             raise RuntimeError(f"onboard call {name!r} is not allowed (allowed: {sorted(LOCO_METHODS | AUDIO_METHODS)})")
+        if name in LOCO_FSM:                 # an FSM switch: SetFsmId itself, for its return code
+            fsm = LOCO_FSM[name]
+            print(f"{label}.{name}: SetFsmId({fsm})")
+            code, data = self._call(client, "SetFsmId", fsm, label=label)
+            self.last_command = {"name": name, "args": {"fsm_id": fsm}, "code": code}
+            if code != 0:
+                raise RuntimeError(f"{label}.SetFsmId({fsm}) ({name}) failed: "
+                                   f"{sdk.explain(code) if code != -1 else data}")
+            self.seated = True
+            return
         print(f"{label}.{name}({kw})")
         code, data = self._call(client, name, label=label, **kw)
         if code == -1 and label != "AudioClient":
@@ -609,7 +652,7 @@ class RobotEnv(Env):
         """What only the twin knows: did it fall, where did the base really go."""
         try:
             client = self.link.twin_client()
-            client.SetTimeout(5.0)
+            client.SetTimeout(limits.get("twin_summary_timeout_s"))
             client.Init()
             code, report = client.Summary()
         except Exception as e:
@@ -628,7 +671,7 @@ class RobotEnv(Env):
 # g1 status: is it the link, or is the robot refusing?
 # --------------------------------------------------------------------------
 
-def probe(iface: str, seconds: float = 5.0, verbose: bool = False, factory=None, loco_cls=None,
+def probe(iface: str, seconds: float = limits.get("status_probe_s"), verbose: bool = False, factory=None, loco_cls=None,
           subscribe=None, domain: Optional[int] = None) -> dict:
     """Read-only: count LowState for ``seconds``, ask the FSM, and say which of
     the two failures it is. Never publishes to arm_sdk, never changes the FSM.
@@ -651,13 +694,13 @@ def probe(iface: str, seconds: float = 5.0, verbose: bool = False, factory=None,
 
     subscribe(on_state)
     loco = loco_cls()
-    loco.SetTimeout(min(seconds, 5.0))
+    loco.SetTimeout(min(seconds, limits.get("rpc_timeout_s")))
     loco.Init()
     t0 = time.monotonic()
     code, fsm = sdk.call(loco, "GetFsmId", log=log, verbose=verbose)
     out["rpc"] = {"code": code, "fsm": fsm, "explain": sdk.explain(code), "elapsed_s": log[-1]["elapsed_s"]}
     while time.monotonic() - t0 < seconds:
-        time.sleep(0.05)
+        time.sleep(limits.get("lowstate_poll_s"))
     out["lowstate"] = {"count": health.count, "rate": health.count / seconds, "age_ms": health.age_ms()}
     msg = latest.get("msg")
     if msg is not None:
@@ -692,7 +735,7 @@ def status_main(argv: list[str]) -> int:
     iface = os.environ.get("UNITREE_IFACE")
     if not iface:
         p.error("set UNITREE_IFACE=<iface or IP> in .env")
-    seconds = 3.0
+    seconds = limits.get("status_probe_s")
     try:
         out = probe(iface, seconds, os.environ.get("G1_VERBOSE", "") not in ("", "0"))
     except ImportError as e:

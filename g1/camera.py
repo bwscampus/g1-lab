@@ -25,6 +25,8 @@ from typing import Callable, Optional
 
 import numpy as np
 
+from g1.core import limits
+
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".bmp")
 
 
@@ -89,7 +91,7 @@ class ClockedCamera(Camera):
     Frame ``k`` is due at ``k / fps`` seconds after the first poll; if several
     frames fell due since the last poll only the newest is published."""
 
-    def __init__(self, fps: float = 15.0) -> None:
+    def __init__(self, fps: float = limits.get("twin_camera_fps")) -> None:
         super().__init__()
         self.fps = fps
         self._t0: float | None = None
@@ -114,7 +116,7 @@ class ClockedCamera(Camera):
 class DirCamera(ClockedCamera):
     """Replay the image files in a directory, sorted by name."""
 
-    def __init__(self, path: str | Path, fps: float = 15.0, loop: bool = False) -> None:
+    def __init__(self, path: str | Path, fps: float = limits.get("twin_camera_fps"), loop: bool = False) -> None:
         super().__init__(fps)
         self.path = Path(path)
         self.loop = loop
@@ -142,7 +144,7 @@ class WebRTCCamera(Camera):
     the first frame arrives or raises. The robot accepts a single WebRTC client,
     so disconnect the Unitree app first."""
 
-    def __init__(self, ip: str, aes_key: str | None = None, timeout: float = 15.0) -> None:
+    def __init__(self, ip: str, aes_key: str | None = None, timeout: float = limits.get("camera_timeout_s")) -> None:
         super().__init__()
         self.ip = ip
         self.aes_key = aes_key
@@ -229,7 +231,8 @@ class ShmCamera(Camera):
     ``time.monotonic()``. ``start`` blocks until the first frame arrives or raises,
     like WebRTCCamera."""
 
-    def __init__(self, domain: int, timeout: float = 15.0, poll_s: float = 1 / 60) -> None:
+    def __init__(self, domain: int, timeout: float = limits.get("camera_timeout_s"),
+                 poll_s: float = 1 / limits.get("camera_poll_hz")) -> None:
         super().__init__()
         self.domain = domain
         self.timeout = timeout
@@ -284,7 +287,8 @@ class Viewer:
     new JPEG whenever the slot's seq changes; a slow browser skips frames),
     ``/frame`` one JPEG. Encoding happens on the request's thread."""
 
-    def __init__(self, camera: Camera, port: int = 8765, *, width: int = 960, quality: int = 80,
+    def __init__(self, camera: Camera, port: int = limits.get("view_port"), *,
+                 width: int = limits.get("view_width_px"), quality: int = limits.get("view_jpeg_quality"),
                  title: str = "g1", host: str = "127.0.0.1") -> None:
         self.camera = camera
         self.width = width
@@ -324,7 +328,7 @@ class Viewer:
                         while viewer.server is not None:
                             data, seq = viewer.jpeg()
                             if data is None or seq == last:
-                                time.sleep(1 / 30)
+                                time.sleep(1 / limits.get("view_fps"))
                                 continue
                             last = seq
                             self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n"
