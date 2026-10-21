@@ -66,7 +66,7 @@ def test_the_shipped_tasks_load():
                 parse_object(o)
             assert t["start"] is None or len(t["start"]) == 3
     t = load_task(find("sit_in_the_chair"))
-    assert t["instruction"] and t["objects"] == ["chair@-1.2,0.8"]
+    assert t["instruction"] and t["objects"] == ["chair@1.5,0"]
 
 
 def test_record_result_from_an_agent_status_or_the_checks(tmp_path):
