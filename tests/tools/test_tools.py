@@ -25,7 +25,8 @@ EXTREMES = {                       # (extreme args, cheap args for the pairwise 
     "walk_forward": ([{"distance_m": 0.1}, {"distance_m": 3.0}], {"distance_m": 0.1}),
     "turn": ([{"angle_deg": -180.0}, {"angle_deg": 180.0}, {"angle_deg": 0.0}, {"angle_deg": 3.0}],
              {"angle_deg": 5.0}),
-    "look": ([{"yaw_deg": -45.0}, {"yaw_deg": 45.0, "seconds": 0.5}], {"yaw_deg": 45.0}),
+    "look": ([{"yaw_deg": -45.0}, {"yaw_deg": 45.0, "seconds": 0.5}, {"yaw_deg": 145.0, "seconds": 3.0}, {"yaw_deg": -145.0, "seconds": 3.0}], {"yaw_deg": 45.0}),
+    "point": ([{"down_deg": 0.0, "rise_s": 0.8, "hold_s": 0.5}, {"down_deg": 60.0}], {"hold_s": 0.5, "rise_s": 1.0}),
     "hold": ([{"seconds": 0.1}, {"seconds": 30.0}], {"seconds": 0.5}),
     "tpose": ([{}, {"hold_s": 0.5, "rise_s": 1.0}], {"hold_s": 0.5, "rise_s": 1.0}),
     "sixseven": ([{}, {"reps": 1, "settle_s": 1.0, "hold_s": 0.1}], {"reps": 1, "settle_s": 1.0, "hold_s": 0.1}),
@@ -116,6 +117,31 @@ def test_move_ends_exactly_where_asked():
     assert validate_args(TOOLS["move"], {"dx_m": 9})[0]["dx_m"] == 3.0
 
 
+def test_point_moves_only_the_right_arm_and_lowers_it():
+    from g1.core.poses import STAND
+    from g1.tools.arms import R_ARM
+    p = TOOLS["point"](down_deg=0.0)
+    segs = p.segments()
+    assert all(set(s.goal) == set(R_ARM) for s in segs)
+    assert segs[0].goal[R_ARM[0]] < -1.57 and segs[0].goal[R_ARM[3]] == pytest.approx(1.57)   # level, aimed above the sag
+    assert TOOLS["point"](down_deg=60.0).segments()[0].goal[R_ARM[0]] > segs[0].goal[R_ARM[0]]   # steeper aims lower
+    assert segs[-1].goal == {j: STAND[j] for j in R_ARM}
+    actions = play(bookended(TOOLS["look"](yaw_deg=30), p))
+    assert actions[-1].q[WAIST_YAW] == pytest.approx(math.radians(30), abs=1e-6)              # the waist stays
+
+
+def test_sit_calls_setfsmid_3_once_and_the_twin_sits_on_the_chair_behind(capsys):
+    s = TOOLS["sit"]()
+    cmds = [a.command for a in play(s)]
+    assert cmds.count(("Sit", {})) == 1 and cmds[0] is None and play(s)[-1].weight == pytest.approx(1.0, abs=0.01)
+    env = sim_env(mode="standing", scene="room", sim_objects=[("chair", -0.37, 0.0, None)])   # seat edge 0.1 m behind
+    assert run(bookended(s), env) is True and env.violations == []
+    assert "seated on chair1" in env.twin.summary() and env.seated              # the twin plays no stand-up
+    fsms = [c["parameter"] for c in env.twin.services.log if c["api"] == 7101]
+    assert fsms[-2:] == ['{"data": 3}', '{"data": 801}']                         # sat, then the teardown's stand-up
+    assert "still seated" in capsys.readouterr().out
+
+
 def test_arm_path_waypoints_in_order_and_rejections():
     env = sim_env()
     tool = TOOLS["arm_path"](waypoints=WP)
@@ -153,13 +179,14 @@ def test_gestures_emit_one_onboard_call_and_the_twin_waves(capsys):
     tasks = [c for c in env.twin.services.log if c["api"] == 7106]
     assert [(c["service"], c["parameter"], c["code"]) for c in tasks] == [("sport", '{"data": 1}', 0)]   # SetArmTask, as the SDK sends it
     assert env.q_min[23] < -0.8                                  # the onboard wave raised the right arm
-    assert not any(t.needs_loco for t in menu(True)) and [t.name for t in menu(True, True) if t.needs_loco] == ["wave_hand", "shake_hand"]
+    assert not any(t.needs_loco for t in menu(True)) and [t.name for t in menu(True, True) if t.needs_loco] == ["wave_hand", "shake_hand", "sit"]
     with pytest.raises(ValueError, match="allowed onboard method"):
         DampGesture.check_definition()
     with pytest.raises(ValueError, match="needs_loco"):
         NoLoco.check_definition()
-    assert [t["function"]["name"] for t in function_schemas(menu(True))] == ["move", "arm_path", "hold", "check", "say", "done", "give_up"]
-    assert [t["function"]["name"] for t in function_schemas(menu(True, True))][4:6] == ["wave_hand", "shake_hand"]
+    assert [t["function"]["name"] for t in function_schemas(menu(True))] == ["move", "arm_path", "look", "point", "hold", "check", "say",
+                                                                           "done", "give_up"]
+    assert [t["function"]["name"] for t in function_schemas(menu(True, True))][6:8] == ["wave_hand", "shake_hand"]
 
 
 # --------------------------------------------------------------------------
@@ -185,11 +212,13 @@ def test_validate_args():
 
 
 def test_menu_and_parse():
-    assert [t.name for t in menu(False)] == ["arm_path", "hold", "check", "say", "done", "give_up"]
-    assert [t.name for t in menu(True)] == ["move", "arm_path", "hold", "check", "say", "done", "give_up"]
-    assert [t.name for t in menu(True, True)] == ["move", "arm_path", "hold", "check", "wave_hand", "shake_hand",
-                                                 "say", "done", "give_up"]
-    assert {n for n in TOOLS if not TOOLS[n].visible} == {"walk_forward", "turn", "look", "tpose", "sixseven",
+    assert [t.name for t in menu(False)] == ["arm_path", "look", "point", "hold", "check", "say", "done", "give_up"]
+    assert [t.name for t in menu(True)] == ["move", "arm_path", "look", "point", "hold", "check", "say", "done",
+                                            "give_up"]
+    assert [t.name for t in menu(True, True)] == ["move", "arm_path", "look", "point", "hold", "check", "wave_hand",
+                                                 "shake_hand", "sit", "say", "done", "give_up"]
+    assert "sit" not in [t.name for t in menu(False, True)]                    # never on the gantry
+    assert {n for n in TOOLS if not TOOLS[n].visible} == {"walk_forward", "turn", "tpose", "sixseven",
                                                           "takeover", "handback"}
     m = parse_tool("move:1:0.3:-45")
     assert m.args == {"dx_m": 1.0, "dy_m": 0.3, "dyaw_deg": -45.0, "note": ""}

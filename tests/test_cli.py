@@ -145,12 +145,12 @@ def task_dir(tmp_path, name="t", **spec):
     return d
 
 
-def test_g1_has_four_commands_and_run_three_flags(capsys):
+def test_g1_has_five_commands_and_run_three_flags(capsys):
     assert main([]) == 0 and "g1 run TASK --sim" in capsys.readouterr().out
     with pytest.raises(SystemExit):
         main(["fly"])
     assert "unknown command" in capsys.readouterr().err
-    for gone in ("task", "tools", "limits", "camera", "decide", "episode", "demo", "scene", "new"):
+    for gone in ("task", "tools", "camera", "decide", "episode", "demo", "scene", "new"):
         with pytest.raises(SystemExit):
             main([gone])
     with pytest.raises(SystemExit):
@@ -292,3 +292,14 @@ def test_label_run_marks_an_agent_record(tmp_path):
     assert json.loads((out / "status.json").read_text())["human_outcome"] == "success"
     assert json.loads((out / "episode.json").read_text())["outcome"] == "success"
     assert json.loads((out / "events.jsonl").read_text())["event"] == "human_evaluation"
+
+
+def test_g1_limits_prints_every_limit_as_one_table(capsys):
+    from g1.core import limits
+    assert main(["limits"]) == 0
+    out = capsys.readouterr().out
+    assert all(name in out for name in limits.NAMES) and f"{len(limits.NAMES)} limits" in out
+    assert main(["limits", "guess"]) == 0
+    out = capsys.readouterr().out
+    assert "with source 'guess'" in out and "control_dt_s" not in out            # control_dt_s is a robot fact
+    assert main(["limits", "vibes"]) == 2

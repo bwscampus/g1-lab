@@ -97,6 +97,8 @@ def test_a_bad_limits_file_is_refused_with_the_name(tmp_path):
     broken(lambda d: d["limits"].pop("max_tokens"), "missing .*max_tokens")
     broken(lambda d: d["limits"].update(max_tokns=d["limits"]["max_tokens"]), "unknown .*max_tokns")
     broken(lambda d: d["limits"]["walk_speed"].update(value="fast"), "walk_speed.value must be a number")
+    broken(lambda d: d["limits"]["reasoning_effort"].update(value="a little"), "reasoning_effort.value must be one of")
+    broken(lambda d: d["limits"]["vlm_model"].update(value=""), "vlm_model.value must be a word")
     broken(lambda d: d["limits"]["walk_speed"].update(value=-1), "must not be negative")
     broken(lambda d: d["limits"]["walk_speed"].update(value=0.5), "walk_speed .* must not exceed base_vx_max")
     broken(lambda d: d["limits"]["side_speed"].update(value=0.3), "side_speed .* must not exceed base_vy_max")
@@ -105,3 +107,22 @@ def test_a_bad_limits_file_is_refused_with_the_name(tmp_path):
     broken(lambda d: d.update(version=2), "version 1")
     with pytest.raises(ValueError, match="not found"):
         limits.load(tmp_path / "none.json")
+
+
+def test_robot_and_twin_timing_is_never_a_literal():
+    # bring-up, teardown and RPC timeouts move the real robot: they come from limits.json
+    pattern = re.compile(r"(?:sleep|SetTimeout|release)\(\s*[0-9.]+\s*\)")
+    for rel in ("g1/envs/robot.py", "g1/envs/sim.py", "g1/twin/core.py", "g1/twin/onboard.py", "g1/twin/main.py",
+                "g1/twin/services.py", "g1/cli.py"):
+        hits = pattern.findall((ROOT / rel).read_text())
+        assert not hits, (rel, hits)
+
+
+def test_env_holds_nothing_editable():
+    # .env is private to one machine; every setting anyone may edit is in limits.json
+    from g1 import vlm
+    assert vlm.DEFAULT_MODEL == limits.get("vlm_model") and vlm.REASONING_EFFORT == limits.get("reasoning_effort")
+    keys = [line.split("=")[0].lstrip("# ").strip() for line in (ROOT / ".env.example").read_text().splitlines()
+            if "=" in line and line.lstrip("# ").split("=")[0].strip().isupper()]
+    assert set(keys) <= {"HF_TOKEN", "VLM_BASE_URL", "UNITREE_IFACE", "UNITREE_ROBOT_IP", "UNITREE_AES_128_KEY",
+                         "UNITREE_DOMAIN", "G1_VERBOSE"}, keys

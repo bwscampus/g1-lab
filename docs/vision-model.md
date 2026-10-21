@@ -6,14 +6,28 @@ any model on the router that takes images and returns JSON.
 
 ```
 HF_TOKEN        a fine-grained token with "Make calls to Inference Providers"
-VLM_MODEL       optional: the model id (default Qwen/Qwen3-VL-30B-A3B-Instruct, verified live);
-                a suffix such as ":deepinfra" pins one of the router's providers
 VLM_BASE_URL    optional: another Hugging Face endpoint, e.g. a dedicated Inference Endpoint
-VLM_MAX_TOKENS  optional: the reply budget, reasoning included (default: limit max_tokens)
 ```
 
-Put them in `.env` in the repo root (`cp .env.example .env`; git-ignored; exported
-variables win) or export them. A task with an `instruction` uses them; try one on the twin
+The rest is in `configs/limits.json` (`g1 limits`), not `.env`:
+
+```
+vlm_model         the model id; a suffix such as ":deepinfra" pins one of the router's providers
+                  (Qwen/Qwen3-VL-30B-A3B-Instruct is the verified fast fallback)
+reasoning_effort  sent as reasoning_effort (none|minimal|low|medium|high, or default to leave it
+                  out); dropped if the server rejects it
+max_tokens        the reply budget, reasoning included
+```
+
+Setting `VLM_MODEL`, `VLM_MAX_TOKENS` or `VLM_REASONING_EFFORT` in `.env` is refused with a pointer to
+the file, so an old `.env` never silently overrides it.
+
+Thinking time is most of a decision's wall time. Left to the provider, DeepSeek-V4.1-Flash
+spent 3 to 52 s per decision and once ran into the 60 s `step_timeout_s`; the agent prints the
+median and longest think at the end of every run, and `usage.jsonl` records the effort sent.
+
+Put the token in `.env` in the repo root (`cp .env.example .env`; git-ignored; exported
+variables win) or export it. A task with an `instruction` uses them; try one on the twin
 before spending a robot run: `g1 run find_the_mug --sim`.
 
 ## What the model is sent

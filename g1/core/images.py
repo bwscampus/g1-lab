@@ -18,6 +18,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from g1.core import limits
+
 
 def read_rgb(path: Path | str) -> np.ndarray:
     """An image file as a uint8 RGB array. Raises IOError when it cannot be read."""
@@ -28,7 +30,7 @@ def read_rgb(path: Path | str) -> np.ndarray:
         raise IOError(f"could not read {path}: {e}") from None
 
 
-def write_png(path: Path | str, image_rgb: np.ndarray, compress: int = 3) -> None:
+def write_png(path: Path | str, image_rgb: np.ndarray, compress: int = limits.get("png_compress_level")) -> None:
     """Lossless: the exact RGB array reads back."""
     try:
         Image.fromarray(_rgb(image_rgb)).save(path, format="PNG", compress_level=compress)

@@ -33,7 +33,7 @@ import numpy as np
 from jsonschema import Draft202012Validator, ValidationError
 
 from g1.core import limits
-from g1.core.config import HEAD_CAMERA_FOVY, NUM_JOINTS
+from g1.core.config import HEAD_CAMERA_FOV_H, HEAD_CAMERA_PITCH, NUM_JOINTS
 from g1.core.worker import Worker
 from g1.tools import Tool, function_schemas, joint_table, menu, output_schema, parameters, prompt_catalog, validate_args
 from g1.vlm import IMAGE_WIDTH, VLMClient, image_part
@@ -189,20 +189,20 @@ def instructions(context_menu: Sequence[type[Tool]], *, can_walk: bool, max_deci
     walk = ("Walking tools drive the base; they are offered because the base may be driven now."
             if can_walk else
             "The base cannot be driven in this run, so no walking tools are offered: search by looking.")
-    fov_h = 2 * math.degrees(math.atan(math.tan(math.radians(HEAD_CAMERA_FOVY / 2)) * 4 / 3))
+    fov_h, pitch = HEAD_CAMERA_FOV_H, math.degrees(HEAD_CAMERA_PITCH)
     joints = ""
     if any(t.name == "arm_path" for t in context_menu):
         rows = "\n".join(f"- {r['name']}: [{r['min']}, {r['max']}] rad, stand {r['stand']}" for r in joint_table())
         joints = f"""
 Joints arm_path may command (radians; the stand pose is where every run starts and ends):
 {rows}
-- Conventions verified on the model: elbow 0 is a 90-degree bend with the forearm forward, about 1.57 is a straight arm, more negative bends the forearm up; shoulder_roll +1.57 (left) / -1.57 (right) with shoulder_pitch 0 and elbow 1.47 is a T-pose; wrist_roll -1.57 (left) / +1.57 (right) turns the palms up; waist_yaw positive looks LEFT.
+- Conventions verified on the model: elbow 0 is a 90-degree bend with the forearm forward, about 1.57 is a straight arm, more negative bends the forearm up; shoulder_roll +1.57 (left) / -1.57 (right) with shoulder_pitch 0 and elbow 1.47 is a T-pose; wrist_roll -1.57 (left) / +1.57 (right) turns the palms up; shoulder_pitch -1.57 with elbow 1.57 holds a straight arm level and forward; waist_yaw positive looks LEFT.
 """
     text = f"""You control a Unitree G1 humanoid robot through a small set of tools, one decision per turn.
 
 Robot and camera conventions:
 - {NUM_JOINTS} joints in DDS order (legs 0-11, waist 12-14, left arm 15-21, right arm 22-28), radians. state.joint_pos, joint_vel and joint_torque are measured at the observation time. The host commands only the waist and arms (arm_sdk) and, for walking tools, the base velocity (LocoClient); the legs balance on their own.
-- One forward head camera (RGB, no depth) on the torso, pointing 47 degrees down: the floor 1-3 m ahead fills the lower half of the image, and the image spans about {fov_h:.0f} degrees horizontally. Pixel positions are not metric distances; judge distance from apparent size and from where an object meets the floor.
+- One forward head camera (RGB, no depth) on the torso, pointing {pitch:.0f} degrees down: the floor 1-3 m ahead fills the lower half of the image, and the image spans about {fov_h:.0f} degrees horizontally. Pixel positions are not metric distances; judge distance from apparent size and from where an object meets the floor.
 - +yaw is LEFT (counter-clockwise). state.base_pose_cmd is the dead-reckoned [x forward, y left, yaw degrees] since the start, integrated from the commands sent; base_pose_env is the simulator's own measurement and null on the real robot. state.waist_yaw_deg is where the camera looks relative to the feet.
 - {walk}
 {joints}{notes}
@@ -376,4 +376,5 @@ class VLMDecider(Decider):
 
     def _call_details(self) -> dict:
         return {"usage": self.client.last_usage, "response_mode": self.client.response_mode,
+                "reasoning_effort": self.client.reasoning_effort,
                 "request_elapsed_s": round(self.client.last_elapsed, 6)}

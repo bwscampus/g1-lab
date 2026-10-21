@@ -132,7 +132,8 @@ def test_observation_and_feedback_follow_the_contract():
     assert o[0]["images"] == [{"name": "head", "width": 64, "height": 48, "captured_age_s": o[0]["images"][0]["captured_age_s"]}]
     st = o[0]["state"]
     assert len(st["joint_pos"]) == 29 and len(st["joint_vel"]) == 29 and len(st["joint_torque"]) == 29
-    assert st["base_pose_cmd"] == [0.0, 0.0, 0.0] and st["base_pose_env"] == pytest.approx([0.0, 0.0, 0.0], abs=0.02)
+    assert st["base_pose_cmd"] == [0.0, 0.0, 0.0] and st["base_pose_env"][:2] == pytest.approx([0.0, 0.0], abs=0.02)
+    assert st["base_pose_env"][2] == pytest.approx(0.0, abs=0.5)   # degrees: the takeover's hold settles the stance a little
     assert o[0]["extra"] == {"env_step": 0, "decisions_left": 10, "can_walk": True}
     prev = o[1]["previous_result"]
     fb = prev["result"]["execution_feedback"]
@@ -256,6 +257,19 @@ def test_gestures_need_the_onboard_controller(capsys):
                   menu(True, True), max_decisions=5, has_loco=True)
     assert run(agent, env, max_time=120) is True                      # the twin plays the onboard gesture
     assert agent.result == "completed" and any(c["api"] == 7106 for c in env.twin.services.log)
+    agent.close()
+
+
+def test_seated_robot_walks_no_more():
+    dec = Sequence([("sit", {}), ("move", {"dx_m": 0.2}), ("wave_hand", {}), ("hold", {"seconds": 0.3}),
+                    ("done", {"summary": "s", "hindsight": ""})])
+    env = check(mode="standing", scene="room", sim_objects=[("chair", -0.37, 0.0, None)])
+    agent = Agent("sit", dec, menu(True, True), max_decisions=8, has_loco=True)
+    assert run(agent, env, max_time=120) is True
+    o = observations(dec)
+    assert "seated" in o[2]["previous_result"]["error"] and "seated" in o[3]["previous_result"]["error"]
+    assert agent.result == "completed" and "previous_result" in o[1] and "error" not in o[1]["previous_result"]
+    assert env.base_ticks == 0 and "seated on chair1" in env.twin.summary()
     agent.close()
 
 

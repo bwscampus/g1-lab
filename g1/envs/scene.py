@@ -37,7 +37,7 @@ YCB = {        # object name: YCB id (google_16k scans: textured.obj + texture_m
     "mustard": "006_mustard_bottle",
 }
 YCB_URL = "https://ycb-benchmarks.s3.amazonaws.com/data/google/{id}_google_16k.tgz"
-PRIMITIVE_OBJECTS = ("pencil",)
+PRIMITIVE_OBJECTS = ("pencil", "chair")      # chair: free-standing, on the floor, facing the start
 OBJECTS = tuple(YCB) + PRIMITIVE_OBJECTS
 
 # Room layout (metres)
@@ -160,6 +160,19 @@ def parse_object(spec: str) -> tuple[str, float, float, Optional[float]]:
     return m.group(1), float(m.group(2)), float(m.group(3)), None if m.group(4) is None else float(m.group(4))
 
 
+def _chair(w, tag: str, x: float, y: float, back: tuple[float, float], material: str) -> None:
+    """A chair from boxes, seat centre at (x, y), its back on the ``back`` side (a unit axis
+    vector in the floor plane). Seat 0.44 m square, its top 0.47 m above the floor."""
+    import mujoco
+    B = mujoco.mjtGeom.mjGEOM_BOX
+    bx, by = back
+    w.add_geom(name=f"{tag}_seat", type=B, size=[0.22, 0.22, 0.02], pos=[x, y, 0.45], material=material)
+    w.add_geom(name=f"{tag}_back", type=B, size=[0.22 * abs(by) + 0.02 * abs(bx), 0.22 * abs(bx) + 0.02 * abs(by), 0.25],
+               pos=[x + 0.2 * bx, y + 0.2 * by, 0.72], material=material)
+    for i, (dx, dy) in enumerate(((0.18, 0.18), (-0.18, 0.18), (0.18, -0.18), (-0.18, -0.18))):
+        w.add_geom(name=f"{tag}_leg{i}", type=B, size=[0.02, 0.02, 0.215], pos=[x + dx, y + dy, 0.215], material=material)
+
+
 def build_room(spec, objects: Sequence[tuple[str, float, float, Optional[float]]] = (),
                camera_size: Optional[tuple[int, int]] = None) -> None:
     """Add the room, furniture, lights and objects to an MjSpec of the G1 scene."""
@@ -208,11 +221,8 @@ def build_room(spec, objects: Sequence[tuple[str, float, float, Optional[float]]
     w.add_geom(name="table_top", type=B, size=[0.6, 0.35, 0.02], pos=[tx, ty, 0.75], material=wood)
     for i, (dx, dy) in enumerate(((0.55, 0.3), (-0.55, 0.3), (0.55, -0.3), (-0.55, -0.3))):
         w.add_geom(name=f"table_leg{i}", type=B, size=[0.03, 0.03, 0.365], pos=[tx + dx, ty + dy, 0.365], material=wood)
-    for k, (chx, chy, back_dy) in enumerate(((tx - 0.3, ty + 0.75, 0.2), (tx + 0.3, ty + 0.75, 0.2))):
-        w.add_geom(name=f"chair{k}_seat", type=B, size=[0.22, 0.22, 0.02], pos=[chx, chy, 0.45], material=wood)
-        w.add_geom(name=f"chair{k}_back", type=B, size=[0.22, 0.02, 0.25], pos=[chx, chy + back_dy, 0.72], material=wood)
-        for i, (dx, dy) in enumerate(((0.18, 0.18), (-0.18, 0.18), (0.18, -0.18), (-0.18, -0.18))):
-            w.add_geom(name=f"chair{k}_leg{i}", type=B, size=[0.02, 0.02, 0.215], pos=[chx + dx, chy + dy, 0.215], material=wood)
+    for k, (chx, chy) in enumerate(((tx - 0.3, ty + 0.75), (tx + 0.3, ty + 0.75))):
+        _chair(w, f"table_chair{k}", chx, chy, (0.0, 1.0), wood)
     w.add_light(name="room_light_a", pos=[0.5, 0.0, 2.4], dir=[0, 0, -1], diffuse=[0.7, 0.7, 0.7])
     w.add_light(name="room_light_b", pos=[2.5, 1.5, 2.4], dir=[0, 0, -1], diffuse=[0.5, 0.5, 0.5])
     # objects
@@ -229,6 +239,9 @@ def build_room(spec, objects: Sequence[tuple[str, float, float, Optional[float]]
             mat.textures[mujoco.mjtTextureRole.mjTEXROLE_RGB] = f"{tag}_tex"
             body = w.add_body(name=tag, pos=[x, y, (-lo[2] if z is None else z)])
             body.add_geom(name=f"{tag}_geom", type=mujoco.mjtGeom.mjGEOM_MESH, meshname=f"{tag}_mesh", material=f"{tag}_mat")
+        elif name == "chair":                       # its seat toward the start, its back away from it
+            back = (math.copysign(1.0, x), 0.0) if abs(x) >= abs(y) else (0.0, math.copysign(1.0, y))
+            _chair(w, tag, x, y, back, wood)
         elif name == "pencil":
             body = w.add_body(name=tag, pos=[x, y, (0.0035 if z is None else z)])
             lying = [0.7071068, 0.0, 0.7071068, 0.0]        # cylinder axis z -> x

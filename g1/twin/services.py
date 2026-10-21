@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import json
 
+from g1.core import limits
+
 NOT_IMPLEMENTED = 3203
 BAD_PARAMETER = 3204
 
@@ -34,7 +36,7 @@ class Services:
         self.summary = summary                 # () -> dict, the twin's own report
         self.clock = clock                     # sim seconds
         self.voice = voice                     # the prefix spoken text is printed with
-        self.volume = 50
+        self.volume = int(limits.get("twin_volume"))
         self.log: list[dict] = []              # every call: t, service, api, parameter, code
         self.spoken: list[str] = []
 

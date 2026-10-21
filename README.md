@@ -11,16 +11,19 @@ MuJoCo twin of the robot and on the robot.
 ```
 g1 run tpose --sim                   # a task on the twin, in the MuJoCo window: the robot code, over DDS
 g1 run find_the_mug --sim            # the model searches a room (needs HF_TOKEN)
+g1 run point_at_the_mug --sim        # demo: the waist finds the mug, the right arm points at it
+g1 run sit_in_the_chair --sim        # demo: find a chair, back up to it and sit (the twin does not stand up again)
 g1 run tpose --mode gantry           # the robot, hanging in a gantry (never walks)
 g1 run find_the_mug --mode standing --view   # the robot on its own feet (may walk); its camera in a browser
 g1 status                            # read-only: is it the link, or is the robot refusing?
 g1 twin fetch                        # once: the twin's model, walker and room
 g1 trace compare RUN_A RUN_B         # how far the twin is from the robot on the same task
+g1 limits [guess]                    # every number and default as one table (or only the guesses)
 ```
 
 That is the whole command line. Everything else lives in a file: what to do in the task's
-`task.json`, every number in `configs/limits.json`, the robot's address and the model's key in
-`.env`. `G1_VERBOSE=1` prints every SDK call and a health line a second.
+`task.json`, every number and default (the model included) in `configs/limits.json`, and in
+`.env` only what is private to one machine: the model's key and the robot's address and key. `G1_VERBOSE=1` prints every SDK call and a health line a second.
 
 Two words to know, both GPT-Policy's:
 
@@ -72,8 +75,9 @@ cp .env.example .env            # git-ignored; exported variables win over it
 ```
 
 Put a Hugging Face token in it (`HF_TOKEN=hf_...`; a fine-grained token with "Make calls to
-Inference Providers", from https://huggingface.co/settings/tokens) and, optionally, the model
-(`VLM_MODEL`, default `Qwen/Qwen3-VL-30B-A3B-Instruct`; see `docs/vision-model.md`). Then:
+Inference Providers", from https://huggingface.co/settings/tokens). The model and every other
+setting are in `configs/limits.json` (`vlm_model`; `g1 limits` prints them all; see
+`docs/vision-model.md`). Then:
 
 ```
 g1 run find_the_mug --sim            # a whole task on the twin; recorded, no questions asked
@@ -216,8 +220,9 @@ tests/            pytest, mirroring g1/; everything runs on the twin in-process
 ```
 
 **Every number is in one file.** Speeds, the ranges the model may ask for, timeouts, settle
-tolerances, the token budget, the safe-return timing: `configs/limits.json`, each entry with
-a unit, a note and a `source` (`guess` = never verified, review these first).
+tolerances, the model and its token budget, the robot's bring-up and teardown waits, the twin's
+gains and stand-ins: `configs/limits.json`, each entry with a unit, a note and a `source`
+(`guess` = never verified, review these first). `g1 limits` prints it as one table.
 `G1_LIMITS=other.json g1 ...` swaps it for a run.
 
 **Ctrl-C is safe.** An interrupted run (Ctrl-C, the task's `max_time_s`, an error) never drops

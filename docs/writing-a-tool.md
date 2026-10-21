@@ -79,8 +79,10 @@ radians, merged onto the previous pose, so a segment may set only some joints) o
   `STAND_Q` the stand value. Verified on the model: elbow 0 is a 90° bend with the forearm forward, ~1.57
   is a straight arm, more negative bends the forearm up; `shoulder_roll` +1.57 (left) /
   −1.57 (right) with `shoulder_pitch` 0 and elbow 1.47 is a T-pose; `wrist_roll` −1.57 (left)
-  / +1.57 (right) turns the palms up; `waist_yaw` positive looks LEFT; `waist_pitch`
-  positive bends forward (limits ±0.52 rad).
+  / +1.57 (right) turns the palms up; `shoulder_pitch` −1.57 with elbow 1.57 holds a straight
+  arm level and forward (less negative tips it down; at arm_sdk's gains it sags ~12° when level,
+  `point_sag_deg`); `waist_yaw` positive looks LEFT; `waist_pitch` positive bends forward
+  (limits ±0.52 rad).
 * Base motion: a segment with `base=` moves the robot (`LocoClient.Move` on the robot behind
   `--mode standing`; the twin walks it with `--sim`, a few cm and degrees off). Use `g1/tools/move.py`'s `ticks()` so the
   duration is whole ticks and `distance = v * t` is exact; keep speeds under
@@ -91,9 +93,13 @@ radians, merged onto the previous pose, so a segment may set only some joints) o
   arms to the onboard controller, weight 1→0, the call, take them back; `needs_loco = True`,
   the twin plays stand-ins) and `AUDIO_METHODS` (`TtsMaker` — `say` in `g1/tools/speech.py`: hold
   the pose for as long as the text takes; the twin prints it). The robot env refuses any other
-  name, and a tool declaring one fails at import. FSM, damp, torque, sit, squat, raw audio
-  playback and volume are out of reach by construction — the legs belong to the onboard
-  controller, so a squat is not a tool this robot can be given through arm_sdk.
+  name, and a tool declaring one fails at import. One FSM is allow-listed: `Sit`
+  (`config.LOCO_FSM`, the `sit` tool in `g1/tools/posture.py`, `needs_base` so never on the
+  gantry): the robot env sends it as `SetFsmId(3)` (for its return code), the agent then refuses
+  every base and onboard tool, and the teardown stands the robot up with `SetFsmId(801)`.
+  Any other FSM, damp, torque, squat, raw audio playback and volume are out of reach by
+  construction — the legs belong to the onboard controller, so a squat is not a tool this robot
+  can be given through arm_sdk.
 
 ## What happens to it
 

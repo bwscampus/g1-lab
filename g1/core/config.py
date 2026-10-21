@@ -8,6 +8,7 @@ the twin's; ``tests/core/test_config.py`` asserts they still do.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -91,11 +92,18 @@ def joint_index(name: str) -> int:
 HEAD_CAMERA_POS = (0.0576235, 0.01753, 0.42987)   # m, in torso_link
 HEAD_CAMERA_PITCH = 0.8307767                     # rad, looking down
 HEAD_CAMERA_FOVY = 58.0                           # degrees, vertical
-HEAD_CAMERA_SIZE = (480, 640)                     # sim render height, width
+HEAD_CAMERA_SIZE = (int(limits.get("twin_camera_height_px")), int(limits.get("twin_camera_width_px")))   # sim render H, W
+# horizontal field of view of the sim render, from the vertical one and the aspect
+HEAD_CAMERA_FOV_H = 2 * math.degrees(math.atan(math.tan(math.radians(HEAD_CAMERA_FOVY / 2))
+                                               * HEAD_CAMERA_SIZE[1] / HEAD_CAMERA_SIZE[0]))
 
 # The only onboard LocoClient calls a tool may make (Action.command). Everything else
-# (FSM, damp, torque, sit, squat, stand height) is unreachable from a model reply by construction.
-LOCO_METHODS = frozenset({"WaveHand", "ShakeHand"})
+# (FSM switching, damp, torque, squat, stand height) is unreachable from a model reply by construction.
+# Sit is the one FSM a tool may enter, and only as this name: RobotEnv sends it as SetFsmId(3)
+# (LocoClient.Sit drops the return code), and the teardown stands the robot up (SetFsmId(801)).
+LOCO_METHODS = frozenset({"WaveHand", "ShakeHand", "Sit"})
+LOCO_FSM = {"Sit": 3}                     # allow-listed names that are an FSM switch
+FSM_SIT, FSM_SIT_TO_STAND = 3, 801
 # The only call a tool may make on the audio service ("voice"): text-to-speech. PlayStream
 # (arbitrary bytes), SetVolume and LedControl are not reachable from a reply; volume is a flag.
 AUDIO_METHODS = frozenset({"TtsMaker"})

@@ -38,7 +38,7 @@ from g1.agent.decider import (AgentContext, AgentTurn, Decider, Decision, Protoc
 from g1.agent.episode import EpisodeWriter, StepRecord
 from g1.core import limits
 from g1.core.action import EPS, Action, Obs, Runnable
-from g1.core.config import CONTROL_DT, UPPER_BODY, joint_index
+from g1.core.config import CONTROL_DT, LOCO_FSM, UPPER_BODY, joint_index
 from g1.tools import STEP_MAX, Tool, menu, prefixed
 from g1.tools.control import Handback, Takeover, dry_run
 from g1.vlm import Overloaded, QuotaExceeded
@@ -126,6 +126,7 @@ class Agent(Runnable):
         self._turn: Optional[AgentTurn] = None
         self._wall0 = 0.0
         self._wait_until = 0.0
+        self._seated = False                      # a sit finished: nothing may walk or call onboard again
         self.decider.start(self.context)
         self._event("protocol", self.context.record())
         self._enter_sub("takeover", 0.0, Takeover())
@@ -158,6 +159,13 @@ class Agent(Runnable):
             if self.recorder.meta.get("result") is None:
                 self.recorder.finish(status, steps=len(self.steps))
             final = self.recorder.close(status, human=human, error=self.error)
+            calls = self.recorder.usage_calls
+            if calls:
+                secs = sorted(float(c.get("elapsed_s", 0.0)) for c in calls)
+                reasoning = [((c.get("usage") or {}).get("completion_tokens_details") or {}).get("reasoning_tokens") or 0
+                             for c in calls]
+                self._say(f"model: {len(calls)} calls, thinking {secs[len(secs) // 2]:.1f} s median / "
+                          f"{secs[-1]:.1f} s max, reasoning tokens up to {max(reasoning)}")
             self._say(f"recorded to {final}")
 
     # -- state helpers ---------------------------------------------------------------
@@ -458,6 +466,7 @@ class Agent(Runnable):
                     self._close_chunk("running", t, obs)
                 return self._emit(a)
             self._close_chunk("completed", t, obs)
+            self._seated = self._seated or self._tool.command in LOCO_FSM
             self._event("tool_timing", {"step": self._env_step, "name": self._tool.name,
                                         "execute_s": t - self._act_t0, "status": "completed"})
             self._pending = {"name": self._tool.name, "env_step": self._env_step, "duration": t - self._act_t0,
@@ -470,8 +479,10 @@ class Agent(Runnable):
         self._event("decision_timing", {"step": self._env_step, "observation_prepare_s": self._observe_prep,
                                         "agent_decide_s": time.monotonic() - self._wall0, "status": status,
                                         **({"attempt": self._attempt} if self._attempt else {})})
-        if self.recorder is not None and self.decider.last_call is not None:
-            self.recorder.usage(self.decider.last_call)
+        call = self.decider.last_call
+        # on a timeout the request is still out and last_call is the one before it
+        if self.recorder is not None and call is not None and call.get("request_id") == self._request_id:
+            self.recorder.usage(call)
 
     def _model_error(self, t: float, obs: Obs, e: Optional[BaseException]) -> Action:
         if isinstance(e, ProtocolError):
@@ -484,7 +495,7 @@ class Agent(Runnable):
                 self._event("model_retry_exhausted", {"step": self._env_step, "retries": self._attempt,
                                                       "reason": reason, "error": str(e)})
                 return self._fail(t, f"model overloaded: {reason}")
-            delay = self.retry_delays[self._attempt] + random.uniform(0, 0.5)
+            delay = self.retry_delays[self._attempt] + random.uniform(0, limits.get("retry_jitter_s"))
             self._attempt += 1
             self._event("model_retry", {"step": self._env_step, "retry": self._attempt,
                                         "max_retries": len(self.retry_delays), "delay_s": delay,
@@ -530,6 +541,9 @@ class Agent(Runnable):
         if tool.needs_loco and not self.has_loco:
             return self._reject(t, obs, d.name, "tool_rejected: no onboard controller for gestures in this env",
                                 raw=d.raw, arguments=d.arguments)
+        if self._seated and (tool.needs_base or tool.needs_loco):
+            return self._reject(t, obs, d.name, "tool_rejected: the robot is seated; it cannot walk, gesture or "
+                                "sit again (end with done)", raw=d.raw, arguments=d.arguments)
         # their IK check before submission: plan it from the commanded pose, reject on any violation
         verdict = dry_run(tool, self._cmd, self.joints)
         if verdict["status"] != "ok":
@@ -595,6 +609,7 @@ def build_agent(task: dict, *, env_name: str, can_walk: bool, has_loco: bool, ru
     recorder = EpisodeWriter(runs, env=env_name, instruction=task["instruction"], model=decider.model,
                              tools=[t.name for t in tools], allow_base=can_walk,
                              extra={"task": task["name"], "max_decisions": task["max_decisions"],
+                                    "reasoning_effort": getattr(getattr(decider, "client", None), "reasoning_effort", None),
                                     "step_timeout": limits.get("step_timeout_s"), "safety_notes": notes})
     print(f"recording to {recorder.dir}")
     return Agent(task["instruction"], decider, tools, recorder=recorder, max_decisions=task["max_decisions"],

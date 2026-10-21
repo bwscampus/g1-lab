@@ -7,10 +7,11 @@ from g1.envs.scene import OBJECTS, YCB, build_room, missing, parse_object
 def test_parse_object():
     assert parse_object("mug@1.5,1.2") == ("mug", 1.5, 1.2, None)
     assert parse_object("pencil@-0.5,0.25,0.79") == ("pencil", -0.5, 0.25, 0.79)
-    for bad in ("mug", "mug@1", "chair@1,2", "mug@a,b"):
+    assert parse_object("chair@2.6,1.6") == ("chair", 2.6, 1.6, None)
+    for bad in ("mug", "mug@1", "sofa@1,2", "mug@a,b"):
         with pytest.raises(Exception):
             parse_object(bad)
-    assert set(YCB) < set(OBJECTS) and "pencil" in OBJECTS
+    assert set(YCB) < set(OBJECTS) and {"pencil", "chair"} <= set(OBJECTS)
 
 
 def test_room_needs_assets_message(tmp_path, monkeypatch):

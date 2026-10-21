@@ -38,7 +38,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--sim-objects", type=parse_object, nargs="*", default=[], metavar="NAME@X,Y[,Z]")
     p.add_argument("--sim-obstacle", type=_xyz, default=None, metavar="X,Y,Z")
     p.add_argument("--camera-size", type=_size, default=None, metavar="HxW",
-                   help="head camera size (default 480x640; the robot streams 720x1280)")
+                   help=f"head camera size (default {HEAD_CAMERA_SIZE[0]}x{HEAD_CAMERA_SIZE[1]}; the robot streams 720x1280)")
     p.add_argument("--camera-fps", type=float, default=limits.get("twin_camera_fps"))
     p.add_argument("--no-camera", action="store_true", help="do not render the head camera")
     p.add_argument("--seconds", type=float, default=None, help="stop after this long (default: until Ctrl-C)")
@@ -96,7 +96,7 @@ def run(args: argparse.Namespace) -> int:
             lag = wall0 + twin.time - time.perf_counter()
             if lag > 0:
                 time.sleep(lag)
-            if verbose and twin.time - status_at >= 10.0:
+            if verbose and twin.time - status_at >= limits.get("twin_status_period_s"):
                 status_at = twin.time
                 rt = twin.time / max(1e-9, time.perf_counter() - wall0)
                 print(f"twin: t={twin.time:7.1f}  {twin.summary()}  lowstate {bridge.published} sent, "
@@ -124,7 +124,7 @@ class TwinProcess:
     READY = "twin: serving"
 
     def __init__(self, task: dict, *, mode: str = "standing", viewer: bool = False, camera: bool = True,
-                 timeout: float = 60.0) -> None:
+                 timeout: float = limits.get("twin_start_timeout_s")) -> None:
         import os
         self.iface = "lo0" if sys.platform == "darwin" else "lo"
         self.domain = 100 + os.getpid() % 100         # private: never another twin's, never the robot's 0
