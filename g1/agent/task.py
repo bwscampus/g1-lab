@@ -31,6 +31,9 @@ SCHEMA = {
         "scene": {"type": "string", "enum": ["none", "room"], "default": "none", "description": "the sim scene"},
         "objects": {"type": "array", "items": {"type": "string"}, "default": [],
                     "description": "sim objects to place, name@x,y[,z] (needs scene room)"},
+        "start": {"type": ["array", "null"], "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "default": None,
+                  "description": "sim only: where the twin starts, [x, y, yaw_deg] in the room "
+                                 "(default the origin facing +x); the robot starts wherever it stands"},
         "safety_notes": {"type": "array", "items": {"type": "string", "minLength": 1}, "default": [],
                          "description": "persistent physical facts the camera cannot see, added to the prompt"},
         "max_decisions": {"type": "integer", "minimum": 1, "default": int(limits.get("max_decisions"))},

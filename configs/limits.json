@@ -170,6 +170,7 @@
     "image_width_px":             {"value": 640,   "unit": "px",    "source": "guess",      "note": "frames are downscaled to this width before they are sent"},
     "jpeg_quality":               {"value": 80,    "unit": "0-100", "source": "guess",      "note": "JPEG quality of frames sent to the model (records stay lossless PNG)"},
     "live_image_window":          {"value": 8,     "unit": "count", "source": "gpt-policy", "note": "observation images kept in the conversation; older turns keep their text"},
+    "history_full_turns":         {"value": 8,      "unit": "count",  "source": "guess",      "note": "earlier turns sent in full (observation, image if still in live_image_window, reply); older ones are replaced by one host-written line each, as GPT-Policy's Claude adapter does"},
     "retry_max":                  {"value": 20,    "unit": "count", "source": "gpt-policy", "note": "retries when the model is overloaded"},
     "retry_delay_base_s":         {"value": 2.0,   "unit": "s",     "source": "gpt-policy", "note": "first retry delay; doubles each time"},
     "retry_delay_cap_s":          {"value": 8.0,   "unit": "s",     "source": "gpt-policy", "note": "largest retry delay"},

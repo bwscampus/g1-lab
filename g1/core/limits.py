@@ -42,7 +42,7 @@ NAMES = (
     "max_decisions", "step_timeout_s", "max_time_s",
     "settle_min_s", "settle_pos_tol_rad", "settle_vel_tol", "settle_samples", "settle_timeout_s",
     "frame_max_age_s", "frame_timeout_s", "max_failures",
-    "vlm_model", "reasoning_effort", "max_tokens", "request_timeout_s", "vlm_temperature", "image_width_px", "jpeg_quality", "live_image_window",
+    "vlm_model", "reasoning_effort", "max_tokens", "request_timeout_s", "vlm_temperature", "image_width_px", "jpeg_quality", "live_image_window", "history_full_turns",
     "retry_max", "retry_delay_base_s", "retry_delay_cap_s", "retry_jitter_s", "recovery_timeout_s",
     "states_hz",
 )
@@ -109,7 +109,7 @@ def _check_consistency(limits: dict, p: Path) -> None:
         if v[low] > v[high]:
             raise ValueError(f"limits file {p}: {low} ({v[low]}) must not exceed {high} ({v[high]})")
     for name in ("control_dt_s", "walk_speed", "side_speed", "turn_rate", "max_decisions", "max_tokens",
-                 "settle_samples", "states_hz", "image_width_px", "say_max_chars", "speech_chars_per_s",
+                 "settle_samples", "states_hz", "image_width_px", "history_full_turns", "say_max_chars", "speech_chars_per_s",
                  "twin_physics_dt_s", "twin_lowstate_hz", "twin_camera_fps"):
         if v[name] <= 0:
             raise ValueError(f"limits file {p}: {name} must be positive")

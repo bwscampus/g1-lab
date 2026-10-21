@@ -51,8 +51,20 @@ def test_the_shipped_tasks_load():
     assert load_task(find("tpose"))["tools"] == "tpose"
     t = load_task(find("find_the_mug"))
     assert t["instruction"] and t["scene"] == "room" and t["objects"] == ["mug@1.5,1.2"]
-    t = load_task(find("point_at_the_mug"))
-    assert t["instruction"] and t["scene"] == "room" and t["objects"] == ["mug@1.0,1.5"]
+    t = load_task(find("point_at_the_laptop"))
+    assert t["scene"] == "room" and t["objects"] == ["laptop@1.75,-1.5,0.77"] and t["start"] == [1.2, -0.95, 0]
+    t = load_task(find("find_and_point_at_the_laptop"))
+    assert "laptop" in t["instruction"] and t["start"] is None
+    with pytest.raises(ValueError, match="no task 'point_at_the_mug'"):
+        find("point_at_the_mug")                                             # the point demo's target is the laptop
+    # every shipped task loads and places only objects the room can build
+    from g1.envs.scene import parse_object
+    for d in sorted((ROOT / "tasks").iterdir()):
+        if (d / "task.json").is_file():
+            t = load_task(d)
+            for o in t["objects"]:
+                parse_object(o)
+            assert t["start"] is None or len(t["start"]) == 3
     t = load_task(find("sit_in_the_chair"))
     assert t["instruction"] and t["objects"] == ["chair@1.5,0"]
 

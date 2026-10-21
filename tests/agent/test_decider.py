@@ -74,11 +74,12 @@ def test_decision_parse_validates_like_theirs():
 
 
 def test_context_renders_catalog_and_rules():
-    c = ctx(safety_notes=["a table behind the robot"])
+    c = ctx(safety_notes=["never walk backward"])
     text = c.instructions
     assert text.count("Robot tool catalog:") == 1 and "- move:" in text and "- check:" in text
     assert "- left_elbow: [-1.047, 2.094] rad, stand 1.28" in text and "palms up" in text
-    assert "hidden obstacles" in text and "a table behind the robot" in text
+    assert "Rules for this task:\n- never walk backward" in text
+    assert "hidden obstacles" not in text and "not absent from the room" not in text and "base_pose_env" not in text
     assert "30 decisions" in text and "note" in text and "give_up" in text
     assert json.loads(text.split("Robot tool catalog:\n", 1)[1]) == c.tools
     schema = c.output_schema
@@ -228,3 +229,27 @@ def test_threaded_decider_answers_in_the_background():
         assert dec.latest() is not None and dec.latest().name == "move" and not dec.pending
     finally:
         dec.stop()
+
+
+def test_old_turns_become_one_summary_line_each():
+    calls = []
+    replies = [TURN if i % 2 == 0 else HOLD for i in range(12)]
+    dec = VLMDecider(VLMClient("m/vl", "hf_x", transport=transport_of(replies, calls)), live_image_window=2,
+                     history_full_turns=4)
+    dec.start(ctx())
+    for step in range(12):
+        prev = None if step == 0 else ({"tool": "move", "result": {"status": "completed"}} if step % 2 else
+                                       {"tool": "hold", "error": "motion_not_executed"})
+        text = observation("find it", {"joint_pos": [0.0]}, [], {"env_step": step}, prev)
+        dec.decide(AgentTurn(text, {"head": solid()}, request_id=step + 1, step=step))
+    msgs = calls[-1]["messages"]
+    assert [m["role"] for m in msgs] == ["system"] + ["user", "assistant"] * 4 + ["user"]   # 4 full turns + this one
+    head = msgs[1]["content"][0]["text"]
+    lines = head.splitlines()
+    assert lines[0].startswith("Earlier in this run (summarised by the host") and len(lines) == 1 + 7   # turns 0..6
+    assert lines[1] == '- turn 0: move({"dyaw_deg":45}) — searching; result: completed'
+    assert lines[2] == '- turn 1: hold({"seconds":1}) — waiting; result: motion_not_executed'
+    assert json.loads(msgs[1]["content"][1]["text"])["extra"]["env_step"] == 7          # then turn 7 in full
+    assert sum(b["type"] == "image_url" for m in msgs[1:] if isinstance(m["content"], list) for b in m["content"]) == 2
+    after = dec.transcript()[1]["content"][0]["text"]                                   # the record: as the next request
+    assert after.startswith(head) and after.endswith("- turn 7: hold({\"seconds\":1}) — waiting; result: motion_not_executed")

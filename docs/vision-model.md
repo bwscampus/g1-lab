@@ -32,23 +32,30 @@ before spending a robot run: `g1 run find_the_mug --sim`.
 
 ## What the model is sent
 
+The model knows only what the robot knows: its tools, the camera, the task's objective and
+rules, its own joints and commands, and its own earlier turns. Nothing about the room (where
+the table or a chair is, how far a wall is) and nothing only the twin knows (its true base
+pose), in sim as on the robot; GPT-Policy gives its model no scene layout either.
+
 The system prompt, once per run (`g1/agent/decider.py:instructions`): the robot and camera
-conventions, the joint table and sign conventions, the scene's hidden obstacles
-(`safety_notes`), the rules, and the tool catalog as bullets and as JSON. Then per
-decision one user message: the observation JSON —
+conventions, the joint table and sign conventions, the task's rules (`safety_notes`), the
+reply rules, and the tool catalog as bullets and as JSON. Then per decision one user message:
+the observation JSON —
 
 ```
 instruction, images [{name, width, height, captured_age_s}],
-state {joint_pos, joint_vel, joint_torque, waist_yaw_deg, base_pose_cmd, base_pose_env},
+state {joint_pos, joint_vel, joint_torque, waist_yaw_deg, base_pose_cmd},
 extra {env_step, decisions_left, can_walk, attempt}, previous_result
 ```
 
-— and the head image (JPEG at `image_width_px`). Structured output is requested as
+— and the head image (JPEG at `image_width_px`; `images` gives the size as sent, which is the
+size `locate_point` pixels are in). Structured output is requested as
 `json_schema` (the output schema of the menu), stepped down to `json_object`, then none,
 when a provider rejects it. The conversation is the model's memory: the system prompt once,
-then every observation and the model's own reply verbatim; only the last
-`live_image_window` (8, in `configs/limits.json`) observations keep their image; text is never
-pruned.
+then the newest `history_full_turns` (8) turns in full — observation and the model's own reply
+verbatim — and before them one host-written line per older turn (the tool, its note, the
+result), as GPT-Policy's Claude adapter summarises. Only the last `live_image_window` (8)
+observations keep their image. Both are in `configs/limits.json`.
 
 The reply must be one whole JSON object, `{"name": ..., "arguments": {...}}`, naming a tool
 from the menu and satisfying its parameter schema (jsonschema Draft 2020-12; numbers out of

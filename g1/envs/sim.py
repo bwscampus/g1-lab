@@ -81,7 +81,8 @@ class SimEnv(RobotEnv):
         gantry = self.args.mode == "gantry"
         fsm = self.args.twin_fsm if self.args.twin_fsm is not None else (FSM_DAMP if gantry else FSM_MAIN)
         self.twin = Twin(scene=self.args.scene, objects=self.args.sim_objects, obstacle=self.args.sim_obstacle,
-                         camera_size=self.args.camera_size, fsm=fsm, band=gantry, voice="sim")
+                         camera_size=self.args.camera_size, fsm=fsm, band=gantry, voice="sim",
+                         start=getattr(self.args, "sim_start", None))
         viewer = None
         if not self.args.headless:
             if sys.platform == "darwin" and not getattr(mujoco.viewer, "_MJPYTHON", None):

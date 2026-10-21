@@ -37,6 +37,8 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--scene", choices=("none", "room"), default="none")
     p.add_argument("--sim-objects", type=parse_object, nargs="*", default=[], metavar="NAME@X,Y[,Z]")
     p.add_argument("--sim-obstacle", type=_xyz, default=None, metavar="X,Y,Z")
+    p.add_argument("--start", type=_xyz, default=None, metavar="X,Y,YAW_DEG",
+                   help="where it starts in the room (default the origin facing +x)")
     p.add_argument("--camera-size", type=_size, default=None, metavar="HxW",
                    help=f"head camera size (default {HEAD_CAMERA_SIZE[0]}x{HEAD_CAMERA_SIZE[1]}; the robot streams 720x1280)")
     p.add_argument("--camera-fps", type=float, default=limits.get("twin_camera_fps"))
@@ -58,7 +60,7 @@ def run(args: argparse.Namespace) -> int:
         raise SystemExit("g1 twin refuses DDS domain 0: that is the robot's")
     fsm = args.fsm if args.fsm is not None else (FSM_DAMP if args.gantry else FSM_MAIN)
     twin = Twin(scene=args.scene, objects=args.sim_objects, obstacle=args.sim_obstacle,
-                camera_size=args.camera_size, fsm=fsm, band=args.gantry, voice="twin")
+                camera_size=args.camera_size, fsm=fsm, band=args.gantry, voice="twin", start=args.start)
     viewer = None
     if not args.headless:
         if sys.platform == "darwin" and not getattr(mujoco.viewer, "_MJPYTHON", None):
@@ -138,6 +140,8 @@ class TwinProcess:
                     "--scene", task["scene"]]
         if task["objects"]:
             self.cmd += ["--sim-objects", *task["objects"]]
+        if task.get("start"):
+            self.cmd += ["--start", ",".join(f"{v:g}" for v in task["start"])]
         if task.get("camera_size"):
             self.cmd += ["--camera-size", "x".join(str(v) for v in task["camera_size"])]
         if mode == "gantry":

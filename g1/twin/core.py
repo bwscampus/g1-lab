@@ -52,13 +52,14 @@ class LowState:
 
 class Twin:
     def __init__(self, *, scene: str = "none", objects=(), obstacle=None, camera_size=None,
-                 fsm: int = FSM_MAIN, band: bool = False, voice: str = "sim") -> None:
+                 fsm: int = FSM_MAIN, band: bool = False, voice: str = "sim", start=None) -> None:
         import mujoco
         self.mujoco = mujoco
         self.model = twin_model.load_model(obstacle, scene=scene, objects=objects, camera_size=camera_size)
         self.data = mujoco.MjData(self.model)
         self.lock = threading.RLock()
         self.band = band
+        self.start_pose = tuple(float(v) for v in start) if start else (0.0, 0.0, 0.0)   # x, y, yaw_deg
         self.start_fsm = fsm
         self.onboard = Onboard(self.model, fsm)
         self.services = Services(self.onboard, lambda: float(self.data.time), voice, summary=self.report)
@@ -68,11 +69,15 @@ class Twin:
         self.reset()
 
     def reset(self) -> None:
-        """Standing at the origin facing +x, settled, at t = 0, in the starting FSM."""
+        """Standing at the start pose (the origin facing +x by default), settled, at t = 0, in the
+        starting FSM."""
         m, d = self.model, self.data
         with self.lock:
             self.mujoco.mj_resetData(m, d)
-            d.qpos[2] = START_Z
+            x0, y0, yaw = self.start_pose
+            half = math.radians(yaw) / 2
+            d.qpos[0:3] = (x0, y0, START_Z)
+            d.qpos[3:7] = (math.cos(half), 0.0, 0.0, math.sin(half))
             d.qpos[7:7 + NUM_JOINTS] = STAND
             self.mujoco.mj_forward(m, d)
             self.onboard.reset(FSM_MAIN)            # stand it up, whatever it will start in: the walker

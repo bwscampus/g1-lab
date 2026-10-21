@@ -124,7 +124,7 @@ def test_observation_and_feedback_follow_the_contract():
     env = check()
     dec = Sequence([("move", {"dyaw_deg": 30}), ("move", {"dx_m": 0.3}),
                     ("done", {"summary": "s", "hindsight": "h"})])
-    agent = Agent("find it", dec, menu(True), safety_notes=["a wall behind"], max_decisions=10)
+    agent = Agent("find it", dec, menu(True), safety_notes=["never walk backward"], max_decisions=10)
     assert run(agent, env, max_time=120) is True
     o = observations(dec)
     assert [x["extra"]["env_step"] for x in o] == [0, 1, 2]
@@ -132,15 +132,15 @@ def test_observation_and_feedback_follow_the_contract():
     assert o[0]["images"] == [{"name": "head", "width": 64, "height": 48, "captured_age_s": o[0]["images"][0]["captured_age_s"]}]
     st = o[0]["state"]
     assert len(st["joint_pos"]) == 29 and len(st["joint_vel"]) == 29 and len(st["joint_torque"]) == 29
-    assert st["base_pose_cmd"] == [0.0, 0.0, 0.0] and st["base_pose_env"][:2] == pytest.approx([0.0, 0.0], abs=0.02)
-    assert st["base_pose_env"][2] == pytest.approx(0.0, abs=0.5)   # degrees: the takeover's hold settles the stance a little
+    assert st["base_pose_cmd"] == [0.0, 0.0, 0.0]
+    assert set(st) == {"joint_pos", "joint_vel", "joint_torque", "waist_yaw_deg", "base_pose_cmd"}   # never the twin's truth
     assert o[0]["extra"] == {"env_step": 0, "decisions_left": 10, "can_walk": True}
     prev = o[1]["previous_result"]
     fb = prev["result"]["execution_feedback"]
     assert prev["tool"] == "move" and prev["result"]["status"] == "completed"
     assert fb["base_target_pose"][2] == pytest.approx(30.0, abs=1e-6)
-    assert fb["base_measured_source"] == "env"                     # the twin's truth: a real, small error
-    assert max(abs(v) for v in fb["base_error"][:2]) < 0.15 and abs(fb["base_error"][2]) < 10
+    assert fb["base_commanded_delta"] == pytest.approx([0.0, 0.0, 30.0], abs=1e-6)
+    assert not {"base_measured_pose", "base_measured_source", "base_error"} & set(fb)   # the twin's truth stays in the record
     assert fb["max_joint_residual_rad"] < 0.05 and len(fb["joint_residual_rad"]) == 29
     assert fb["joint_residual_rad"][0] is None                     # legs are not commanded
     assert "motion_progress" not in fb                              # recorded, hidden from the model
@@ -154,7 +154,7 @@ def test_observation_and_feedback_follow_the_contract():
     assert o[2]["state"]["base_pose_cmd"][0] == pytest.approx(0.3 * math.cos(math.radians(30)), abs=1e-6)
     # the context the decider was started with
     ctx = dec.context
-    assert "a wall behind" in ctx.instructions and "Robot tool catalog:" in ctx.instructions
+    assert "never walk backward" in ctx.instructions and "Robot tool catalog:" in ctx.instructions
     assert [t["function"]["name"] for t in ctx.tools] == [s.name for s in menu(True)]
     assert ctx.output_schema["properties"]["name"]["enum"] == [s.name for s in menu(True)]
     assert agent.result == "completed"

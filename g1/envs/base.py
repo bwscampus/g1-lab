@@ -79,6 +79,10 @@ class Env:
         """Measured joint torques (29,) N m, or None."""
         return None
 
+    def imu_quat(self):
+        """The pelvis IMU orientation (w, x, y, z), or None."""
+        return None
+
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
         self.verbose = bool(getattr(args, "verbose", False))
@@ -128,4 +132,4 @@ class Env:
         f = self.frame()
         now = self.clock()
         age = math.inf if f is None else max(0.0, now - f.stamp)
-        return Obs(q, f, age, self.base_pose(), self.joint_vel(), self.joint_torque())
+        return Obs(q, f, age, self.base_pose(), self.joint_vel(), self.joint_torque(), self.imu_quat())

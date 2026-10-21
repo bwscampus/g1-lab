@@ -77,6 +77,7 @@ class Obs:
     qd, tau:   measured joint velocity (rad/s) and torque (N m), or None when
                the env cannot measure them. Sim reads qvel / actuator_force,
                the robot LowState dq / tau_est. Read them; never gate on them.
+    imu_quat:  the pelvis IMU orientation (w, x, y, z) from LowState, or None.
     """
 
     q: np.ndarray
@@ -85,6 +86,7 @@ class Obs:
     base_pose: Optional[tuple[float, float, float]] = None
     qd: Optional[np.ndarray] = None
     tau: Optional[np.ndarray] = None
+    imu_quat: Optional[np.ndarray] = None
 
     def __post_init__(self) -> None:
         self.q = np.asarray(self.q, dtype=float)

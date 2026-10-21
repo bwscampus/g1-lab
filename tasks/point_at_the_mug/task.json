@@ -1,9 +1,0 @@
-{
-  "instruction": "find the mug on the floor by turning your waist, without walking, then point at it with your right arm",
-  "scene": "room",
-  "objects": ["mug@1.0,1.5"],
-  "safety_notes": ["Do not walk in this task: search with the waist and point with the right arm only."],
-  "max_decisions": 12,
-  "max_time_s": 300,
-  "notes": "Demo 1: a mug on the floor 1.8 m away, about 56 degrees to the left of the start, so it is out of the first view and the model has to turn the waist (look) to find it, centre it, and point. Needs HF_TOKEN. Twin: g1 run point_at_the_mug --sim. Robot: put a mug on the floor about 1.8 m away to the front-left and run g1 run point_at_the_mug --mode standing --view (gantry works too: nothing walks)."
-}

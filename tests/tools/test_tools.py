@@ -184,9 +184,9 @@ def test_gestures_emit_one_onboard_call_and_the_twin_waves(capsys):
         DampGesture.check_definition()
     with pytest.raises(ValueError, match="needs_loco"):
         NoLoco.check_definition()
-    assert [t["function"]["name"] for t in function_schemas(menu(True))] == ["move", "arm_path", "look", "point", "hold", "check", "say",
-                                                                           "done", "give_up"]
-    assert [t["function"]["name"] for t in function_schemas(menu(True, True))][6:8] == ["wave_hand", "shake_hand"]
+    assert [t["function"]["name"] for t in function_schemas(menu(True))] == ["move", "arm_path", "look", "point", "hold", "check",
+                                                                           "locate_point", "say", "done", "give_up"]
+    assert [t["function"]["name"] for t in function_schemas(menu(True, True))][7:9] == ["wave_hand", "shake_hand"]
 
 
 # --------------------------------------------------------------------------
@@ -212,10 +212,11 @@ def test_validate_args():
 
 
 def test_menu_and_parse():
-    assert [t.name for t in menu(False)] == ["arm_path", "look", "point", "hold", "check", "say", "done", "give_up"]
-    assert [t.name for t in menu(True)] == ["move", "arm_path", "look", "point", "hold", "check", "say", "done",
-                                            "give_up"]
-    assert [t.name for t in menu(True, True)] == ["move", "arm_path", "look", "point", "hold", "check", "wave_hand",
+    assert [t.name for t in menu(False)] == ["arm_path", "look", "point", "hold", "check", "locate_point", "say", "done",
+                                             "give_up"]
+    assert [t.name for t in menu(True)] == ["move", "arm_path", "look", "point", "hold", "check", "locate_point", "say",
+                                            "done", "give_up"]
+    assert [t.name for t in menu(True, True)] == ["move", "arm_path", "look", "point", "hold", "check", "locate_point", "wave_hand",
                                                  "shake_hand", "sit", "say", "done", "give_up"]
     assert "sit" not in [t.name for t in menu(False, True)]                    # never on the gantry
     assert {n for n in TOOLS if not TOOLS[n].visible} == {"walk_forward", "turn", "tpose", "sixseven",
@@ -309,7 +310,7 @@ def test_parameters_are_numbers_with_ranges_not_switches():
             if kind in ("number", "integer"):
                 assert spec["minimum"] < spec["maximum"], (cls.name, key)
                 if kind == "number":
-                    assert key.endswith(("_s", "_m", "_deg", "_rad")) or key == "seconds", (cls.name, key)
+                    assert key.endswith(("_s", "_m", "_deg", "_rad", "_px")) or key == "seconds", (cls.name, key)
             assert "enum" not in spec or (cls.name, key) == ("check", "tool"), (cls.name, key)
     with pytest.raises(ValueError, match="minimum and maximum"):
         type("Bad", (Tool,), {"name": "bad", "prompt": "p", "params": {"x_s": {"type": "number"}}}).check_definition()

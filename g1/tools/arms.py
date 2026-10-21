@@ -90,9 +90,11 @@ class Point(Tool):
     prompt = ("Point at something with the right arm: raise it straight out over rise_s seconds along the direction "
               "the torso (and the camera) faces, tipped down_deg below horizontal (0 to {limit:point_down_deg_max}), "
               "hold it hold_s seconds, then lower it. It points straight ahead of the torso, so first turn the waist "
-              "(look) until the target is in the middle of the image; then aim down_deg by where it sits: the "
+              "(look) until the target is in the middle of the image (locate_point gives the look_yaw_deg that "
+              "centres it, and its below_horizontal_deg); then aim down_deg by where it sits: the "
               f"image's centre row is about {math.degrees(HEAD_CAMERA_PITCH):.0f} degrees below horizontal, a target "
-              "far across the floor about 15-25, one near the feet about 50-60. Only the right arm moves. Point with "
+              "far across the floor about 15-25, one near the feet about 50-60, a raised one about 1 m "
+              "away (on furniture) about 10-20 (aim higher than its place in the image suggests). Only the right arm moves. Point with "
               "the waist at most 90 degrees round; for a target further round, turn the feet first (move) where "
               "walking is allowed.")
     params = {"down_deg": num(0.0, limit("point_down_deg_max"), limit("point_down_deg_default"),
@@ -122,7 +124,7 @@ class Look(Tool):
               "positive LEFT, over seconds, and hold it there; the feet and arms do not move. yaw_deg is where to "
               "look, not a step: look 0 faces the feet again. Search without walking: look in steps of 30-45 "
               f"degrees and observe between them (the image spans about {HEAD_CAMERA_FOV_H:.0f} degrees); to "
-              "face a visible target, add its bearing to state.waist_yaw_deg. Look back: yaw_deg "
+              "face a visible target, look to the look_yaw_deg locate_point gives for its pixel. Look back: yaw_deg "
               "{limit:look_yaw_max_deg} (over the left shoulder) or -{limit:look_yaw_max_deg} (the right) shows "
               "what is behind; straight behind the feet (180) lies the rest of the way toward the image's edge on "
               "the side you turned, so a thing straight behind sits off-centre toward that edge. Look back before "

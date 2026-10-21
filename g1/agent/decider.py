@@ -1,25 +1,26 @@
 """The decider: the model I/O contract of the decision step, in GPT-Policy's
 shape, and the session that carries it.
 
-  AgentContext   the system prompt (conventions, safety notes, the tool
-                 catalog as bullets and as JSON, the rules), the function
+  AgentContext   the system prompt (conventions, the task's rules, the tool
+                 catalog as bullets and as JSON, the reply rules), the function
                  schemas and the output schema — built once per run
   AgentTurn      one observation: the JSON text (``observation()``) and the
                  named images
   Decision       the validated ``{"name", "arguments"}`` reply
 
 The observation is one JSON object: ``instruction``, ``images`` (name, size,
-age), ``state`` (measured joint_pos / joint_vel / joint_torque, waist yaw,
-the commanded and measured base pose), ``extra`` (env_step, decisions_left,
-can_walk) and, after the first turn, ``previous_result`` — what the last
-tool did (residuals, base error, a measured settle report) or why it was
-rejected. The reply must name a tool from the menu and satisfy its parameter
+age, as sent), ``state`` (measured joint_pos / joint_vel / joint_torque, the
+commanded waist yaw and base pose), ``extra`` (env_step, decisions_left, can_walk)
+and, after the first turn, ``previous_result`` — what the last tool did (residuals,
+the commanded base displacement, a measured settle report) or why it was rejected.
+Only what the robot knows: never the room or the twin's truth. The reply must name a tool from the menu and satisfy its parameter
 schema (jsonschema, Draft 2020-12); every movement tool carries a ``note``.
 
 ``VLMDecider`` keeps one conversation per run: the system prompt once, then
-each observation and the model's own reply, so the model has its history.
-Only the last ``live_image_window`` observations keep their image (their
-``live_image_window``).
+the newest ``history_full_turns`` turns in full (observation and the model's own
+reply) after one host-written summary line per older turn, as GPT-Policy's
+Claude adapter does. Only the last ``live_image_window`` observations keep
+their image.
 """
 from __future__ import annotations
 
@@ -178,14 +179,13 @@ def observation(instruction: str, state: dict, images: list[dict], extra: dict,
 
 def instructions(context_menu: Sequence[type[Tool]], *, can_walk: bool, max_decisions: int,
                  safety_notes: Sequence[str] = ()) -> str:
-    """The system prompt, once per run: conventions, hidden facts, the rules,
-    the tool catalog as bullets and, appended, as JSON."""
+    """The system prompt, once per run: the robot's conventions, the task's rules, the
+    reply rules, the tool catalog as bullets and, appended, as JSON. Nothing about the world:
+    the model learns that only from the camera."""
     notes = ""
     if safety_notes:
         lines = "\n".join(f"- {n.strip()}" for n in safety_notes)
-        notes = (f"\nFixed scene and hidden obstacles (persistent physical facts):\n{lines}\n"
-                 "- An obstacle absent from the image is not absent from the room. Keep clear of these "
-                 "throughout every walk and turn.\n")
+        notes = f"\nRules for this task:\n{lines}\n"
     walk = ("Walking tools drive the base; they are offered because the base may be driven now."
             if can_walk else
             "The base cannot be driven in this run, so no walking tools are offered: search by looking.")
@@ -203,7 +203,7 @@ Joints arm_path may command (radians; the stand pose is where every run starts a
 Robot and camera conventions:
 - {NUM_JOINTS} joints in DDS order (legs 0-11, waist 12-14, left arm 15-21, right arm 22-28), radians. state.joint_pos, joint_vel and joint_torque are measured at the observation time. The host commands only the waist and arms (arm_sdk) and, for walking tools, the base velocity (LocoClient); the legs balance on their own.
 - One forward head camera (RGB, no depth) on the torso, pointing {pitch:.0f} degrees down: the floor 1-3 m ahead fills the lower half of the image, and the image spans about {fov_h:.0f} degrees horizontally. Pixel positions are not metric distances; judge distance from apparent size and from where an object meets the floor.
-- +yaw is LEFT (counter-clockwise). state.base_pose_cmd is the dead-reckoned [x forward, y left, yaw degrees] since the start, integrated from the commands sent; base_pose_env is the simulator's own measurement and null on the real robot. state.waist_yaw_deg is where the camera looks relative to the feet.
+- +yaw is LEFT (counter-clockwise). state.base_pose_cmd is the dead-reckoned [x forward, y left, yaw degrees] since the start, integrated from the commands sent (where the base actually is can differ; judge from the image). state.waist_yaw_deg is where the camera looks relative to the feet.
 - {walk}
 {joints}{notes}
 Return exactly one tool selection per turn: {{"name": "...", "arguments": {{...}}}}. No Markdown or text outside this object. The host runs the whole tool, waits for the joints to settle, then supplies a fresh observation whose previous_result reports what happened.
@@ -285,13 +285,15 @@ class VLMDecider(Decider):
 
     def __init__(self, client: VLMClient, *, max_width: int = IMAGE_WIDTH,
                  live_image_window: Optional[int] = limits.get("live_image_window"),
-                 fresh_turns: bool = False, min_interval: float = 0.0) -> None:
+                 fresh_turns: bool = False, min_interval: float = 0.0,
+                 history_full_turns: int = limits.get("history_full_turns")) -> None:
         super().__init__(min_interval=min_interval)
         if live_image_window is not None and live_image_window < 1:
             raise ValueError("live_image_window must be >= 1 or None")
         self.client = client
         self.max_width = max_width
         self.live_image_window = live_image_window
+        self.history_full_turns = max(1, int(history_full_turns))
         self.fresh_turns = fresh_turns
         self._turns: list[dict] = []          # {"user": msg, "assistant": msg | None, "image_at": int | None}
 
@@ -340,12 +342,43 @@ class VLMDecider(Decider):
             t["user"] = {"role": "user", "content": content}    # a new message: what was sent stays as sent
             t["image_at"] = None
 
+    def _summary(self, older: list[dict], following: dict) -> str:
+        """One host-written line per older turn: the tool chosen, its note, and what came of it
+        (the next observation's previous_result)."""
+        def observed(t: dict) -> dict:
+            try:
+                return json.loads(t["user"]["content"][0]["text"])
+            except (KeyError, IndexError, TypeError, ValueError):
+                return {}
+        lines = []
+        for t, nxt in zip(older, older[1:] + [following]):
+            step = observed(t).get("extra", {}).get("env_step", "?")
+            try:
+                reply = json.loads(t["assistant"]["content"]) if t["assistant"] else {}
+            except (TypeError, ValueError):
+                reply = {}
+            args = {k: v for k, v in (reply.get("arguments") or {}).items() if k not in ("note", "summary", "hindsight")}
+            note = (reply.get("arguments") or {}).get("note", "")
+            prev = observed(nxt).get("previous_result") or {}
+            result = prev.get("result", {}).get("status") if isinstance(prev.get("result"), dict) else None
+            outcome = result or prev.get("error") or "unknown"
+            lines.append(f"- turn {step}: {reply.get('name', '(no valid reply)')}({json.dumps(args, separators=(',', ':'))})"
+                         f"{' — ' + note if note else ''}; result: {outcome}")
+        return "Earlier in this run (summarised by the host; images and full results omitted):\n" + "\n".join(lines)
+
     def messages(self, turn: Optional[AgentTurn] = None) -> list[dict]:
+        """The system prompt, then the newest ``history_full_turns`` turns in full; older turns
+        are one summary line each, at the head of the first full turn."""
         assert self.context is not None
         out = [{"role": "system", "content": self.context.instructions}]
         if not self.fresh_turns:
-            for t in self._turns:
-                out.append(t["user"])
+            older, kept = self._turns[:-self.history_full_turns], self._turns[-self.history_full_turns:]
+            for i, t in enumerate(kept):
+                user = t["user"]
+                if i == 0 and older:
+                    user = {"role": "user", "content": [{"type": "text", "text": self._summary(older, t)},
+                                                        *user["content"]]}
+                out.append(user)
                 if t["assistant"] is not None:
                     out.append(t["assistant"])
         if turn is not None:
