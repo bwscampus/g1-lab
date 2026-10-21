@@ -1,0 +1,10 @@
+{
+  "instruction": "find the laptop in the room, walk until you are close enough to see it clearly, then point at it with your right arm",
+  "scene": "room",
+  "objects": ["laptop@1.75,-1.5,0.77"],
+  "safety_notes": ["Things on furniture can be above the top of the image from more than about 1.5 m away: walk closer to inspect.",
+                   "Never touch furniture; stop about 0.8 m from it."],
+  "max_decisions": 40,
+  "max_time_s": 900,
+  "notes": "Demo 2: the twin starts at the room's origin and the laptop is on the table 2.3 m away, too high to see from there (the model is told none of this), so it has to explore, walk around the table's chairs to its near corner, turn to the laptop and point. --mode standing only (it walks). Needs HF_TOKEN. Twin: g1 run find_and_point_at_the_laptop --sim. Robot: an open laptop on a table across the room, g1 run find_and_point_at_the_laptop --mode standing --view."
+}

@@ -9,7 +9,7 @@
 | **task** | a folder with an instruction (or a fixed `tools` chain) and its context (scene, safety notes, budget); no code. What `g1 run` runs. |
 | **observation** | the one JSON object a turn sends: instruction, images, measured state, extra, `previous_result`. |
 | **decision** | the model's reply: `{"name": tool, "arguments": {...}}`, validated against the tool's schema. |
-| **execution result** | what the host reports after a tool: residuals, base error, a settle report — or why nothing ran. |
+| **execution result** | what the host reports after a tool: residuals, the commanded base displacement, a settle report — or why nothing ran. |
 | **verdict** | the human's success/failed label after the run. `done` is the model's conclusion, not the label. |
 
 Retired words: skill, policy, primitive, routine, goal. Nothing in the repo is called a policy.
@@ -62,7 +62,7 @@ takeover -> settle -> snapshot -> think -> act -> settle -> snapshot -> ... -> h
   `motion_not_executed` and moves nothing), then played to its end. A record is closed every
   3 s while it runs (`STEP_MAX`), so a long tool is one decision and several records.
 * **feedback**: `previous_result` on the next observation — per-joint residual, target vs
-  measured base pose, the settle report — or the error (`invalid_selection`,
+  commanded base displacement, the settle report — or the error (`invalid_selection`,
   `tool_rejected`, `motion_not_executed` with the violations). Errors cost a decision; there
   is no re-ask loop. `done` / `give_up` end the run; `check` answers without moving.
 
@@ -91,8 +91,10 @@ allow-listed by service: `config.LOCO_METHODS` (`WaveHand`, `ShakeHand`, `Sit`) 
 `config.AUDIO_METHODS` (`TtsMaker`); the robot env routes by name and refuses the rest.
 `Sit` is the one FSM switch (`config.LOCO_FSM`: sent as `SetFsmId(3)`; the teardown stands
 up with 801). Nothing else on the SDK — other FSMs, damp, torque, squat, stand height, raw
-audio playback, volume, the LED strip — is reachable from a reply. There is no `locate_point`:
-the head camera is monocular, there is no metric pixel query to offer honestly.
+audio playback, volume, the LED strip — is reachable from a reply. `locate_point(x_px, y_px)`
+is GPT-Policy's pixel query for one monocular camera: the pixel's direction (from the torso, the
+waist yaw that centres it, and the angle below horizontal), carried through the measured waist
+joints and the IMU's pelvis tilt, never a distance.
 
 ## Envs
 

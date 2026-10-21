@@ -17,7 +17,7 @@ g1 run find_the_marker --mode standing        # on the robot
   "instruction": "find the marker and stop in front of it",
   "scene": "room",
   "objects": ["marker@1.2,-0.8"],
-  "safety_notes": ["a low shelf stands 1 m behind the start; do not walk backward"],
+  "safety_notes": ["never walk backward without looking back first"],
   "max_decisions": 30,
   "max_time_s": 600,
   "notes": "for people; the model never sees this"
@@ -32,8 +32,9 @@ g1 run find_the_marker --mode standing        # on the robot
 |---|---|
 | `instruction` | what the model is asked to do, one sentence (needs `HF_TOKEN`). |
 | `tools` | instead: a fixed chain, `name:args` separated by commas, each tool starting where the last ended. Exactly one of `instruction` and `tools`. |
-| `scene`, `objects` | the twin's room (`g1 twin fetch` once) and what to put in it: `name@x,y[,z]` (`mug`, `marker`, `cracker_box`, `mustard`, `pencil`). The robot starts at the origin facing +x; the room spans x −2..4, y −3..3. Ignored on the robot. |
-| `safety_notes` | persistent physical facts the camera cannot see, added to the system prompt. The room scene adds its own (walls, table, doorway). |
+| `scene`, `objects` | the twin's room (`g1 twin fetch` once) and what to put in it: `name@x,y[,z]` (`mug`, `marker`, `cracker_box`, `mustard`, `pencil`, `chair`, `laptop`; chair and laptop face the start). z defaults to the floor; the table's top is at z = 0.77 (its centre is x 2.2, y −1.5, 1.2 × 0.7 m), so `laptop@1.75,-1.5,0.77` stands on it. The room spans x −2..4, y −3..3. Ignored on the robot. |
+| `start` | the twin only: where the robot starts, `[x, y, yaw_deg]` in the room (default the origin facing +x). The room's safety notes are written from there. |
+| `safety_notes` | rules for the robot's behaviour in this task ("do not walk", "never touch furniture"), added to the system prompt. Never claims about the world (where a chair or wall is): the model knows only what the robot can sense, and such a claim is false wherever the room differs. World facts for people go in `notes`. |
 | `max_decisions`, `max_time_s` | the budget; a rejected reply costs a decision too. `max_time_s` also stops a tools chain (with the safe return). |
 | `camera_size` | the twin's head camera, `"HxW"` (default `480x640`; the robot streams `720x1280`). |
 | `notes` | for people. |
@@ -56,8 +57,11 @@ first; no deletes it (no folder, no `results.jsonl` line), yes asks
 * Say what done looks like ("stop in front of it", "with the mug in the lower third of the
   image"). `done` is the model's conclusion; it will call it when its image matches your
   words.
-* Put in `safety_notes` what the head camera cannot see: it looks 47° down, so a table at
-  chest height behind the robot is invisible until it is too late.
+* Put in `safety_notes` rules, not facts about the room. The head camera looks 48° down (its
+  image starts about 19° below horizontal), so the robot cannot see what is behind it or on a
+  table more than about 1.5 m away: write rules that make it look ("look back before walking
+  backward", "walk closer to inspect things on furniture"), not where things are. In the twin,
+  a `start` beside the furniture sets up a task without telling the model anything.
 * Run it with `--sim` (the MuJoCo window shows it), then on the robot (`--view` for its
   camera) only after reading `docs/running-on-the-robot.md`. `--mode gantry` never walks.
 * The tools the model gets are the same in every task (`g1/tools/`). If the task needs a

@@ -38,10 +38,11 @@ from g1.agent.decider import (AgentContext, AgentTurn, Decider, Decision, Protoc
 from g1.agent.episode import EpisodeWriter, StepRecord
 from g1.core import limits
 from g1.core.action import EPS, Action, Obs, Runnable
+from g1.core.images import sent_size
 from g1.core.config import CONTROL_DT, LOCO_FSM, UPPER_BODY, joint_index
 from g1.tools import STEP_MAX, Tool, menu, prefixed
 from g1.tools.control import Handback, Takeover, dry_run
-from g1.vlm import Overloaded, QuotaExceeded
+from g1.vlm import IMAGE_WIDTH, Overloaded, QuotaExceeded
 
 WAIST_YAW = joint_index("waist_yaw")
 
@@ -112,6 +113,7 @@ class Agent(Runnable):
         self._attempt = 0
         self._deadline: Optional[float] = None
         self._request_id = 0
+        self._view: Optional[dict] = None     # what the robot measured when the latest image was taken
         self._previous: Optional[dict] = None     # the next observation's previous_result
         self._pending: Optional[dict] = None      # a finished tool awaiting its settle report
         self._base_cmd = np.zeros(3)              # dead-reckoned (x, y, yaw) from commanded velocity
@@ -291,17 +293,25 @@ class Agent(Runnable):
 
     # -- the observation -----------------------------------------------------------------
     def _state_payload(self, obs: Obs) -> dict:
+        """What the robot knows about itself: measured joints and its own commands. Never the
+        simulator's truth (obs.base_pose), which only the record keeps."""
         return {"joint_pos": obs.q, "joint_vel": obs.qd, "joint_torque": obs.tau,
                 "waist_yaw_deg": math.degrees(float(self._cmd[WAIST_YAW])),
-                "base_pose_cmd": self._pose_deg(self._base_cmd),
+                "base_pose_cmd": self._pose_deg(self._base_cmd)}
+
+    def _record_state(self, obs: Obs) -> dict:
+        return {**self._state_payload(obs),
                 "base_pose_env": None if obs.base_pose is None else self._pose_deg(obs.base_pose)}
 
     def _observe(self, t: float, obs: Obs, frame) -> None:
         """Build the turn from this snapshot and ask the decider."""
         t0 = time.perf_counter()
         images_meta, images = [], {}
+        self._view = {"frame_size": None, "q": obs.q.copy(), "imu_quat": obs.imu_quat}   # as measured now
         if frame is not None:
-            h, w = frame.image.shape[:2]
+            # the size the model sees: pixels it names (locate_point) are in this image
+            w, h = sent_size(frame.image.shape[1], frame.image.shape[0], getattr(self.decider, "max_width", IMAGE_WIDTH))
+            self._view["frame_size"] = (w, h)
             images_meta = [{"name": "head", "width": int(w), "height": int(h),
                             "captured_age_s": float(obs.frame_age)}]
             images = {"head": frame.image}
@@ -315,7 +325,7 @@ class Agent(Runnable):
                                frame_seq=None if frame is None else frame.seq,
                                frame_stamp=None if frame is None else frame.stamp)
         self._observe_prep = time.perf_counter() - t0
-        self._event("observation", {"step": self._env_step, "input_json": text, "state": self._state_payload(obs),
+        self._event("observation", {"step": self._env_step, "input_json": text, "state": self._record_state(obs),
                                     "images": [{**m, "path": f"step_{self._step:04d}.png"} for m in images_meta],
                                     **({"attempt": self._attempt} if self._attempt else {})})
         self._wall0 = time.monotonic()
@@ -351,8 +361,11 @@ class Agent(Runnable):
               "settle": settle}
         result = {"status": "completed", "duration_s": p["duration"], "execution_feedback": fb}
         self._event("execution_result", {"step": p["env_step"], "name": p["name"], "result": result})
-        # their compact model view: no motion_progress, no settle bookkeeping once settled
-        view = {k: v for k, v in fb.items() if k != "motion_progress"}
+        # their compact model view: no motion_progress, no settle bookkeeping once settled, and only what
+        # the robot can measure: the base as commanded, never the simulator's truth
+        view = {k: v for k, v in fb.items()
+                if k not in ("motion_progress", "base_measured_pose", "base_measured_source", "base_error")}
+        view["base_commanded_delta"] = fb["motion_progress"]["requested_delta"]
         if settle["settled"]:
             view["settle"] = {k: v for k, v in settle.items()
                               if k not in ("consecutive_samples", "required_samples",
@@ -527,7 +540,7 @@ class Agent(Runnable):
             return self._to_handback(t, "give_up" if d.name == "give_up" else "completed")
         if tool.kind == "query":
             try:
-                verdict = tool.query(self._cmd, self.joints)
+                verdict = tool.query(self._cmd, self.joints, view=self._view)
             except ValueError as e:
                 return self._reject(t, obs, d.name, f"tool_rejected: {e}", raw=d.raw, arguments=d.arguments)
             self._event("execution_result", {"step": self._env_step, "name": d.name, "result": verdict})
@@ -604,8 +617,7 @@ def build_agent(task: dict, *, env_name: str, can_walk: bool, has_loco: bool, ru
     nothing at the end: ``g1 run`` asks, on the robot only (save it? then the verdict)."""
     decider = VLMDecider.from_env()
     tools = menu(can_walk, has_loco)
-    from g1.envs.scene import safety_notes
-    notes = safety_notes(task["scene"]) + list(task["safety_notes"])
+    notes = list(task["safety_notes"])          # rules only: the room's layout is never told
     recorder = EpisodeWriter(runs, env=env_name, instruction=task["instruction"], model=decider.model,
                              tools=[t.name for t in tools], allow_base=can_walk,
                              extra={"task": task["name"], "max_decisions": task["max_decisions"],

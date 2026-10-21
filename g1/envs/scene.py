@@ -9,8 +9,10 @@ Assets are fetched on demand into ``assets/`` (git-ignored) with attribution:
     g1 twin fetch             # with the twin's model (about 40 MB for the room)
     g1 twin status
 
-Robot frame: it starts at the origin facing +x. The room spans x -2..4,
-y -3..3, 2.5 m high, with a doorway in the +x wall.
+Room frame: the robot starts at the origin facing +x unless a task gives a
+``start``. The room spans x -2..4, y -3..3, 2.5 m high, with a doorway in the +x
+wall. None of this is ever told to the model: it knows the room only from the
+camera, as the real robot would.
 """
 from __future__ import annotations
 
@@ -37,7 +39,7 @@ YCB = {        # object name: YCB id (google_16k scans: textured.obj + texture_m
     "mustard": "006_mustard_bottle",
 }
 YCB_URL = "https://ycb-benchmarks.s3.amazonaws.com/data/google/{id}_google_16k.tgz"
-PRIMITIVE_OBJECTS = ("pencil", "chair")      # chair: free-standing, on the floor, facing the start
+PRIMITIVE_OBJECTS = ("pencil", "chair", "laptop")   # chair and laptop face the start
 OBJECTS = tuple(YCB) + PRIMITIVE_OBJECTS
 
 # Room layout (metres)
@@ -46,24 +48,16 @@ ROOM_Y = (-3.0, 3.0)
 ROOM_H = 2.5
 DOOR_Y = (0.5, 1.4)          # gap in the +x wall
 DOOR_H = 2.0
-TABLE = (2.2, -1.5)           # centre; 1.2 x 0.7 m top at 0.75 m
+TABLE = (2.2, -1.5)           # centre
+TABLE_HALF = (0.6, 0.35)      # 1.2 x 0.7 m
+TABLE_TOP_Z = 0.77            # its top surface: put an object on it at z = 0.77
+TABLE_CHAIRS = ((TABLE[0] - 0.3, TABLE[1] + 0.75), (TABLE[0] + 0.3, TABLE[1] + 0.75))   # on the start's side
 
-# Persistent physical facts a head camera cannot see: their "scene.safety_notes",
-# rendered as the hidden-obstacles block of the agent's system prompt.
-SAFETY_NOTES = {
-    "none": [],
-    "room": [
-        "The robot starts at the room's origin facing +x. Walls stand 2 m behind it (x = -2), 4 m "
-        "ahead (x = +4) and 3 m to each side (y = +/-3); a walk_forward cannot pass through them.",
-        "A table (1.2 x 0.7 m, 0.75 m high) with two chairs stands 2.2 m ahead and 1.5 m to the right "
-        "of the start (x = 2.2, y = -1.5); it is hidden when the robot faces away from it.",
-        "The doorway is in the far wall (x = +4) between y = 0.5 and 1.4 m; do not walk through it.",
-    ],
-}
-
-
-def safety_notes(scene: str | None) -> list[str]:
-    return list(SAFETY_NOTES.get(scene or "none", []))
+# A laptop (metres): base depth (front to hinge), width and thickness; the screen's height and
+# thickness; how far it is opened from closed (110: tipped 20 degrees back past upright).
+LAPTOP_BASE = (0.22, 0.32, 0.018)
+LAPTOP_SCREEN = (0.21, 0.008)
+LAPTOP_OPEN_DEG = 110.0
 
 
 # --------------------------------------------------------------------------
@@ -173,6 +167,35 @@ def _chair(w, tag: str, x: float, y: float, back: tuple[float, float], material:
         w.add_geom(name=f"{tag}_leg{i}", type=B, size=[0.02, 0.02, 0.215], pos=[x + dx, y + dy, 0.215], material=material)
 
 
+def _laptop(w, tag: str, x: float, y: float, z: float, back: tuple[float, float], display: str) -> None:
+    """An open laptop from boxes, its base on z with the keyboard toward the start and the
+    hinge and screen on the ``back`` side (a unit axis vector in the floor plane). Dark grey,
+    the display lit blue-grey (the display material); never red (the red-blob test double must not see it)."""
+    import mujoco
+    B = mujoco.mjtGeom.mjGEOM_BOX
+    depth, width, thick = LAPTOP_BASE
+    height, sthick = LAPTOP_SCREEN
+    tilt = math.radians(LAPTOP_OPEN_DEG - 90.0)               # past upright, away from the user
+    yaw = math.atan2(back[1], back[0])                         # local +x: toward the hinge
+    body = w.add_body(name=tag, pos=[x, y, z], quat=[math.cos(yaw / 2), 0, 0, math.sin(yaw / 2)])
+    shell, keys = [0.27, 0.28, 0.30, 1], [0.08, 0.08, 0.09, 1]
+    body.add_geom(name=f"{tag}_base", type=B, size=[depth / 2, width / 2, thick / 2], pos=[0, 0, thick / 2], rgba=shell)
+    body.add_geom(name=f"{tag}_keyboard", type=B, size=[depth * 0.26, width * 0.42, 0.0006],
+                  pos=[depth * 0.08, 0, thick + 0.0006], rgba=keys, contype=0, conaffinity=0)
+    body.add_geom(name=f"{tag}_trackpad", type=B, size=[depth * 0.11, width * 0.14, 0.0004],
+                  pos=[-depth * 0.32, 0, thick + 0.0004], rgba=[0.2, 0.2, 0.22, 1], contype=0, conaffinity=0)
+    # the lid: hinged at the back edge of the base, tipped ``tilt`` past upright
+    up = (math.sin(tilt), math.cos(tilt))                      # the lid's long axis in (x, z)
+    hinge = (depth / 2, thick)
+    lid = [hinge[0] + up[0] * height / 2, 0, hinge[1] + up[1] * height / 2]
+    q = [math.cos(tilt / 2), 0, math.sin(tilt / 2), 0]         # about y: z axis -> up
+    body.add_geom(name=f"{tag}_screen", type=B, size=[sthick / 2, width / 2, height / 2], pos=lid, quat=q, rgba=shell)
+    inset = sthick / 2 + 0.0005                                # the display, on the user's side of the lid
+    body.add_geom(name=f"{tag}_display", type=B, size=[0.0004, width * 0.45, height * 0.42],
+                  pos=[lid[0] - inset * up[1], 0, lid[2] + inset * up[0]], quat=q, material=display,
+                  contype=0, conaffinity=0)
+
+
 def build_room(spec, objects: Sequence[tuple[str, float, float, Optional[float]]] = (),
                camera_size: Optional[tuple[int, int]] = None) -> None:
     """Add the room, furniture, lights and objects to an MjSpec of the G1 scene."""
@@ -218,10 +241,11 @@ def build_room(spec, objects: Sequence[tuple[str, float, float, Optional[float]]
                pos=[ROOM_X[1], (y0 + y1) / 2, (ROOM_H + DOOR_H) / 2], material=wall)
     # table and two chairs
     tx, ty = TABLE
-    w.add_geom(name="table_top", type=B, size=[0.6, 0.35, 0.02], pos=[tx, ty, 0.75], material=wood)
+    w.add_geom(name="table_top", type=B, size=[TABLE_HALF[0], TABLE_HALF[1], 0.02], pos=[tx, ty, TABLE_TOP_Z - 0.02],
+               material=wood)
     for i, (dx, dy) in enumerate(((0.55, 0.3), (-0.55, 0.3), (0.55, -0.3), (-0.55, -0.3))):
         w.add_geom(name=f"table_leg{i}", type=B, size=[0.03, 0.03, 0.365], pos=[tx + dx, ty + dy, 0.365], material=wood)
-    for k, (chx, chy) in enumerate(((tx - 0.3, ty + 0.75), (tx + 0.3, ty + 0.75))):
+    for k, (chx, chy) in enumerate(TABLE_CHAIRS):
         _chair(w, f"table_chair{k}", chx, chy, (0.0, 1.0), wood)
     w.add_light(name="room_light_a", pos=[0.5, 0.0, 2.4], dir=[0, 0, -1], diffuse=[0.7, 0.7, 0.7])
     w.add_light(name="room_light_b", pos=[2.5, 1.5, 2.4], dir=[0, 0, -1], diffuse=[0.5, 0.5, 0.5])
@@ -239,9 +263,14 @@ def build_room(spec, objects: Sequence[tuple[str, float, float, Optional[float]]
             mat.textures[mujoco.mjtTextureRole.mjTEXROLE_RGB] = f"{tag}_tex"
             body = w.add_body(name=tag, pos=[x, y, (-lo[2] if z is None else z)])
             body.add_geom(name=f"{tag}_geom", type=mujoco.mjtGeom.mjGEOM_MESH, meshname=f"{tag}_mesh", material=f"{tag}_mat")
-        elif name == "chair":                       # its seat toward the start, its back away from it
+        elif name in ("chair", "laptop"):           # facing the start: back (or hinge) away from it
             back = (math.copysign(1.0, x), 0.0) if abs(x) >= abs(y) else (0.0, math.copysign(1.0, y))
-            _chair(w, tag, x, y, back, wood)
+            if name == "chair":
+                _chair(w, tag, x, y, back, wood)
+            else:
+                if counts[name] == 1:                # the display, lit so it reads as switched on
+                    spec.add_material(name="laptop_display_mat", rgba=[0.55, 0.70, 0.85, 1], emission=0.6)
+                _laptop(w, tag, x, y, 0.0 if z is None else z, back, "laptop_display_mat")
         elif name == "pencil":
             body = w.add_body(name=tag, pos=[x, y, (0.0035 if z is None else z)])
             lying = [0.7071068, 0.0, 0.7071068, 0.0]        # cylinder axis z -> x

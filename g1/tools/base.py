@@ -168,8 +168,10 @@ class Tool(Runnable):
         """The motion, computed from the arguments. ``()`` for a query or terminal tool."""
         return ()
 
-    def query(self, cmd: np.ndarray, joints: Sequence[int]) -> dict:
-        """A query tool's answer, given the commanded pose. Never moves anything."""
+    def query(self, cmd: np.ndarray, joints: Sequence[int], *, view: Optional[dict] = None) -> dict:
+        """A query tool's answer, given the commanded pose and ``view``, what the robot measured
+        when the latest image was taken: ``frame_size`` (width, height as the model saw it),
+        ``q`` (joint positions) and ``imu_quat`` (pelvis w, x, y, z). Never moves anything."""
         raise NotImplementedError(f"{self.name} is not a query tool")
 
     @property

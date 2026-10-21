@@ -526,6 +526,10 @@ class RobotEnv(Env):
     def joint_torque(self):
         return self._motor("tau_est")
 
+    def imu_quat(self):
+        imu = getattr(getattr(getattr(self, "arm", None), "state", None), "imu_state", None)
+        return None if imu is None else np.asarray(imu.quaternion, dtype=float)
+
     def step(self, action: Action) -> np.ndarray:
         bad = [j for j in action.joints if j not in UPPER_BODY]
         if bad:

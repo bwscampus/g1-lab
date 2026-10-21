@@ -174,7 +174,7 @@ def run_settings(task: Optional[dict] = None, *, sim: bool = False, mode: Option
         camera_source="auto", camera="auto", trace=None,
         verbose=os.environ.get("G1_VERBOSE", "") not in ("", "0"),
         scene=task.get("scene") or "none", sim_objects=[parse_object(o) for o in task.get("objects") or []],
-        camera_size=task.get("camera_size"),
+        camera_size=task.get("camera_size"), sim_start=task.get("start"),
         # the in-process twin (tests): headless, its own pacing and checks
         headless=True, realtime=None, hold_end=limits.get("sim_viewer_hold_s"), camera_dir=None,
         camera_fps=limits.get("twin_camera_fps"),

@@ -11,7 +11,8 @@ MuJoCo twin of the robot and on the robot.
 ```
 g1 run tpose --sim                   # a task on the twin, in the MuJoCo window: the robot code, over DDS
 g1 run find_the_mug --sim            # the model searches a room (needs HF_TOKEN)
-g1 run point_at_the_mug --sim        # demo: the waist finds the mug, the right arm points at it
+g1 run point_at_the_laptop --sim     # demo: beside the table, the waist finds the laptop, the right arm points at it
+g1 run find_and_point_at_the_laptop --sim   # demo: explore the room, walk to the table, point at the laptop
 g1 run sit_in_the_chair --sim        # demo: find a chair, back up to it and sit (the twin does not stand up again)
 g1 run tpose --mode gantry           # the robot, hanging in a gantry (never walks)
 g1 run find_the_mug --mode standing --view   # the robot on its own feet (may walk); its camera in a browser
@@ -185,7 +186,7 @@ camera.
 ```json
 {"instruction": "find the marker and stop in front of it",
  "scene": "room", "objects": ["marker@1.2,-0.8"],
- "safety_notes": ["a low shelf stands 1 m behind the start; do not walk backward"],
+ "safety_notes": ["never walk backward without looking back first"],
  "max_decisions": 30, "max_time_s": 600,
  "notes": "for people; the model never sees this"}
 ```
@@ -244,6 +245,9 @@ Learning with VLM Agents* ([arXiv:2609.19138](https://arxiv.org/abs/2609.19138),
 * one structured observation per turn, carrying the measured state and the result of the
   previous action as feedback
 * errors returned to the model as feedback instead of retried
+* no knowledge of the world in the context: the model infers the scene from the images
+* `locate_point` (here: one monocular camera, so a direction only) and host-written summaries
+  of older turns
 * a human assigning the success label after the run, and the run trace (events,
   transcript, protocol, states, usage)
 

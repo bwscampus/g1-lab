@@ -1,5 +1,5 @@
 {
-  "instruction": "find the free-standing chair (not the ones at the table), walk to it and sit down in it",
+  "instruction": "find a free-standing chair, walk to it and sit down in it",
   "scene": "room",
   "objects": ["chair@-1.2,0.8"],
   "safety_notes": ["Walk toward the chair in steps of at most 0.5 m once it is within about 2 m (its seat fills a good part of the image), observing between steps; never walk into it.", "Sitting is the onboard controller's sit straight down: line up square in front of the chair while you can see it, then turn around and back up as the sit tool says. A 180-degree turn never ends exactly, and once turned away the camera cannot see the chair: look back over a shoulder (look 145 or -145) to check the alignment before backing up and again before sitting, correcting with small moves."],

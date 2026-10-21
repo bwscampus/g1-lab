@@ -75,7 +75,7 @@ g1/camera.py       Frame, Camera (+subscribe), DirCamera, WebRTCCamera, ShmCamer
 g1/vlm.py          VLMClient (Hugging Face), load_dotenv
 g1/agent/          agent (Agent, build_agent), decider (AgentContext/AgentTurn/Decision, observation(), instructions(),
                    VLMDecider), episode (EpisodeWriter, StepRecord, load_episode), task (find, load_task, record_result)
-tasks/             tpose/ (a tools chain), find_the_mug/, point_at_the_mug/, sit_in_the_chair/ (instructions); runs and results.jsonl inside are git-ignored
+tasks/             tpose/ (a tools chain), find_the_mug/, point_at_the_laptop/, find_and_point_at_the_laptop/, sit_in_the_chair/ (instructions); runs and results.jsonl inside are git-ignored
 docs/              architecture, writing-a-tool, writing-a-task, running-on-the-robot, vision-model
 tests/             mirrors g1/ (core, tools, envs, agent, twin) + test_camera, test_cli, test_vlm; doubles.py (RedBallDecider,
                    red_blob, sim_env(**settings), scripted_sim); conftest keeps tests away from the real .env
@@ -150,12 +150,19 @@ root via `pythonpath`. `limits.ROOT` is the repo root (configs/, tasks/, assets/
   `Summary` (its `twin` service) fails the run on a fall.
 - Joint indexing is DDS order (= the twin model's motor order); index 29 is the arm_sdk weight slot.
 
+- **The model knows only what the robot knows**: its tools, the camera, the task's objective and rules,
+  its own joints (measured), IMU and commands, and its own earlier turns. Never the room's layout (no
+  furniture, wall or object positions or sizes) and never the twin's truth (true base pose, contacts), in sim
+  or on the robot: `Obs.base_pose` reaches only the records. Task `safety_notes` are behaviour rules; world
+  facts go in `notes` (never sent). `tests/agent/test_what_the_model_knows.py` guards it.
+
 ## The decision step (`g1/agent/agent.py`)
 
 takeover → settle (0.03 rad, 0.05 rad/s, 10 ticks, ≥ 0.5 s, 3 s timeout) → snapshot (a fresh frame) →
 think (background `Decider.request`; the loop holds) → act (the whole tool; a record every `STEP_MAX`
-= 3 s) → settle → feedback (`previous_result`: residuals, base error, settle report | the error) → …
-`done`/`give_up` end it; `check` answers via `dry_run`; overload retried with backoff re-observing;
+= 3 s) → settle → feedback (`previous_result`: residuals, commanded base displacement, settle report | the
+error) → … `done`/`give_up` end it; `check` answers via `dry_run`, `locate_point` with a pixel's direction;
+turns older than `history_full_turns` are sent as one host-written line each; overload retried with backoff re-observing;
 quota or `step_timeout` fails the run; `max_decisions` ends as `budget_exhausted`; `close()` renames the
 run directory (`_success`/`_failed`/`_unreviewed`/`_interrupted`). The agent asks nothing: after a robot run
 `cli.run_task` asks "Save this run?" (no: the folder is deleted) and then the verdict (`task.label_run`);
