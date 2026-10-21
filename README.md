@@ -12,7 +12,7 @@ MuJoCo twin of the robot and on the robot.
 g1 run tpose --sim                   # a task on the twin, in the MuJoCo window: the robot code, over DDS
 g1 run find_the_mug --sim            # the model searches a room (needs HF_TOKEN)
 g1 run point_at_the_mug --sim        # demo: the waist finds the mug, the right arm points at it
-g1 run sit_in_the_chair --sim        # demo: find a chair, back up to it and sit (the twin does not stand up again)
+g1 run sit_in_the_chair --sim        # demo: walk to the chair ahead, turn around and sit (the twin does not stand up again)
 g1 run tpose --mode gantry           # the robot, hanging in a gantry (never walks)
 g1 run find_the_mug --mode standing --view   # the robot on its own feet (may walk); its camera in a browser
 g1 status                            # read-only: is it the link, or is the robot refusing?

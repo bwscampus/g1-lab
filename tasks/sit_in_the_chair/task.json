@@ -1,9 +1,9 @@
 {
-  "instruction": "find the free-standing chair (not the ones at the table), walk to it and sit down in it",
+  "instruction": "a chair stands about 1.5 m straight ahead of you, facing you; walk up to it, turn around and sit down in it",
   "scene": "room",
-  "objects": ["chair@-1.2,0.8"],
-  "safety_notes": ["Walk toward the chair in steps of at most 0.5 m once it is within about 2 m (its seat fills a good part of the image), observing between steps; never walk into it.", "Sitting is the onboard controller's sit straight down: line up square in front of the chair while you can see it, then turn around and back up as the sit tool says. A 180-degree turn never ends exactly, and once turned away the camera cannot see the chair: look back over a shoulder (look 145 or -145) to check the alignment before backing up and again before sitting, correcting with small moves."],
-  "max_decisions": 50,
-  "max_time_s": 900,
-  "notes": "Demo 2: a chair behind the robot's start (1.2 m back, 0.8 m left, facing the start), so the model has to turn to find it, walk up to it, turn its back to it, back up and sit. Needs HF_TOKEN. Twin: g1 run sit_in_the_chair --sim (the twin sits; it does not play the stand-up, so the run ends seated with a warning). Robot: --mode standing only, with a spotter and the remote ready; the teardown stands it up with SetFsmId(801). Before the first robot run, try the sit by hand with a chair already behind the heels (a tools task: {\"tools\": \"sit\"})."
+  "objects": ["chair@1.5,0"],
+  "safety_notes": ["The chair to sit in is the one straight ahead of the start, not the two at the table to the right. Walk up to it in short moves and never walk into it.", "Sitting is the onboard controller's sit straight down: line up square in front of the chair while you can see it, then turn around and back up as the sit tool says. A 180-degree turn never ends exactly, and once turned away the camera cannot see the chair: look back over a shoulder (look 145 or -145) to check the alignment before backing up and again before sitting, correcting with small moves."],
+  "max_decisions": 20,
+  "max_time_s": 600,
+  "notes": "Demo 2: a chair 1.5 m straight ahead of the start, facing the robot (its seat's front edge about 1.28 m away), so there is no search: walk about 0.8 m, turn around, look back to check, back up 0.3 m and sit. Needs HF_TOKEN. Twin: g1 run sit_in_the_chair --sim (the twin sits; it does not play the stand-up, so the run ends seated with a warning). Robot: put a chair about 1.5 m in front of it, facing it, with clear floor between; --mode standing only, with a spotter and the remote ready; the teardown stands it up with SetFsmId(801). Before the first robot run, try the sit by hand with a chair already behind the heels (a tools task: {\"tools\": \"sit\"})."
 }
