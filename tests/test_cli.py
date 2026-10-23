@@ -1,4 +1,5 @@
 """The g1 command, and: an interrupted run returns the robot to a safe state, and nothing can cut that short."""
+import json
 import os
 import signal
 
@@ -13,7 +14,7 @@ from g1.core.action import Runnable
 from g1.core.config import CONTROL_DT, STAND_Q, UPPER_BODY
 from g1.tools import TOOLS, Chain
 from tests.agent.test_agent import Scripted, Sequence
-from tests.doubles import scripted_sim
+from tests.doubles import scripted_sim, sim_env
 
 JOINTS = sorted(UPPER_BODY)
 
@@ -137,50 +138,76 @@ def test_agent_records_the_interruption(tmp_path):
 
 # -- the command --------------------------------------------------------------------------
 
-def test_g1_dispatches_and_helps(capsys):
-    assert main([]) == 0 and "g1 run" in capsys.readouterr().out
-    assert main(["--help"]) == 0 and "subcommand" in capsys.readouterr().out.lower() or True
+def task_dir(tmp_path, name="t", **spec):
+    d = tmp_path / "tasks" / name
+    d.mkdir(parents=True)
+    (d / "task.json").write_text(json.dumps(spec))
+    return d
+
+
+def test_g1_has_five_commands_and_run_three_flags(capsys):
+    assert main([]) == 0 and "g1 run TASK --sim" in capsys.readouterr().out
     with pytest.raises(SystemExit):
         main(["fly"])
     assert "unknown command" in capsys.readouterr().err
+    for gone in ("task", "tools", "camera", "decide", "episode", "demo", "scene", "new"):
+        with pytest.raises(SystemExit):
+            main([gone])
     with pytest.raises(SystemExit):
-        main(["run", "--env", "sim", "--headless"])                     # no --tools
-    assert "--tools is required" in capsys.readouterr().err
-    assert main(["run", "--env", "sim", "--headless", "--tools", "hold:0.2"]) == 0
-    assert "== hold @ sim ==" in capsys.readouterr().out
-    assert main(["limits", "--source", "robot"]) == 0 and "control_dt_s" in capsys.readouterr().out
-
-
-def test_env_variables_are_the_defaults(monkeypatch, capsys):
-    monkeypatch.setenv("G1_ENV", "sim")
-    monkeypatch.setenv("G1_TOOLS", "hold:0.2")
-    assert main(["run", "--headless"]) == 0
-    assert "== hold @ sim ==" in capsys.readouterr().out
-
-
-def test_view_and_record_flags(tmp_path, capsys, monkeypatch):
-    av = pytest.importorskip("av")
-    out = tmp_path / "chain.mp4"
-    assert main(["run", "--env", "sim", "--headless", "--tools", "hold:0.5", "--view", "0", "--record", str(out)]) == 0
+        main(["run", "tpose", "--help"])
     text = capsys.readouterr().out
-    assert "view: http://127.0.0.1:" in text and f"recording: {out}" in text and "dropped ->" in text
-    c = av.open(str(out))
-    assert sum(1 for _ in c.decode(c.streams.video[0])) > 10             # the camera was opened for a chain
-    c.close()
-    with pytest.raises(SystemExit, match="--camera off"):
-        main(["run", "--env", "sim", "--headless", "--tools", "hold:0.2", "--view", "0", "--camera", "off"])
-    # --record with no path: a chain lands under --log, an agent inside its (renamed) run directory
-    assert main(["run", "--env", "sim", "--headless", "--tools", "hold:0.2", "--record", "--log", str(tmp_path)]) == 0
-    files = list(tmp_path.glob("*_sim_hold.mp4"))
-    assert len(files) == 1
+    assert all(f in text for f in ("--sim", "--mode", "--view")) and "--viewer" not in text and "--walk" not in text
+    assert "--tools" not in text and "--headless" not in text
+
+
+def test_the_robot_needs_a_mode_and_view_is_the_robots_camera(capsys):
+    with pytest.raises(SystemExit, match="needs --mode"):
+        main(["run", "tpose"])                                        # before anything touches the network
+    with pytest.raises(SystemExit):
+        main(["run", "tpose", "--sim", "--view"])
+    assert "--sim already shows the twin" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        main(["run", "no_such_task", "--sim"])
+    assert "tasks: " in capsys.readouterr().err
+
+
+def test_a_tools_task_runs_records_and_traces(tmp_path, capsys):
+    from g1.agent.task import load_task
+    from g1.cli import run_task
+    task = load_task(task_dir(tmp_path, tools="hold:0.3"))
+    assert run_task(task, sim=True, mode=None, env=sim_env()) == 0
+    (run_dir,) = (task["dir"] / "runs").iterdir()
+    assert (run_dir / "trace.npz").stat().st_size > 0 and json.loads((run_dir / "status.json").read_text())["outcome"] == "success"
+    row = json.loads((task["dir"] / "results.jsonl").read_text())
+    assert row["run"] == run_dir.name and row["outcome_source"] == "checks"
+    assert "result: success" in capsys.readouterr().out
+
+
+def test_gantry_never_walks(tmp_path, capsys):
+    from g1.agent.task import load_task
+    from g1.cli import run_task
+    task = load_task(task_dir(tmp_path, tools="walk_forward:0.3"))
+    with pytest.raises(SystemExit, match="never walks"):
+        run_task(task, sim=True, mode="gantry", env=sim_env(mode="gantry"))
+    assert not (task["dir"] / "runs").exists() or not any((task["dir"] / "runs").iterdir())
+    assert sim_env(mode="gantry").can_walk is False and sim_env().can_walk is True
+
+
+def test_an_instruction_task_runs_the_agent(tmp_path, monkeypatch, capsys):
     from g1.agent import agent as agent_module
+    from g1.agent.task import load_task
+    from g1.cli import run_task
     from tests.agent.test_agent import Sequence
+    monkeypatch.setattr(agent_module, "ask_save", lambda: pytest.fail("a sim run asks nothing"))
+    monkeypatch.setattr(agent_module, "ask_verdict", lambda: pytest.fail("a sim run asks nothing"))
     dec = Sequence([("done", {"summary": "s", "hindsight": "h"})])
     monkeypatch.setattr(agent_module.VLMDecider, "from_env", classmethod(lambda cls, *a, **k: dec))
-    assert main(["run", "--env", "sim", "--headless", "--tools", "search", "-i", "g", "--record", "--no-verdict",
-                 "--log", str(tmp_path / "runs")]) == 0
-    (run_dir,) = (tmp_path / "runs").iterdir()
-    assert run_dir.name.endswith("_unreviewed") and (run_dir / "camera.mp4").stat().st_size > 0
+    task = load_task(task_dir(tmp_path, instruction="find it", safety_notes=["a wall behind"]))
+    assert run_task(task, sim=True, mode=None, env=scripted_sim(Scripted())) == 0
+    (run_dir,) = (task["dir"] / "runs").iterdir()
+    assert run_dir.name.endswith("_unreviewed") and (run_dir / "trace.npz").exists() and (run_dir / "episode.json").exists()
+    assert json.loads((task["dir"] / "results.jsonl").read_text())["run"] == run_dir.name
+    assert "a wall behind" in dec.context.instructions
 
 
 def test_agent_records_sdk_calls_and_verbose_health(tmp_path, capsys):
@@ -204,6 +231,75 @@ def test_agent_records_sdk_calls_and_verbose_health(tmp_path, capsys):
     agent.close()
     events = [json.loads(l) for l in (rec.dir / "events.jsonl").read_text().splitlines()]
     calls = [e for e in events if e["event"] == "sdk_call"]
+    assert [(c["client"], c["name"]) for c in calls[:2]] == [("AudioClient", "GetVolume"), ("LocoClient", "GetFsmId")]
+    calls = calls[2:]                                                    # after the bring-up: the injected failure
     assert len(calls) == 1 and calls[0]["name"] == "StopMove" and calls[0]["code"] == 3104 and "step" in calls[0]
     out = capsys.readouterr().out
-    assert "t=   1.0  ticks 50" in out                                  # the sim's health line, keyed to sim time
+    assert "t=   1.0  lowstate " in out and "ticks 50 " in out      # the robot's health line, on the twin's clock
+
+
+def test_view_serves_the_head_camera_while_the_run_lasts(capsys):
+    import urllib.request
+    from g1.tools.control import Hold
+    seen = {}
+
+    class Peek(Chain):
+        def step(self, t, obs):
+            if "url" not in seen and t > 0.5:
+                url = next(l.split("view: ")[1] for l in capsys.readouterr().out.splitlines() if l.startswith("view: "))
+                seen["url"] = url
+                seen["frame"] = urllib.request.urlopen(url + "frame", timeout=2).read()[:2]
+            return super().step(t, obs)
+    env = sim_env(view=True)
+    assert run(Peek(Hold(seconds=1.0), pause=0.0), env) is True       # a chain alone opens no camera; --view does
+    assert seen["frame"] == b"\xff\xd8"                                 # a JPEG, served mid-run
+    import urllib.error
+    with pytest.raises(urllib.error.URLError):
+        urllib.request.urlopen(seen["url"], timeout=1)                   # gone once the run ended
+
+
+def test_a_robot_run_asks_to_save_then_for_the_verdict(tmp_path, monkeypatch, capsys):
+    from g1.agent import agent as agent_module
+    from g1.agent.task import load_task
+    from g1.cli import run_task
+    task = load_task(task_dir(tmp_path, tools="hold:0.3"))
+    asked = []
+    monkeypatch.setattr(agent_module, "ask_save", lambda: asked.append("save") or False)
+    monkeypatch.setattr(agent_module, "ask_verdict", lambda: asked.append("verdict") or "success")
+    # the in-process twin stands in for the robot: sim=False is the robot's path after the run
+    assert run_task(task, sim=False, mode="standing", env=sim_env(mode="standing")) == 0
+    assert asked == ["save"] and not any((task["dir"] / "runs").iterdir())    # not saved: gone, never asked the verdict
+    assert not (task["dir"] / "results.jsonl").exists() and "run not saved" in capsys.readouterr().out
+    monkeypatch.setattr(agent_module, "ask_save", lambda: asked.append("save") or True)
+    monkeypatch.setattr(agent_module, "ask_verdict", lambda: asked.append("verdict") or "failed")
+    assert run_task(task, sim=False, mode="standing", env=sim_env(mode="standing")) == 0
+    (run_dir,) = (task["dir"] / "runs").iterdir()
+    assert asked[1:] == ["save", "verdict"] and run_dir.name.endswith("_robot_hold-0-3_failed")
+    status = json.loads((run_dir / "status.json").read_text())
+    assert status["outcome"] == "failed" and status["outcome_source"] == "human"     # the human, not the checks
+    assert json.loads((task["dir"] / "results.jsonl").read_text())["outcome_source"] == "human"
+
+
+def test_label_run_marks_an_agent_record(tmp_path):
+    from g1.agent.task import label_run
+    run = tmp_path / "20261019-120000_robot_find-it_unreviewed"
+    run.mkdir()
+    (run / "status.json").write_text(json.dumps({"outcome": "unreviewed", "outcome_source": "unreviewed"}))
+    (run / "episode.json").write_text(json.dumps({"outcome": "unreviewed"}))
+    (run / "events.jsonl").write_text("")
+    out = label_run(run, "success")
+    assert out.name == "20261019-120000_robot_find-it_success" and not run.exists()
+    assert json.loads((out / "status.json").read_text())["human_outcome"] == "success"
+    assert json.loads((out / "episode.json").read_text())["outcome"] == "success"
+    assert json.loads((out / "events.jsonl").read_text())["event"] == "human_evaluation"
+
+
+def test_g1_limits_prints_every_limit_as_one_table(capsys):
+    from g1.core import limits
+    assert main(["limits"]) == 0
+    out = capsys.readouterr().out
+    assert all(name in out for name in limits.NAMES) and f"{len(limits.NAMES)} limits" in out
+    assert main(["limits", "guess"]) == 0
+    out = capsys.readouterr().out
+    assert "with source 'guess'" in out and "control_dt_s" not in out            # control_dt_s is a robot fact
+    assert main(["limits", "vibes"]) == 2

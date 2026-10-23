@@ -1,14 +1,15 @@
-"""Base motion: a segment that holds a base velocity (LocoClient.Move on the
-robot, a slide of the pinned pelvis in sim) and leaves every joint where it
-is. Durations round up to whole ticks so ``distance = v * t`` is exact and the
-dead-reckoned end pose is the request."""
+"""Base motion: a segment that holds a base velocity (LocoClient.Move, on the
+robot and on the twin in sim) and leaves every joint where it is. Durations
+round up to whole ticks so ``distance = v * t`` is exact and the dead-reckoned
+end pose is the request; where the robot actually ends is a few cm and degrees
+off, as the twin shows."""
 from __future__ import annotations
 
 import math
 
 from g1.core import limits
 from g1.core.action import Segment
-from g1.core.config import CONTROL_DT
+from g1.core.config import CONTROL_DT, HEAD_CAMERA_FOV_H
 from g1.tools.base import Tool, limit, num
 
 WALK_SPEED = limits.get("walk_speed")
@@ -36,10 +37,11 @@ class Move(Tool):
               "{limit:move_dyaw_max_deg} degrees either way, positive turns LEFT), in the current frame. The host "
               "translates at {limit:walk_speed} m/s then turns at {limit:turn_rate} rad/s, observing every "
               "{limit:record_step_s} s but not re-deciding. Only when the note states the floor is clear for the "
-              "whole displacement. To face a visible target, turn by its bearing (the image spans about 77 degrees "
-              "horizontally). To search, turn LEFT in steps of 45-60 degrees and observe between turns; after a full "
+              "whole displacement. To face a visible target, turn by its bearing (the image spans about "
+              f"{HEAD_CAMERA_FOV_H:.0f} degrees horizontally). To search, turn LEFT in steps of 45-60 degrees and observe between turns; after a full "
               "circle without seeing the goal, move 0.5 m into clear space and search again. To pass an obstacle, "
-              "sidestep or turn around it in short moves rather than walking at it.")
+              "sidestep or turn around it in short moves rather than walking at it. A turn rarely ends exactly where "
+              "asked. Before walking backward or sideways, look back (look) to check that side is clear, then look 0.")
     params = {
         "dx_m": num(-limit("move_dx_max_m"), limit("move_dx_max_m"), 0.0, "metres forward (negative: backward)"),
         "dy_m": num(-limit("move_dy_max_m"), limit("move_dy_max_m"), 0.0, "metres to the left (negative: right)"),
@@ -63,15 +65,15 @@ class Move(Tool):
 
 
 class WalkForward(Tool):
-    """A preset (CLI chains and replay): ``move`` with only dx."""
+    """A preset (tools chains): ``move`` with only dx."""
 
     name = "walk_forward"
     order = 60
     visible = False
     needs_base = True
-    prompt = ("Walk straight ahead by distance_m metres (0.1 to {limit:move_dx_max_m}) at {limit:walk_speed} m/s, "
+    prompt = ("Walk straight ahead by distance_m metres ({limit:walk_forward_min_m} to {limit:move_dx_max_m}) at {limit:walk_speed} m/s, "
               "observed every {limit:record_step_s} s but not re-decided.")
-    params = {"distance_m": num(0.1, limit("move_dx_max_m"), None, "metres to walk")}
+    params = {"distance_m": num(limit("walk_forward_min_m"), limit("move_dx_max_m"), None, "metres to walk")}
 
     def segments(self) -> tuple[Segment, ...]:
         duration = ticks(self.distance_m / WALK_SPEED)

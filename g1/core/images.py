@@ -18,6 +18,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from g1.core import limits
+
 
 def read_rgb(path: Path | str) -> np.ndarray:
     """An image file as a uint8 RGB array. Raises IOError when it cannot be read."""
@@ -28,7 +30,7 @@ def read_rgb(path: Path | str) -> np.ndarray:
         raise IOError(f"could not read {path}: {e}") from None
 
 
-def write_png(path: Path | str, image_rgb: np.ndarray, compress: int = 3) -> None:
+def write_png(path: Path | str, image_rgb: np.ndarray, compress: int = limits.get("png_compress_level")) -> None:
     """Lossless: the exact RGB array reads back."""
     try:
         Image.fromarray(_rgb(image_rgb)).save(path, format="PNG", compress_level=compress)
@@ -36,12 +38,18 @@ def write_png(path: Path | str, image_rgb: np.ndarray, compress: int = 3) -> Non
         raise IOError(f"could not write {path}: {e}") from None
 
 
+def sent_size(width: int, height: int, max_width: int) -> tuple[int, int]:
+    """(width, height) of a frame downscaled to ``max_width`` (never enlarged)."""
+    if width <= max_width:
+        return width, height
+    return max_width, int(round(height * max_width / width))
+
+
 def encode_jpeg(image_rgb: np.ndarray, max_width: int, quality: int) -> bytes:
     """JPEG bytes of an RGB frame, downscaled to ``max_width`` (never enlarged)."""
     im = Image.fromarray(_rgb(image_rgb))
-    w, h = im.size
-    if w > max_width:
-        im = im.resize((max_width, int(round(h * max_width / w))), Image.Resampling.BOX)
+    if im.size[0] > max_width:
+        im = im.resize(sent_size(*im.size, max_width), Image.Resampling.BOX)
     buf = io.BytesIO()
     im.save(buf, format="JPEG", quality=int(quality))
     return buf.getvalue()

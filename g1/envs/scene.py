@@ -6,20 +6,19 @@ Assets are fetched on demand into ``assets/`` (git-ignored) with attribution:
   Poly Haven textures (CC0)                 https://polyhaven.com
   YCB object meshes (CC-BY 4.0, Calli et al.)  https://www.ycbbenchmarks.com
 
-    g1 scene fetch            # everything (about 40 MB)
-    g1 scene fetch mug pencil # just what a run needs (pencil is built from primitives)
-    g1 scene status
+    g1 twin fetch             # with the twin's model (about 40 MB for the room)
+    g1 twin status
 
-Robot frame: it starts at the origin facing +x. The room spans x -2..4,
-y -3..3, 2.5 m high, with a doorway in the +x wall.
+Room frame: the robot starts at the origin facing +x unless a task gives a
+``start``. The room spans x -2..4, y -3..3, 2.5 m high, with a doorway in the +x
+wall. None of this is ever told to the model: it knows the room only from the
+camera, as the real robot would.
 """
 from __future__ import annotations
 
 import argparse
 import math
-import os
 import re
-import sys
 import tarfile
 import urllib.request
 from pathlib import Path
@@ -40,7 +39,7 @@ YCB = {        # object name: YCB id (google_16k scans: textured.obj + texture_m
     "mustard": "006_mustard_bottle",
 }
 YCB_URL = "https://ycb-benchmarks.s3.amazonaws.com/data/google/{id}_google_16k.tgz"
-PRIMITIVE_OBJECTS = ("pencil",)
+PRIMITIVE_OBJECTS = ("pencil", "chair", "laptop")   # chair and laptop face the start
 OBJECTS = tuple(YCB) + PRIMITIVE_OBJECTS
 
 # Room layout (metres)
@@ -49,24 +48,16 @@ ROOM_Y = (-3.0, 3.0)
 ROOM_H = 2.5
 DOOR_Y = (0.5, 1.4)          # gap in the +x wall
 DOOR_H = 2.0
-TABLE = (2.2, -1.5)           # centre; 1.2 x 0.7 m top at 0.75 m
+TABLE = (2.2, -1.5)           # centre
+TABLE_HALF = (0.6, 0.35)      # 1.2 x 0.7 m
+TABLE_TOP_Z = 0.77            # its top surface: put an object on it at z = 0.77
+TABLE_CHAIRS = ((TABLE[0] - 0.3, TABLE[1] + 0.75), (TABLE[0] + 0.3, TABLE[1] + 0.75))   # on the start's side
 
-# Persistent physical facts a head camera cannot see: their "scene.safety_notes",
-# rendered as the hidden-obstacles block of the agent's system prompt.
-SAFETY_NOTES = {
-    "none": [],
-    "room": [
-        "The robot starts at the room's origin facing +x. Walls stand 2 m behind it (x = -2), 4 m "
-        "ahead (x = +4) and 3 m to each side (y = +/-3); a walk_forward cannot pass through them.",
-        "A table (1.2 x 0.7 m, 0.75 m high) with two chairs stands 2.2 m ahead and 1.5 m to the right "
-        "of the start (x = 2.2, y = -1.5); it is hidden when the robot faces away from it.",
-        "The doorway is in the far wall (x = +4) between y = 0.5 and 1.4 m; do not walk through it.",
-    ],
-}
-
-
-def safety_notes(scene: str | None) -> list[str]:
-    return list(SAFETY_NOTES.get(scene or "none", []))
+# A laptop (metres): base depth (front to hinge), width and thickness; the screen's height and
+# thickness; how far it is opened from closed (110: tipped 20 degrees back past upright).
+LAPTOP_BASE = (0.22, 0.32, 0.018)
+LAPTOP_SCREEN = (0.21, 0.008)
+LAPTOP_OPEN_DEG = 110.0
 
 
 # --------------------------------------------------------------------------
@@ -129,7 +120,7 @@ def fetch(objects: Sequence[str] = tuple(YCB), force: bool = False) -> None:
             t.extractall(ASSETS / "ycb", members=members)
         tgz.unlink()
     (ASSETS / "ATTRIBUTION.md").write_text(
-        "# Third-party assets (downloaded by `g1 scene fetch`, not part of this repo)\n\n"
+        "# Third-party assets (downloaded by `g1 twin fetch`, not part of this repo)\n\n"
         "## Textures — Poly Haven, CC0 (https://polyhaven.com/license)\n"
         + "".join(f"- {slug}: {url}\n" for slug, url in TEXTURES.values())
         + "\n## Object meshes — YCB Object and Model Set, CC-BY 4.0\n"
@@ -163,6 +154,48 @@ def parse_object(spec: str) -> tuple[str, float, float, Optional[float]]:
     return m.group(1), float(m.group(2)), float(m.group(3)), None if m.group(4) is None else float(m.group(4))
 
 
+def _chair(w, tag: str, x: float, y: float, back: tuple[float, float], material: str) -> None:
+    """A chair from boxes, seat centre at (x, y), its back on the ``back`` side (a unit axis
+    vector in the floor plane). Seat 0.44 m square, its top 0.47 m above the floor."""
+    import mujoco
+    B = mujoco.mjtGeom.mjGEOM_BOX
+    bx, by = back
+    w.add_geom(name=f"{tag}_seat", type=B, size=[0.22, 0.22, 0.02], pos=[x, y, 0.45], material=material)
+    w.add_geom(name=f"{tag}_back", type=B, size=[0.22 * abs(by) + 0.02 * abs(bx), 0.22 * abs(bx) + 0.02 * abs(by), 0.25],
+               pos=[x + 0.2 * bx, y + 0.2 * by, 0.72], material=material)
+    for i, (dx, dy) in enumerate(((0.18, 0.18), (-0.18, 0.18), (0.18, -0.18), (-0.18, -0.18))):
+        w.add_geom(name=f"{tag}_leg{i}", type=B, size=[0.02, 0.02, 0.215], pos=[x + dx, y + dy, 0.215], material=material)
+
+
+def _laptop(w, tag: str, x: float, y: float, z: float, back: tuple[float, float], display: str) -> None:
+    """An open laptop from boxes, its base on z with the keyboard toward the start and the
+    hinge and screen on the ``back`` side (a unit axis vector in the floor plane). Dark grey,
+    the display lit blue-grey (the display material); never red (the red-blob test double must not see it)."""
+    import mujoco
+    B = mujoco.mjtGeom.mjGEOM_BOX
+    depth, width, thick = LAPTOP_BASE
+    height, sthick = LAPTOP_SCREEN
+    tilt = math.radians(LAPTOP_OPEN_DEG - 90.0)               # past upright, away from the user
+    yaw = math.atan2(back[1], back[0])                         # local +x: toward the hinge
+    body = w.add_body(name=tag, pos=[x, y, z], quat=[math.cos(yaw / 2), 0, 0, math.sin(yaw / 2)])
+    shell, keys = [0.27, 0.28, 0.30, 1], [0.08, 0.08, 0.09, 1]
+    body.add_geom(name=f"{tag}_base", type=B, size=[depth / 2, width / 2, thick / 2], pos=[0, 0, thick / 2], rgba=shell)
+    body.add_geom(name=f"{tag}_keyboard", type=B, size=[depth * 0.26, width * 0.42, 0.0006],
+                  pos=[depth * 0.08, 0, thick + 0.0006], rgba=keys, contype=0, conaffinity=0)
+    body.add_geom(name=f"{tag}_trackpad", type=B, size=[depth * 0.11, width * 0.14, 0.0004],
+                  pos=[-depth * 0.32, 0, thick + 0.0004], rgba=[0.2, 0.2, 0.22, 1], contype=0, conaffinity=0)
+    # the lid: hinged at the back edge of the base, tipped ``tilt`` past upright
+    up = (math.sin(tilt), math.cos(tilt))                      # the lid's long axis in (x, z)
+    hinge = (depth / 2, thick)
+    lid = [hinge[0] + up[0] * height / 2, 0, hinge[1] + up[1] * height / 2]
+    q = [math.cos(tilt / 2), 0, math.sin(tilt / 2), 0]         # about y: z axis -> up
+    body.add_geom(name=f"{tag}_screen", type=B, size=[sthick / 2, width / 2, height / 2], pos=lid, quat=q, rgba=shell)
+    inset = sthick / 2 + 0.0005                                # the display, on the user's side of the lid
+    body.add_geom(name=f"{tag}_display", type=B, size=[0.0004, width * 0.45, height * 0.42],
+                  pos=[lid[0] - inset * up[1], 0, lid[2] + inset * up[0]], quat=q, material=display,
+                  contype=0, conaffinity=0)
+
+
 def build_room(spec, objects: Sequence[tuple[str, float, float, Optional[float]]] = (),
                camera_size: Optional[tuple[int, int]] = None) -> None:
     """Add the room, furniture, lights and objects to an MjSpec of the G1 scene."""
@@ -170,7 +203,7 @@ def build_room(spec, objects: Sequence[tuple[str, float, float, Optional[float]]
 
     need = missing([o[0] for o in objects])
     if need:
-        raise FileNotFoundError(f"room assets missing ({', '.join(need)}); run: g1 scene fetch")
+        raise FileNotFoundError(f"room assets missing ({', '.join(need)}); run: g1 twin fetch")
     if camera_size is not None:
         spec.visual.global_.offheight = max(spec.visual.global_.offheight, camera_size[0])
         spec.visual.global_.offwidth = max(spec.visual.global_.offwidth, camera_size[1])
@@ -190,7 +223,7 @@ def build_room(spec, objects: Sequence[tuple[str, float, float, Optional[float]]
     w = spec.worldbody
     cx, cy = (ROOM_X[0] + ROOM_X[1]) / 2, (ROOM_Y[0] + ROOM_Y[1]) / 2
     hx, hy = (ROOM_X[1] - ROOM_X[0]) / 2, (ROOM_Y[1] - ROOM_Y[0]) / 2
-    # The slab's top is exactly z = 0 so objects placed at z = 0 rest on it; the Menagerie
+    # The slab's top is exactly z = 0 so objects placed at z = 0 rest on it; the model's
     # ground plane goes 2 cm below so nothing z-fights. The slab collides, so a free base stands on it.
     for g in spec.geoms:
         if g.name == "floor":
@@ -208,14 +241,12 @@ def build_room(spec, objects: Sequence[tuple[str, float, float, Optional[float]]
                pos=[ROOM_X[1], (y0 + y1) / 2, (ROOM_H + DOOR_H) / 2], material=wall)
     # table and two chairs
     tx, ty = TABLE
-    w.add_geom(name="table_top", type=B, size=[0.6, 0.35, 0.02], pos=[tx, ty, 0.75], material=wood)
+    w.add_geom(name="table_top", type=B, size=[TABLE_HALF[0], TABLE_HALF[1], 0.02], pos=[tx, ty, TABLE_TOP_Z - 0.02],
+               material=wood)
     for i, (dx, dy) in enumerate(((0.55, 0.3), (-0.55, 0.3), (0.55, -0.3), (-0.55, -0.3))):
         w.add_geom(name=f"table_leg{i}", type=B, size=[0.03, 0.03, 0.365], pos=[tx + dx, ty + dy, 0.365], material=wood)
-    for k, (chx, chy, back_dy) in enumerate(((tx - 0.3, ty + 0.75, 0.2), (tx + 0.3, ty + 0.75, 0.2))):
-        w.add_geom(name=f"chair{k}_seat", type=B, size=[0.22, 0.22, 0.02], pos=[chx, chy, 0.45], material=wood)
-        w.add_geom(name=f"chair{k}_back", type=B, size=[0.22, 0.02, 0.25], pos=[chx, chy + back_dy, 0.72], material=wood)
-        for i, (dx, dy) in enumerate(((0.18, 0.18), (-0.18, 0.18), (0.18, -0.18), (-0.18, -0.18))):
-            w.add_geom(name=f"chair{k}_leg{i}", type=B, size=[0.02, 0.02, 0.215], pos=[chx + dx, chy + dy, 0.215], material=wood)
+    for k, (chx, chy) in enumerate(TABLE_CHAIRS):
+        _chair(w, f"table_chair{k}", chx, chy, (0.0, 1.0), wood)
     w.add_light(name="room_light_a", pos=[0.5, 0.0, 2.4], dir=[0, 0, -1], diffuse=[0.7, 0.7, 0.7])
     w.add_light(name="room_light_b", pos=[2.5, 1.5, 2.4], dir=[0, 0, -1], diffuse=[0.5, 0.5, 0.5])
     # objects
@@ -232,6 +263,14 @@ def build_room(spec, objects: Sequence[tuple[str, float, float, Optional[float]]
             mat.textures[mujoco.mjtTextureRole.mjTEXROLE_RGB] = f"{tag}_tex"
             body = w.add_body(name=tag, pos=[x, y, (-lo[2] if z is None else z)])
             body.add_geom(name=f"{tag}_geom", type=mujoco.mjtGeom.mjGEOM_MESH, meshname=f"{tag}_mesh", material=f"{tag}_mat")
+        elif name in ("chair", "laptop"):           # facing the start: back (or hinge) away from it
+            back = (math.copysign(1.0, x), 0.0) if abs(x) >= abs(y) else (0.0, math.copysign(1.0, y))
+            if name == "chair":
+                _chair(w, tag, x, y, back, wood)
+            else:
+                if counts[name] == 1:                # the display, lit so it reads as switched on
+                    spec.add_material(name="laptop_display_mat", rgba=[0.55, 0.70, 0.85, 1], emission=0.6)
+                _laptop(w, tag, x, y, 0.0 if z is None else z, back, "laptop_display_mat")
         elif name == "pencil":
             body = w.add_body(name=tag, pos=[x, y, (0.0035 if z is None else z)])
             lying = [0.7071068, 0.0, 0.7071068, 0.0]        # cylinder axis z -> x
@@ -240,24 +279,3 @@ def build_room(spec, objects: Sequence[tuple[str, float, float, Optional[float]]
             body.add_geom(name=f"{tag}_eraser", type=C, size=[0.0037, 0.008], pos=[-0.093, 0, 0], quat=lying, rgba=[0.95, 0.55, 0.6, 1])
             body.add_geom(name=f"{tag}_ferrule", type=C, size=[0.0037, 0.004], pos=[-0.081, 0, 0], quat=lying, rgba=[0.75, 0.75, 0.78, 1])
             body.add_geom(name=f"{tag}_tip", type=C, size=[0.002, 0.008], pos=[0.093, 0, 0], quat=lying, rgba=[0.85, 0.7, 0.5, 1])
-
-
-def main(argv: Optional[list[str]] = None) -> int:
-    p = argparse.ArgumentParser(prog="g1 scene", description="fetch or inspect the room's assets")
-    p.add_argument("command", choices=("fetch", "status"))
-    p.add_argument("objects", nargs="*", help=f"object names to fetch (default: all of {list(YCB)})")
-    p.add_argument("--force", action="store_true")
-    args = p.parse_args(argv)
-    if args.command == "fetch":
-        bad = [o for o in args.objects if o not in OBJECTS]
-        if bad:
-            p.error(f"unknown objects {bad}; choose from {OBJECTS}")
-        fetch(args.objects or tuple(YCB), force=args.force)
-        print(f"assets in {ASSETS}; attribution in {ASSETS / 'ATTRIBUTION.md'}")
-    need = missing(tuple(YCB))
-    print("missing: " + (", ".join(need) if need else "nothing") + f"  (objects: {', '.join(OBJECTS)})")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

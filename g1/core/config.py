@@ -2,12 +2,13 @@
 
 Joint indices follow the DDS order used by ``LowCmd_.motor_cmd`` /
 ``LowState_.motor_state`` (see unitree_mujoco's g1_joint_index_dds.md), which
-is also the joint/actuator order of the MuJoCo Menagerie ``unitree_g1`` model.
-The limits below were dumped from that model; ``tests/test_config.py`` asserts
-they still match.
+is also the motor order of the twin's model (unitree_mujoco's ``g1_29dof``).
+The limits below were dumped from the Menagerie ``unitree_g1`` model and match
+the twin's; ``tests/core/test_config.py`` asserts they still do.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -76,7 +77,7 @@ RIGHT_ARM = list(range(22, 29))
 ARMS = LEFT_ARM + RIGHT_ARM
 UPPER_BODY = WAIST + ARMS        # everything arm_sdk may command
 
-# Default "stand" pose (Menagerie keyframe): arms hanging, elbows bent.
+# Default "stand" pose: arms hanging, elbows bent (the twin's onboard controller holds it).
 STAND_Q = np.zeros(NUM_JOINTS)
 STAND_Q[[15, 16, 18]] = [0.2, 0.2, 1.28]
 STAND_Q[[22, 23, 25]] = [0.2, -0.2, 1.28]
@@ -91,11 +92,18 @@ def joint_index(name: str) -> int:
 HEAD_CAMERA_POS = (0.0576235, 0.01753, 0.42987)   # m, in torso_link
 HEAD_CAMERA_PITCH = 0.8307767                     # rad, looking down
 HEAD_CAMERA_FOVY = 58.0                           # degrees, vertical
-HEAD_CAMERA_SIZE = (480, 640)                     # sim render height, width
+HEAD_CAMERA_SIZE = (int(limits.get("twin_camera_height_px")), int(limits.get("twin_camera_width_px")))   # sim render H, W
+# horizontal field of view of the sim render, from the vertical one and the aspect
+HEAD_CAMERA_FOV_H = 2 * math.degrees(math.atan(math.tan(math.radians(HEAD_CAMERA_FOVY / 2))
+                                               * HEAD_CAMERA_SIZE[1] / HEAD_CAMERA_SIZE[0]))
 
 # The only onboard LocoClient calls a tool may make (Action.command). Everything else
-# (FSM, damp, torque, sit, squat, stand height) is unreachable from a model reply by construction.
-LOCO_METHODS = frozenset({"WaveHand", "ShakeHand"})
+# (FSM switching, damp, torque, squat, stand height) is unreachable from a model reply by construction.
+# Sit is the one FSM a tool may enter, and only as this name: RobotEnv sends it as SetFsmId(3)
+# (LocoClient.Sit drops the return code), and the teardown stands the robot up (SetFsmId(801)).
+LOCO_METHODS = frozenset({"WaveHand", "ShakeHand", "Sit"})
+LOCO_FSM = {"Sit": 3}                     # allow-listed names that are an FSM switch
+FSM_SIT, FSM_SIT_TO_STAND = 3, 801
 # The only call a tool may make on the audio service ("voice"): text-to-speech. PlayStream
 # (arbitrary bytes), SetVolume and LedControl are not reachable from a reply; volume is a flag.
 AUDIO_METHODS = frozenset({"TtsMaker"})

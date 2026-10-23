@@ -20,6 +20,7 @@ from typing import Callable, Optional
 import numpy as np
 
 from g1.camera import Frame
+from g1.core import limits
 from g1.core.config import CONTROL_DT, NUM_JOINTS
 
 
@@ -32,21 +33,21 @@ class Action:
     joints: indices the program is actually commanding this tick.
     weight: arm_sdk blend in [0, 1]. 1.0 = the program owns the joints, 0.0 =
             the onboard controller owns them. Sim emulates the same blend.
-    kp/kd:  PD gains sent to the robot (sim uses the model's own actuators).
+    kp/kd:  PD gains sent with arm_sdk (the twin applies them as the robot does).
     base:   optional (vx, vy, vyaw) base velocity in m/s, m/s, rad/s (forward,
             left, counter-clockwise), or None for no base command. The robot
-            walks it via LocoClient.Move (needs --walk), sim slides the pinned
-            base, the monitor enforces config.BASE_VEL_MAX.
+            walks it via LocoClient.Move (in --mode standing; --sim walks the twin the same
+            way), the monitor enforces config.BASE_VEL_MAX.
     command: optional one-shot onboard call, ``("WaveHand", {"turn_flag": False})``:
             the robot env calls that LocoClient method once (allow-listed in
-            config.LOCO_METHODS); sim has no equivalent and aborts.
+            config.LOCO_METHODS); the twin plays a stand-in.
     """
 
     q: np.ndarray
     joints: list[int]
     weight: float = 1.0
-    kp: float = 60.0
-    kd: float = 1.5
+    kp: float = limits.get("arm_sdk_kp")
+    kd: float = limits.get("arm_sdk_kd")
     base: Optional[tuple[float, float, float]] = None
     command: Optional[tuple[str, dict]] = None
 
@@ -76,6 +77,7 @@ class Obs:
     qd, tau:   measured joint velocity (rad/s) and torque (N m), or None when
                the env cannot measure them. Sim reads qvel / actuator_force,
                the robot LowState dq / tau_est. Read them; never gate on them.
+    imu_quat:  the pelvis IMU orientation (w, x, y, z) from LowState, or None.
     """
 
     q: np.ndarray
@@ -84,6 +86,7 @@ class Obs:
     base_pose: Optional[tuple[float, float, float]] = None
     qd: Optional[np.ndarray] = None
     tau: Optional[np.ndarray] = None
+    imu_quat: Optional[np.ndarray] = None
 
     def __post_init__(self) -> None:
         self.q = np.asarray(self.q, dtype=float)
@@ -95,8 +98,8 @@ class Runnable:
     name: str = "runnable"
     joints: list[int] = []          # joints this program commands
     dt: float = CONTROL_DT
-    kp: float = 60.0
-    kd: float = 1.5
+    kp: float = limits.get("arm_sdk_kp")
+    kd: float = limits.get("arm_sdk_kd")
     uses_camera: bool = False       # the runner only opens a camera for programs that ask
 
     def reset(self, obs: Obs) -> None:

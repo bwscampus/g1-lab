@@ -14,6 +14,9 @@ joints actually went.
     kinematically
 
 Sim runs it strictly (the run fails and stops early on too many violations).
+There the legs belong to the twin's onboard controller, not to the program, so
+they are held to the hardware limits themselves (``leg_margin=0``): its gait may
+use the last few degrees of ankle roll, as the robot's may.
 The robot runs it report-only over the measured angles: teardown already
 releases the arms, and stopping mid-run is its own risk.
 """
@@ -26,10 +29,11 @@ import numpy as np
 
 from g1.core import limits
 from g1.core.action import Action
-from g1.core.config import (BASE_VEL_MAX, CONTROL_DT, JOINT_HI, JOINT_LO, JOINT_NAMES, NUM_JOINTS,
+from g1.core.config import (BASE_VEL_MAX, CONTROL_DT, JOINT_HI, JOINT_LO, JOINT_NAMES, LEGS, NUM_JOINTS,
                             STAND_Q)
 
-MAX_PRINTED = 12
+MAX_PRINTED = int(limits.get("max_printed_violations"))
+MOVED_RAD = limits.get("joint_moved_rad")      # a span above this counts as moved
 
 
 @dataclass
@@ -55,8 +59,9 @@ class JointMonitor:
                  max_vel: float = limits.get("command_vel_max"),
                  max_violations: int = int(limits.get("max_violations")),
                  strict: bool = True, gate_targets: bool = True, gate_velocity: bool = True,
-                 gate_base: bool = True) -> None:
+                 gate_base: bool = True, leg_margin: float | None = None) -> None:
         self.margin = margin
+        self.leg_margin = margin if leg_margin is None else leg_margin
         self.max_vel = max_vel
         self.max_violations = max_violations
         self.strict = strict
@@ -83,12 +88,18 @@ class JointMonitor:
         self.base_peak = np.zeros(3)
 
     @property
+    def margins(self) -> np.ndarray:
+        m = np.full(NUM_JOINTS, float(self.margin))
+        m[LEGS] = self.leg_margin
+        return m
+
+    @property
     def lo(self) -> np.ndarray:
-        return JOINT_LO + self.margin
+        return JOINT_LO + self.margins
 
     @property
     def hi(self) -> np.ndarray:
-        return JOINT_HI - self.margin
+        return JOINT_HI - self.margins
 
     def _flag(self, joint: int, kind: str, value: float, limit: float) -> None:
         self.violations.append(Violation(self.t, joint, kind, float(value), float(limit)))
@@ -163,7 +174,7 @@ class JointMonitor:
     # -- reporting ---------------------------------------------------------
     def rows(self) -> list[int]:
         """Joints worth printing: commanded, violated, or actually moved."""
-        moved = np.isfinite(self.q_min) & ((self.q_max - self.q_min) > 5e-3)
+        moved = np.isfinite(self.q_min) & ((self.q_max - self.q_min) > MOVED_RAD)
         out = set(self.commanded) | {v.joint for v in self.violations if v.joint >= 0}
         out |= {j for j in range(NUM_JOINTS) if moved[j]}
         return sorted(out)

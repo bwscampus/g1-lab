@@ -54,7 +54,7 @@ def shield_sigint(message: str):
 class Env:
     name: ClassVar[str] = "env"
     use_camera: bool = False
-    verbose: bool = False              # --verbose: print SDK calls and a health line every second
+    verbose: bool = False              # G1_VERBOSE=1: print SDK calls and a health line every second
     sdk_log: list                      # every SDK call: {at_s, client, name, args, code, elapsed_s}
 
     @property
@@ -77,6 +77,10 @@ class Env:
 
     def joint_torque(self):
         """Measured joint torques (29,) N m, or None."""
+        return None
+
+    def imu_quat(self):
+        """The pelvis IMU orientation (w, x, y, z), or None."""
         return None
 
     def __init__(self, args: argparse.Namespace) -> None:
@@ -128,4 +132,4 @@ class Env:
         f = self.frame()
         now = self.clock()
         age = math.inf if f is None else max(0.0, now - f.stamp)
-        return Obs(q, f, age, self.base_pose(), self.joint_vel(), self.joint_torque())
+        return Obs(q, f, age, self.base_pose(), self.joint_vel(), self.joint_torque(), self.imu_quat())

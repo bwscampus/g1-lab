@@ -20,9 +20,8 @@ handback, plus ``wait`` for the backoff before a model retry (each retry
 re-observes; no robot action is ever replayed). ``done`` / ``give_up`` end
 the run with the model's conclusion; the *label* is the human's, asked at
 close. Every tool is seeded from the agent's own last *commanded* q, never
-the measured one (the same rule as a Chain). ``search`` drives it with the
-vision model; ``replay`` rebuilds a saved run as a plain Chain and needs
-neither camera nor model.
+the measured one (the same rule as a Chain). ``build_agent`` makes one for a
+task with an instruction.
 """
 from __future__ import annotations
 
@@ -36,13 +35,14 @@ import numpy as np
 
 from g1.agent.decider import (AgentContext, AgentTurn, Decider, Decision, ProtocolError, VLMDecider, build_context,
                               observation)
-from g1.agent.episode import EpisodeWriter, StepRecord, chain_of, load_episode
+from g1.agent.episode import EpisodeWriter, StepRecord
 from g1.core import limits
 from g1.core.action import EPS, Action, Obs, Runnable
-from g1.core.config import CONTROL_DT, UPPER_BODY, joint_index
-from g1.tools import STEP_MAX, Chain, Tool, menu, parse_chain, prefixed
+from g1.core.images import sent_size
+from g1.core.config import CONTROL_DT, LOCO_FSM, UPPER_BODY, joint_index
+from g1.tools import STEP_MAX, Tool, menu, prefixed
 from g1.tools.control import Handback, Takeover, dry_run
-from g1.vlm import Overloaded, QuotaExceeded
+from g1.vlm import IMAGE_WIDTH, Overloaded, QuotaExceeded
 
 WAIST_YAW = joint_index("waist_yaw")
 
@@ -68,7 +68,7 @@ class Agent(Runnable):
                  frame_max_age: float = limits.get("frame_max_age_s"),
                  frame_timeout: float = limits.get("frame_timeout_s"),
                  max_failures: int = limits.get("max_failures"),
-                 can_walk: bool = True, has_loco: bool = False, safety_notes: Sequence[str] = (), content: Sequence = (),
+                 can_walk: bool = True, has_loco: bool = False, safety_notes: Sequence[str] = (),
                  verdict: Optional[Callable[[], Optional[str]]] = None, name: str = "search",
                  retry_delays: Sequence[float] = RETRY_DELAYS, recovery_timeout: float = RECOVERY_TIMEOUT) -> None:
         self.instruction = instruction
@@ -88,7 +88,6 @@ class Agent(Runnable):
         self.can_walk = can_walk
         self.has_loco = has_loco
         self.safety_notes = list(safety_notes)
-        self.content = tuple(content)
         self.verdict = verdict
         self.name = name
         self.retry_delays = tuple(retry_delays)
@@ -114,6 +113,7 @@ class Agent(Runnable):
         self._attempt = 0
         self._deadline: Optional[float] = None
         self._request_id = 0
+        self._view: Optional[dict] = None     # what the robot measured when the latest image was taken
         self._previous: Optional[dict] = None     # the next observation's previous_result
         self._pending: Optional[dict] = None      # a finished tool awaiting its settle report
         self._base_cmd = np.zeros(3)              # dead-reckoned (x, y, yaw) from commanded velocity
@@ -128,6 +128,7 @@ class Agent(Runnable):
         self._turn: Optional[AgentTurn] = None
         self._wall0 = 0.0
         self._wait_until = 0.0
+        self._seated = False                      # a sit finished: nothing may walk or call onboard again
         self.decider.start(self.context)
         self._event("protocol", self.context.record())
         self._enter_sub("takeover", 0.0, Takeover())
@@ -160,6 +161,13 @@ class Agent(Runnable):
             if self.recorder.meta.get("result") is None:
                 self.recorder.finish(status, steps=len(self.steps))
             final = self.recorder.close(status, human=human, error=self.error)
+            calls = self.recorder.usage_calls
+            if calls:
+                secs = sorted(float(c.get("elapsed_s", 0.0)) for c in calls)
+                reasoning = [((c.get("usage") or {}).get("completion_tokens_details") or {}).get("reasoning_tokens") or 0
+                             for c in calls]
+                self._say(f"model: {len(calls)} calls, thinking {secs[len(secs) // 2]:.1f} s median / "
+                          f"{secs[-1]:.1f} s max, reasoning tokens up to {max(reasoning)}")
             self._say(f"recorded to {final}")
 
     # -- state helpers ---------------------------------------------------------------
@@ -285,17 +293,25 @@ class Agent(Runnable):
 
     # -- the observation -----------------------------------------------------------------
     def _state_payload(self, obs: Obs) -> dict:
+        """What the robot knows about itself: measured joints and its own commands. Never the
+        simulator's truth (obs.base_pose), which only the record keeps."""
         return {"joint_pos": obs.q, "joint_vel": obs.qd, "joint_torque": obs.tau,
                 "waist_yaw_deg": math.degrees(float(self._cmd[WAIST_YAW])),
-                "base_pose_cmd": self._pose_deg(self._base_cmd),
+                "base_pose_cmd": self._pose_deg(self._base_cmd)}
+
+    def _record_state(self, obs: Obs) -> dict:
+        return {**self._state_payload(obs),
                 "base_pose_env": None if obs.base_pose is None else self._pose_deg(obs.base_pose)}
 
     def _observe(self, t: float, obs: Obs, frame) -> None:
         """Build the turn from this snapshot and ask the decider."""
         t0 = time.perf_counter()
         images_meta, images = [], {}
+        self._view = {"frame_size": None, "q": obs.q.copy(), "imu_quat": obs.imu_quat}   # as measured now
         if frame is not None:
-            h, w = frame.image.shape[:2]
+            # the size the model sees: pixels it names (locate_point) are in this image
+            w, h = sent_size(frame.image.shape[1], frame.image.shape[0], getattr(self.decider, "max_width", IMAGE_WIDTH))
+            self._view["frame_size"] = (w, h)
             images_meta = [{"name": "head", "width": int(w), "height": int(h),
                             "captured_age_s": float(obs.frame_age)}]
             images = {"head": frame.image}
@@ -305,15 +321,13 @@ class Agent(Runnable):
             extra["attempt"] = self._attempt
         text = observation(self.instruction, self._state_payload(obs), images_meta, extra, self._previous)
         self._request_id += 1
-        self._turn = AgentTurn(text, images, self.content if self._env_step == 0 and not self._attempt else (),
-                               request_id=self._request_id, step=self._env_step,
+        self._turn = AgentTurn(text, images, request_id=self._request_id, step=self._env_step,
                                frame_seq=None if frame is None else frame.seq,
                                frame_stamp=None if frame is None else frame.stamp)
         self._observe_prep = time.perf_counter() - t0
-        self._event("observation", {"step": self._env_step, "input_json": text, "state": self._state_payload(obs),
+        self._event("observation", {"step": self._env_step, "input_json": text, "state": self._record_state(obs),
                                     "images": [{**m, "path": f"step_{self._step:04d}.png"} for m in images_meta],
-                                    **({"attempt": self._attempt} if self._attempt else {}),
-                                    **({"content": _content_records(self._turn.content)} if self._turn.content else {})})
+                                    **({"attempt": self._attempt} if self._attempt else {})})
         self._wall0 = time.monotonic()
         if not self.decider.request(self._turn):
             self._say("decider busy; will retry")
@@ -347,8 +361,11 @@ class Agent(Runnable):
               "settle": settle}
         result = {"status": "completed", "duration_s": p["duration"], "execution_feedback": fb}
         self._event("execution_result", {"step": p["env_step"], "name": p["name"], "result": result})
-        # their compact model view: no motion_progress, no settle bookkeeping once settled
-        view = {k: v for k, v in fb.items() if k != "motion_progress"}
+        # their compact model view: no motion_progress, no settle bookkeeping once settled, and only what
+        # the robot can measure: the base as commanded, never the simulator's truth
+        view = {k: v for k, v in fb.items()
+                if k not in ("motion_progress", "base_measured_pose", "base_measured_source", "base_error")}
+        view["base_commanded_delta"] = fb["motion_progress"]["requested_delta"]
         if settle["settled"]:
             view["settle"] = {k: v for k, v in settle.items()
                               if k not in ("consecutive_samples", "required_samples",
@@ -462,6 +479,7 @@ class Agent(Runnable):
                     self._close_chunk("running", t, obs)
                 return self._emit(a)
             self._close_chunk("completed", t, obs)
+            self._seated = self._seated or self._tool.command in LOCO_FSM
             self._event("tool_timing", {"step": self._env_step, "name": self._tool.name,
                                         "execute_s": t - self._act_t0, "status": "completed"})
             self._pending = {"name": self._tool.name, "env_step": self._env_step, "duration": t - self._act_t0,
@@ -474,8 +492,10 @@ class Agent(Runnable):
         self._event("decision_timing", {"step": self._env_step, "observation_prepare_s": self._observe_prep,
                                         "agent_decide_s": time.monotonic() - self._wall0, "status": status,
                                         **({"attempt": self._attempt} if self._attempt else {})})
-        if self.recorder is not None and self.decider.last_call is not None:
-            self.recorder.usage(self.decider.last_call)
+        call = self.decider.last_call
+        # on a timeout the request is still out and last_call is the one before it
+        if self.recorder is not None and call is not None and call.get("request_id") == self._request_id:
+            self.recorder.usage(call)
 
     def _model_error(self, t: float, obs: Obs, e: Optional[BaseException]) -> Action:
         if isinstance(e, ProtocolError):
@@ -488,7 +508,7 @@ class Agent(Runnable):
                 self._event("model_retry_exhausted", {"step": self._env_step, "retries": self._attempt,
                                                       "reason": reason, "error": str(e)})
                 return self._fail(t, f"model overloaded: {reason}")
-            delay = self.retry_delays[self._attempt] + random.uniform(0, 0.5)
+            delay = self.retry_delays[self._attempt] + random.uniform(0, limits.get("retry_jitter_s"))
             self._attempt += 1
             self._event("model_retry", {"step": self._env_step, "retry": self._attempt,
                                         "max_retries": len(self.retry_delays), "delay_s": delay,
@@ -520,7 +540,7 @@ class Agent(Runnable):
             return self._to_handback(t, "give_up" if d.name == "give_up" else "completed")
         if tool.kind == "query":
             try:
-                verdict = tool.query(self._cmd, self.joints)
+                verdict = tool.query(self._cmd, self.joints, view=self._view)
             except ValueError as e:
                 return self._reject(t, obs, d.name, f"tool_rejected: {e}", raw=d.raw, arguments=d.arguments)
             self._event("execution_result", {"step": self._env_step, "name": d.name, "result": verdict})
@@ -534,6 +554,9 @@ class Agent(Runnable):
         if tool.needs_loco and not self.has_loco:
             return self._reject(t, obs, d.name, "tool_rejected: no onboard controller for gestures in this env",
                                 raw=d.raw, arguments=d.arguments)
+        if self._seated and (tool.needs_base or tool.needs_loco):
+            return self._reject(t, obs, d.name, "tool_rejected: the robot is seated; it cannot walk, gesture or "
+                                "sit again (end with done)", raw=d.raw, arguments=d.arguments)
         # their IK check before submission: plan it from the commanded pose, reject on any violation
         verdict = dry_run(tool, self._cmd, self.joints)
         if verdict["status"] != "ok":
@@ -552,14 +575,25 @@ class Agent(Runnable):
         return self.step(t, obs)
 
 
-def _content_records(parts) -> list:
-    from g1.agent.demo import content_records
-    return content_records(parts)
-
-
 # --------------------------------------------------------------------------
 # CLI builders
 # --------------------------------------------------------------------------
+
+def ask_save() -> bool:
+    """After a robot run: keep it? Without a terminal it is kept (unreviewed); EOF/Ctrl-C keeps it."""
+    import sys
+    if not sys.stdin.isatty():
+        return True
+    while True:
+        try:
+            answer = input("Save this run? [y / n]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return True
+        if answer in ("y", "yes"):
+            return True
+        if answer in ("n", "no"):
+            return False
+
 
 def ask_verdict() -> Optional[str]:
     """Their terminal prompt: success or failed, nothing else; EOF/Ctrl-C skips."""
@@ -567,73 +601,29 @@ def ask_verdict() -> Optional[str]:
     if not sys.stdin.isatty():
         return None
     while True:
-        answer = input("Task result [s success / f failed]: ").strip().lower()
+        try:
+            answer = input("Task result [s success / f failed]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return None
         if answer in ("s", "success"):
             return "success"
         if answer in ("f", "failed", "fail"):
             return "failed"
 
 
-def build_search(args, can_walk: bool, has_loco: bool = False) -> Agent:
-    from g1.agent.demo import DEFAULT_FRAMES, MAX_FRAMES, VideoPart, build_request, build_selector, prepare, save_input
-    if not getattr(args, "instruction", None) and not getattr(args, "input_json", None):
-        raise ValueError("search needs --instruction, e.g. --instruction \"find the mug\" (or --input-json)")
-    request = build_request(getattr(args, "instruction", None), manifest=getattr(args, "input_json", None),
-                            demo=getattr(args, "demo", None), mode=getattr(args, "demo_mode", None),
-                            refs=getattr(args, "ref", None) or [])
-    args.instruction = request.instruction
-    echo = (lambda s: print(s, end="", flush=True)) if getattr(args, "echo", False) else None
-    decider = VLMDecider.from_env(getattr(args, "model", None), on_text=echo,
-                                  live_image_window=getattr(args, "live_image_window", limits.get("live_image_window")),
-                                  fresh_turns=getattr(args, "fresh_turns", False))
+def build_agent(task: dict, *, env_name: str, can_walk: bool, has_loco: bool, runs: Path | str) -> Agent:
+    """The agent for a task with an instruction: the vision model ($VLM_MODEL), the menu
+    this env allows, the scene's and the task's safety notes, recorded under ``runs``. It asks
+    nothing at the end: ``g1 run`` asks, on the robot only (save it? then the verdict)."""
+    decider = VLMDecider.from_env()
     tools = menu(can_walk, has_loco)
-    from g1.envs.scene import safety_notes
-    notes = safety_notes(getattr(args, "scene", None)) + list(getattr(args, "safety_note", None) or [])
-    recorder = None
-    if not getattr(args, "no_log", False):
-        recorder = EpisodeWriter(getattr(args, "log", "runs"), env=args.env, instruction=args.instruction,
-                                 model=decider.model, tools=[t.name for t in tools], allow_base=can_walk,
-                                 extra={"max_decisions": args.max_decisions, "step_timeout": args.step_timeout,
-                                        "live_image_window": getattr(decider, "live_image_window", None),
-                                        "fresh_turns": getattr(decider, "fresh_turns", False), "safety_notes": notes,
-                                        "request": request.record()})
-        print(f"recording to {recorder.dir}")
-    # demonstrations and reference images: compiled before any device opens, archived with the run
-    content = ()
-    if request.content:
-        import tempfile
-        frames = max(1, min(MAX_FRAMES, getattr(args, "demo_frames", DEFAULT_FRAMES)))
-        selector = None
-        if any(isinstance(p, VideoPart) for p in request.content):
-            selector = build_selector(getattr(args, "demo_select", "auto"), frames, getattr(args, "model", None))
-        where = recorder.dir / "input" if recorder is not None else Path(tempfile.mkdtemp(prefix="g1-demo-"))
-        prepared, reports = prepare(request, where, selector=selector, max_frames=frames)
-        content = prepared.content
-        for r in reports:
-            print(f"demonstration {r['source']}: {r['keyframes']} keyframe(s), {r['mode']}; {r['summary'][:160]}")
-        if recorder is not None:
-            save_input(prepared, where)
-            recorder.event("input_manifest", {**prepared.record(), "reports": reports})
-            if selector is not None:
-                for call in getattr(selector, "calls", []):
-                    recorder.usage(call)
-    verdict = None if getattr(args, "no_verdict", False) else ask_verdict
-    return Agent(args.instruction, decider, tools, recorder=recorder, max_decisions=args.max_decisions,
-                 step_timeout=args.step_timeout, can_walk=can_walk, has_loco=has_loco, safety_notes=notes,
-                 verdict=verdict, content=content)
-
-
-def build_replay(args, can_walk: bool, has_loco: bool = False) -> Chain:
-    if not getattr(args, "episode", None):
-        raise ValueError("replay needs --episode runs/<dir>")
-    meta, steps = load_episode(args.episode, images=False)
-    chain = chain_of(steps)
-    if not chain:
-        raise ValueError(f"{args.episode}: no completed tools to replay")
-    program = parse_chain(chain, pause=getattr(args, "pause", 1.0))
-    program.name = f"replay:{Path(args.episode).name}"
-    print(f"replaying {len(steps)} recorded step(s) of {meta.get('instruction')!r}: {chain}")
-    return program
-
-
-AGENTS = {"search": build_search, "replay": build_replay}
+    notes = list(task["safety_notes"])          # rules only: the room's layout is never told
+    recorder = EpisodeWriter(runs, env=env_name, instruction=task["instruction"], model=decider.model,
+                             tools=[t.name for t in tools], allow_base=can_walk,
+                             extra={"task": task["name"], "max_decisions": task["max_decisions"],
+                                    "reasoning_effort": getattr(getattr(decider, "client", None), "reasoning_effort", None),
+                                    "step_timeout": limits.get("step_timeout_s"), "safety_notes": notes})
+    print(f"recording to {recorder.dir}")
+    return Agent(task["instruction"], decider, tools, recorder=recorder, max_decisions=task["max_decisions"],
+                 step_timeout=limits.get("step_timeout_s"), can_walk=can_walk, has_loco=has_loco,
+                 safety_notes=notes, verdict=None)

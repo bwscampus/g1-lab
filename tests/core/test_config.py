@@ -11,9 +11,9 @@ def test_joint_table_is_consistent():
     assert np.all(config.STAND_Q >= config.JOINT_LO) and np.all(config.STAND_Q <= config.JOINT_HI)
 
 
-def test_joint_table_matches_menagerie():
+def test_joint_table_matches_the_twin_model():
     pytest.importorskip("mujoco")
-    from g1.envs.sim import load_model
+    from g1.twin.model import load_model
 
     try:
         m = load_model()
@@ -26,5 +26,4 @@ def test_joint_table_matches_menagerie():
         lo, hi = m.jnt_range[jid]
         assert lo == pytest.approx(j.lo, abs=1e-4), j.name
         assert hi == pytest.approx(j.hi, abs=1e-4), j.name
-    key = m.key("stand")
-    assert np.allclose(key.qpos[7:], config.STAND_Q)
+    assert [m.actuator(i).name for i in range(m.nu)] == list(config.JOINT_NAMES)    # motors in DDS order

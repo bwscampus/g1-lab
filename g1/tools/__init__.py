@@ -3,13 +3,12 @@
     TOOLS                 name -> class, every tool (visible or not)
     menu(allow_base, has_loco)   the classes a model may choose from
     prompt_catalog / function_schemas / output_schema   the three renderings a model reads
-    parse_tool("turn:45") / parse_chain("walk_forward:0.5,hold:1,tpose")   the CLI forms
+    parse_tool("turn:45") / parse_chain("walk_forward:0.5,hold:1,tpose")   a task's "tools" chain
     Chain                 several tools played in order with the bookends once
 
 Drop a file in this directory with a ``Tool`` subclass and it is in the menu
-on the next run (``g1 new tool NAME`` writes one from the template); a bad
-definition fails at import, naming the file. Modules whose name starts with
-``_`` are not imported (``_template.py``).
+on the next run; a bad definition fails at import, naming the file. Modules
+whose name starts with ``_`` are not imported.
 """
 from __future__ import annotations
 
@@ -17,7 +16,6 @@ import importlib
 import importlib.util
 import json
 import pkgutil
-from copy import deepcopy
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
@@ -189,18 +187,6 @@ def joint_table() -> list[dict]:
              "stand": round(float(STAND_Q[joint_index(n)]), 3)} for n in ARM_JOINTS]
 
 
-def describe_menu(tools: Sequence[type[Tool]]) -> str:
-    """One line per tool for ``g1 tools``."""
-    lines = []
-    for t in tools:
-        ps = ", ".join(f"{k}: {v.get('type', 'enum')}" + (f" [{v['minimum']:g}, {v['maximum']:g}]" if "minimum" in v else "")
-                       for k, v in t.schema()["properties"].items() if k != "note")
-        tags = ("  [needs --walk]" if t.needs_base else "") + ("  [robot only]" if t.needs_loco else "") \
-            + ("" if t.visible else "  [preset: not offered to the model]")
-        lines.append(f"  {t.name}({ps})" + tags)
-    return "\n".join(lines)
-
-
 # --------------------------------------------------------------------------
 # The CLI forms
 # --------------------------------------------------------------------------
@@ -252,16 +238,6 @@ def parse_tool(item: str) -> Tool:
             except json.JSONDecodeError as e:
                 raise ValueError(f"{name}: {k} must be JSON ({e.msg})") from None
     return cls(**args)
-
-
-def chain_spec(steps: Sequence[tuple[str, dict]]) -> str:
-    """The ``--tools`` string for (name, args) pairs (what a replay needs)."""
-    items = []
-    for name, args in steps:
-        parts = ":".join(f"{k}={json.dumps(v, separators=(',', ':')) if isinstance(v, (dict, list)) else v}"
-                         for k, v in args.items() if k != "note")
-        items.append(name + (":" + parts if parts else ""))
-    return ",".join(items)
 
 
 def prefixed(tool: Tool) -> list[Segment]:
@@ -320,5 +296,5 @@ def parse_chain(spec: str, pause: float = 1.0) -> Chain:
 __all__ = ["TOOLS", "Tool", "Chain", "Limit", "NOTE", "STEP_MAX", "ARM_JOINTS", "SELECTION_DESCRIPTION",
            "limit", "num", "integer", "text", "flag", "resolve", "format_text", "validate_args",
            "menu", "parameters", "prompt_catalog", "function_schemas", "output_schema", "joint_table",
-           "describe_menu", "parse_tool", "parse_chain", "chain_spec", "prefixed", "split_outside",
+           "parse_tool", "parse_chain", "prefixed", "split_outside",
            "register", "unregister", "load_module", "discover", "tools_in"]

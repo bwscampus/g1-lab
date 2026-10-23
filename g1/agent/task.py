@@ -1,21 +1,18 @@
-"""A task: a folder with an instruction and its context, no code.
+"""A task: a folder with what to do and its context, no code. It is what ``g1 run`` runs.
 
     tasks/<name>/
-        task.json       the instruction, the scene, safety notes, a demonstration, the budget
-        demo/           optional: a demo.json bundle or images the task.json refers to
-        runs/           every run of this task (git-ignored)
+        task.json       an instruction (the model decides) or a tools chain (no model),
+                        the scene, safety notes, the budget
+        runs/           every run of this task (git-ignored), each with its trace.npz
         results.jsonl   one line per run: directory, outcome, decisions, tokens, model
 
-``g1 task run DIR`` turns the folder into the same ``g1 run --tools search``
-invocation you could type by hand (flags after DIR override the file), records
-under the task's ``runs/`` and appends to ``results.jsonl``. ``g1 task eval DIR
--n N`` runs it N times and prints GPT-Policy's two numbers: success rate and
-decisions to success. ``g1 task show DIR`` prints what the model will be given.
+    {"instruction": "find the mug and stop in front of it", "scene": "room", "objects": ["mug@1.5,1.2"]}
+    {"tools": "tpose,look:30"}
 """
 from __future__ import annotations
 
-import argparse
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
@@ -25,30 +22,43 @@ from g1.core import limits
 
 ROOT = limits.ROOT
 SCHEMA = {
-    "type": "object", "additionalProperties": False, "required": ["instruction"],
+    "type": "object", "additionalProperties": False,
+    "oneOf": [{"required": ["instruction"], "not": {"required": ["tools"]}},
+              {"required": ["tools"], "not": {"required": ["instruction"]}}],
     "properties": {
         "instruction": {"type": "string", "minLength": 1, "description": "what the model is asked to do"},
+        "tools": {"type": "string", "minLength": 1, "description": "a fixed chain instead, e.g. tpose,look:30"},
         "scene": {"type": "string", "enum": ["none", "room"], "default": "none", "description": "the sim scene"},
         "objects": {"type": "array", "items": {"type": "string"}, "default": [],
                     "description": "sim objects to place, name@x,y[,z] (needs scene room)"},
+        "start": {"type": ["array", "null"], "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "default": None,
+                  "description": "sim only: where the twin starts, [x, y, yaw_deg] in the room "
+                                 "(default the origin facing +x); the robot starts wherever it stands"},
         "safety_notes": {"type": "array", "items": {"type": "string", "minLength": 1}, "default": [],
                          "description": "persistent physical facts the camera cannot see, added to the prompt"},
-        "demo": {"type": ["string", "null"], "default": None,
-                 "description": "a demonstration for turn 0: a video, a runs/<dir>, or a demo.json, relative to the task"},
-        "demo_mode": {"type": ["string", "null"], "enum": ["video", "video+action", None], "default": None},
-        "refs": {"type": "array", "items": {"type": "string"}, "default": [],
-                 "description": "reference images (a photo of the goal), relative to the task"},
-        "success": {"type": "string", "enum": ["human"], "default": "human",
-                    "description": "who decides: the human verdict after the run"},
         "max_decisions": {"type": "integer", "minimum": 1, "default": int(limits.get("max_decisions"))},
-        "max_time_s": {"type": "number", "minimum": 1, "default": 600.0},
+        "max_time_s": {"type": "number", "minimum": 1, "default": limits.get("max_time_s")},
+        "camera_size": {"type": "string", "pattern": "^[0-9]+x[0-9]+$", "default": None,
+                        "description": "the sim head camera, HxW (default: twin_camera_height_px x twin_camera_width_px in "
+                                       "configs/limits.json; the robot streams 720x1280)"},
         "notes": {"type": "string", "default": "", "description": "for people; the model never sees it"},
     },
 }
 
 
+def find(name_or_dir: str | Path) -> Path:
+    """``tasks/find_the_mug``, a path, or just ``find_the_mug``."""
+    p = Path(name_or_dir)
+    if (p / "task.json").is_file():
+        return p
+    if (ROOT / "tasks" / p / "task.json").is_file():
+        return ROOT / "tasks" / p
+    known = sorted(d.name for d in (ROOT / "tasks").iterdir() if (d / "task.json").is_file())
+    raise ValueError(f"no task {str(name_or_dir)!r}; tasks: {', '.join(known)}")
+
+
 def load_task(directory: Path | str) -> dict:
-    """``task.json`` validated and defaulted; paths resolved against the folder."""
+    """``task.json`` validated and defaulted."""
     d = Path(directory)
     path = d / "task.json"
     try:
@@ -61,51 +71,73 @@ def load_task(directory: Path | str) -> dict:
         Draft202012Validator(SCHEMA).validate(data)
     except ValidationError as e:
         where = ".".join(str(p) for p in e.absolute_path) or "task.json"
-        raise ValueError(f"{path}: {where}: {e.message}") from None
+        message = "needs exactly one of instruction or tools" if e.validator == "oneOf" else e.message
+        raise ValueError(f"{path}: {where}: {message}") from None
     task: dict[str, Any] = {k: spec.get("default") for k, spec in SCHEMA["properties"].items()}
     task.update(data)
+    if task["objects"] and task["scene"] != "room":
+        raise ValueError(f"{path}: objects need \"scene\": \"room\"")
     task["dir"] = d
     task["name"] = d.name
-    for key in ("demo",):
-        if task[key]:
-            task[key] = str((d / task[key]).resolve())
-    task["refs"] = [str((d / r).resolve()) for r in task["refs"]]
+    if task["camera_size"]:
+        task["camera_size"] = tuple(int(v) for v in task["camera_size"].split("x"))
     return task
 
 
-def run_flags(task: dict) -> list[str]:
-    """The ``g1 run`` flags this task stands for."""
-    flags = ["--tools", "search", "--instruction", task["instruction"], "--log", str(task["dir"] / "runs"),
-             "--max-decisions", str(task["max_decisions"]), "--max-time", str(task["max_time_s"])]
-    if task["scene"] != "none":
-        flags += ["--scene", task["scene"]]
-    if task["objects"]:
-        flags += ["--sim-objects", *task["objects"]]
-    for note in task["safety_notes"]:
-        flags += ["--safety-note", note]
-    if task["demo"]:
-        flags += ["--demo", task["demo"]]
-        if task["demo_mode"]:
-            flags += ["--demo-mode", task["demo_mode"]]
-    for ref in task["refs"]:
-        flags += ["--ref", ref]
-    return flags
+def run_dir(task: dict, env_name: str) -> Path:
+    """A fresh directory for a run without the agent's recorder (a tools chain)."""
+    from g1.agent.episode import slug
+    d = task["dir"] / "runs" / f"{datetime.now():%Y%m%d-%H%M%S}_{env_name}_{slug(task['tools'])}"
+    d.mkdir(parents=True, exist_ok=False)
+    return d
 
 
-def results(task: dict) -> list[dict]:
-    path = task["dir"] / "results.jsonl"
-    if not path.is_file():
-        return []
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+def write_status(run: Path, ok: bool, env_name: str) -> None:
+    """A tools run's status.json: its checks are the outcome (the agent's recorder writes its own)."""
+    path = run / "status.json"
+    if not path.exists():
+        path.write_text(json.dumps({"outcome": "success" if ok else "failed", "outcome_source": "checks",
+                                    "env": env_name, "ended": datetime.now().isoformat(timespec="seconds")}),
+                        encoding="utf-8")
 
 
-def record_result(task: dict, run_dir: Path) -> Optional[dict]:
-    """Append what a finished run under ``runs/`` amounts to."""
+OUTCOMES = ("success", "failed", "unreviewed", "give_up", "interrupted")
+
+
+def label_run(run: Path, outcome: str) -> Path:
+    """The human verdict on a finished run: written into status.json (and episode.json,
+    events.jsonl when the agent recorded it) and the directory renamed ``<name>_<outcome>``."""
+    task_status = "completed" if outcome == "success" else "failed"
+    verdict = {"outcome": outcome, "human_outcome": outcome, "outcome_source": "human", "task_status": task_status}
+    for name in ("status.json", "episode.json"):
+        path = run / name
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            data.update(verdict)
+            path.write_text(json.dumps(data, indent=1), encoding="utf-8")
+    events = run / "events.jsonl"
+    if events.exists():
+        with events.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"at_s": datetime.now().timestamp(), "event": "human_evaluation",
+                                "outcome": outcome, "source": "terminal"}) + "\n")
+    stem, _, last = run.name.rpartition("_")
+    base = stem if last in OUTCOMES else run.name
+    dest = run.with_name(f"{base}_{outcome}")
+    run.rename(dest)
+    return dest
+
+
+def record_result(task: dict, run: Path, *, ok: Optional[bool] = None, env_name: str = "") -> Optional[dict]:
+    """Append what a finished run amounts to, from its status.json (``ok``: a tools run's
+    checks, written first if it has none)."""
+    status_path = run / "status.json"
+    if ok is not None:
+        write_status(run, ok, env_name)
     try:
-        status = json.loads((run_dir / "status.json").read_text(encoding="utf-8"))
+        status = json.loads(status_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    row = {"run": run_dir.name, "outcome": status.get("outcome"), "task_status": status.get("task_status"),
+    row = {"run": run.name, "outcome": status.get("outcome"), "task_status": status.get("task_status"),
            "outcome_source": status.get("outcome_source"), "decisions": status.get("decisions"),
            "steps": status.get("steps"), "model": status.get("model"), "env": status.get("env"),
            "tokens": (status.get("usage") or {}).get("tokens"), "elapsed_s": status.get("elapsed_s"),
@@ -113,67 +145,3 @@ def record_result(task: dict, run_dir: Path) -> Optional[dict]:
     with (task["dir"] / "results.jsonl").open("a", encoding="utf-8") as f:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
     return row
-
-
-def summarize(rows: list[dict]) -> str:
-    """GPT-Policy's two metrics: success rate, and decisions per successful run."""
-    if not rows:
-        return "no runs yet"
-    successes = [r for r in rows if r.get("outcome") == "success"]
-    reviewed = [r for r in rows if r.get("outcome_source") == "human"]
-    lines = [f"{len(rows)} run(s), {len(successes)} success ({len(successes) / len(rows):.0%})"
-             + (f"; {len(rows) - len(reviewed)} without a human verdict" if len(reviewed) < len(rows) else "")]
-    decisions = [r["decisions"] for r in successes if isinstance(r.get("decisions"), int)]
-    if decisions:
-        lines.append(f"decisions to success: mean {sum(decisions) / len(decisions):.1f}, min {min(decisions)}, max {max(decisions)}")
-    tokens = [sum(v for v in (r.get("tokens") or {}).values() if isinstance(v, int)) for r in rows]
-    if any(tokens):
-        lines.append(f"tokens per run: mean {sum(tokens) / len(tokens):.0f}")
-    return "\n".join(lines)
-
-
-def _run_once(task: dict, extra: list[str]) -> tuple[int, Optional[dict]]:
-    from g1.cli import run_main, run_parser
-    runs = task["dir"] / "runs"
-    runs.mkdir(parents=True, exist_ok=True)
-    before = {p.name for p in runs.iterdir()}
-    code = run_main(run_flags(task) + extra, run_parser("g1 task run"))
-    new = [p for p in runs.iterdir() if p.name not in before and p.is_dir()]
-    row = record_result(task, max(new, key=lambda p: p.stat().st_mtime)) if new else None
-    return code, row
-
-
-def main(argv: list[str]) -> int:
-    p = argparse.ArgumentParser(prog="g1 task", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("command", choices=("run", "show", "eval"))
-    p.add_argument("dir", help="the task folder, e.g. tasks/find_the_mug")
-    p.add_argument("-n", type=int, default=3, help="eval: how many runs (default 3)")
-    p.add_argument("--no-demo", action="store_true", help="eval: run without the task's demonstration")
-    p.add_argument("rest", nargs=argparse.REMAINDER, help="g1 run flags that override the task, e.g. --env sim --headless")
-    args = p.parse_args(argv)
-    try:
-        task = load_task(args.dir)
-    except ValueError as e:
-        p.error(str(e))
-    if args.no_demo:
-        task["demo"] = None
-    if args.command == "show":
-        print(f"task {task['name']}: {task['instruction']!r}")
-        print("g1 run " + " ".join(f'"{f}"' if " " in f else f for f in run_flags(task)))
-        if task["notes"]:
-            print(f"notes: {task['notes']}")
-        print(summarize(results(task)))
-        return 0
-    if args.command == "run":
-        code, row = _run_once(task, args.rest)
-        if row is not None:
-            print(f"result: {row['outcome']} ({row['outcome_source']}), {row['decisions']} decision(s) -> results.jsonl")
-        return code
-    rows = []
-    for i in range(args.n):
-        print(f"\n== {task['name']} run {i + 1}/{args.n} ==")
-        code, row = _run_once(task, args.rest)
-        if row is not None:
-            rows.append(row)
-    print(f"\n{task['name']}: this evaluation\n{summarize(rows)}\n\nall runs\n{summarize(results(task))}")
-    return 0

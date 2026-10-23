@@ -11,9 +11,15 @@ from g1.vlm import DEFAULT_MODEL, RequestError, VLMClient, load_dotenv, resolve
 
 def test_resolve_defaults_overrides_and_errors():
     assert resolve(env={"HF_TOKEN": "hf_t"}) == ("https://router.huggingface.co/v1", DEFAULT_MODEL, "hf_t")
-    env = {"HF_TOKEN": "hf_t", "VLM_MODEL": "a/b:deepinfra", "VLM_BASE_URL": "https://x.endpoints.huggingface.cloud/v1/"}
-    assert resolve(env=env) == ("https://x.endpoints.huggingface.cloud/v1", "a/b:deepinfra", "hf_t")
-    assert resolve("c/d", env=env)[1] == "c/d"                          # the argument beats VLM_MODEL
+    assert DEFAULT_MODEL == limits.get("vlm_model")                     # the model is in limits.json
+    env = {"HF_TOKEN": "hf_t", "VLM_BASE_URL": "https://x.endpoints.huggingface.cloud/v1/"}
+    assert resolve(env=env) == ("https://x.endpoints.huggingface.cloud/v1", DEFAULT_MODEL, "hf_t")
+    assert resolve("c/d", env=env)[1] == "c/d"                          # the argument beats the file
+    # the settings that moved to limits.json are refused in .env, never silently used
+    for var, name in (("VLM_MODEL", "vlm_model"), ("VLM_MAX_TOKENS", "max_tokens"),
+                      ("VLM_REASONING_EFFORT", "reasoning_effort")):
+        with pytest.raises(RuntimeError, match=f"configs/limits.json, not .env: {var} \\(now {name}\\)"):
+            resolve(env={"HF_TOKEN": "hf_t", var: "x"})
     with pytest.raises(RuntimeError, match="set HF_TOKEN"):
         resolve(env={})
     # only Hugging Face: other providers' variables are not read
@@ -26,17 +32,16 @@ def sse(text):
 
 
 def test_client_from_env_sends_to_hugging_face(monkeypatch):
-    for var in ("HF_TOKEN", "VLM_BASE_URL", "VLM_MODEL"):
+    for var in ("HF_TOKEN", "VLM_BASE_URL"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("HF_TOKEN", "hf_t")
-    monkeypatch.setenv("VLM_MODEL", "a/b")
     calls = []
 
     def transport(url, headers, body, timeout):
         calls.append((url, headers, body))
         return sse("{}")
 
-    c = VLMClient.from_env(transport=transport)
+    c = VLMClient.from_env("a/b", transport=transport)
     assert c.provider == "huggingface" and c.model == "a/b"
     assert c.complete([]) == "{}"
     url, headers, body = calls[0]
@@ -101,15 +106,10 @@ def test_a_reply_cut_off_by_the_token_budget_says_so(monkeypatch):
         return iter(chunks)
 
     c = VLMClient("m", "k", transport=transport)
-    with pytest.raises(TruncatedReply, match=f"cut off at max_tokens={MAX_TOKENS}, 400 of them on reasoning; raise VLM_MAX_TOKENS"):
+    with pytest.raises(TruncatedReply, match=f"cut off at max_tokens={MAX_TOKENS}, 400 of them on reasoning; "
+                                             "raise max_tokens in configs/limits.json"):
         c.complete([])
     assert calls[0]["max_tokens"] == MAX_TOKENS == limits.get("max_tokens")      # whatever the file says
-    monkeypatch.setenv("HF_TOKEN", "hf_t")
-    monkeypatch.setenv("VLM_MAX_TOKENS", "9000")
-    assert VLMClient.from_env().max_tokens == 9000
-    monkeypatch.setenv("VLM_MAX_TOKENS", "lots")
-    with pytest.raises(RuntimeError, match="VLM_MAX_TOKENS"):
-        VLMClient.from_env()
 
 
 def test_dotenv_forgives_a_stray_quote(tmp_path):
@@ -118,3 +118,33 @@ def test_dotenv_forgives_a_stray_quote(tmp_path):
     env = {}
     load_dotenv(p, env)
     assert resolve(env=env) == ("https://router.huggingface.co/v1", DEFAULT_MODEL, "hf_q")
+
+
+def test_reasoning_effort_is_sent_and_dropped_when_refused():
+    effort = limits.get("reasoning_effort")
+    replies = [RequestError(400, "unknown field reasoning_effort"), "ok", "ok"]
+    calls = []
+
+    def transport(url, headers, body, timeout):
+        calls.append(body)
+        r = replies.pop(0)
+        if isinstance(r, Exception):
+            raise r
+        return sse(r)
+
+    c = VLMClient("m", "k", transport=transport)
+    assert effort != "default"                      # the test needs the field sent; "default" never sends it
+    assert c.complete([]) == "ok" and c.reasoning_effort is None
+    assert calls[0]["reasoning_effort"] == effort and "reasoning_effort" not in calls[1]
+    assert c.complete([]) == "ok" and "reasoning_effort" not in calls[2]
+    # a provider that refuses it without naming it (HF router, novita, 2026-10-21)
+    calls.clear()
+    replies[:] = [RequestError(400, '{"message":"invalid request error","type":"invalid_request_error"}'), "ok"]
+    c = VLMClient("m", "k", transport=transport)
+    assert c.complete([]) == "ok" and c.reasoning_effort is None
+    assert calls[0]["reasoning_effort"] == effort and "reasoning_effort" not in calls[1]
+    # a 400 with nothing left to drop is raised
+    replies[:] = [RequestError(400, "bad")]
+    with pytest.raises(RequestError):
+        c.json_mode = False
+        c.complete([])

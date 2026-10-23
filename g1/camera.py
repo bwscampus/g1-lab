@@ -7,34 +7,25 @@ whatever is there, so nothing queues up behind a slow 20 ms tick, and
 ``Frame.stamp`` lets the agent tell a fresh frame from a stale one.
 
   WebRTCCamera  the G1 head camera over unitree_webrtc_connect (robot env)
-  DirCamera     replays image files from a directory on the env's clock (sim, tests)
+  ShmCamera     the head camera g1 twin renders, from shared memory (robot env on lo0)
+  DirCamera     replays image files from a directory on the env's clock (tests)
 
-Two **taps** hang off any slot without touching the control loop, each on its
-own thread, dropping frames when it falls behind:
-
-  Viewer        ``--view``: an MJPEG server on localhost; open it in a browser
-  Recorder      ``--record``: every frame to an .mp4 with PyAV, timestamped on the
-                env's clock, so a sim run plays back at sim speed
-
-Smoke-test the robot stream without touching any joint:
-    g1 camera --ip 192.168.123.164
+  Viewer        ``--view``: the live head camera in a browser (MJPEG on localhost)
 """
 from __future__ import annotations
 
-import argparse
 import asyncio
 import math
-import os
-import queue
 import threading
 import time
 from dataclasses import dataclass
-from fractions import Fraction
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable, Optional
 
 import numpy as np
+
+from g1.core import limits
 
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".bmp")
 
@@ -100,7 +91,7 @@ class ClockedCamera(Camera):
     Frame ``k`` is due at ``k / fps`` seconds after the first poll; if several
     frames fell due since the last poll only the newest is published."""
 
-    def __init__(self, fps: float = 15.0) -> None:
+    def __init__(self, fps: float = limits.get("twin_camera_fps")) -> None:
         super().__init__()
         self.fps = fps
         self._t0: float | None = None
@@ -125,7 +116,7 @@ class ClockedCamera(Camera):
 class DirCamera(ClockedCamera):
     """Replay the image files in a directory, sorted by name."""
 
-    def __init__(self, path: str | Path, fps: float = 15.0, loop: bool = False) -> None:
+    def __init__(self, path: str | Path, fps: float = limits.get("twin_camera_fps"), loop: bool = False) -> None:
         super().__init__(fps)
         self.path = Path(path)
         self.loop = loop
@@ -153,7 +144,7 @@ class WebRTCCamera(Camera):
     the first frame arrives or raises. The robot accepts a single WebRTC client,
     so disconnect the Unitree app first."""
 
-    def __init__(self, ip: str, aes_key: str | None = None, timeout: float = 15.0) -> None:
+    def __init__(self, ip: str, aes_key: str | None = None, timeout: float = limits.get("camera_timeout_s")) -> None:
         super().__init__()
         self.ip = ip
         self.aes_key = aes_key
@@ -234,17 +225,70 @@ class WebRTCCamera(Camera):
         self.thread = None
 
 
-# --------------------------------------------------------------------------
-# Taps: a live view and a recording, off the slot, never on the tick
-# --------------------------------------------------------------------------
+class ShmCamera(Camera):
+    """The head camera ``g1 twin`` renders, read from shared memory
+    (``g1/twin/shm.py``) on a background thread and stamped with the twin's
+    ``time.monotonic()``. ``start`` blocks until the first frame arrives or raises,
+    like WebRTCCamera."""
+
+    def __init__(self, domain: int, timeout: float = limits.get("camera_timeout_s"),
+                 poll_s: float = 1 / limits.get("camera_poll_hz")) -> None:
+        super().__init__()
+        self.domain = domain
+        self.timeout = timeout
+        self.poll_s = poll_s
+        self.reader = None
+        self.thread: threading.Thread | None = None
+        self._stopping = False
+
+    def start(self) -> None:
+        from g1.twin.shm import FrameReader, segment_name
+        t0 = time.monotonic()
+        while self.reader is None:
+            try:
+                self.reader = FrameReader(self.domain)
+            except FileNotFoundError:
+                if time.monotonic() - t0 > self.timeout:
+                    raise TimeoutError(f"no g1 twin camera ({segment_name(self.domain)}) within "
+                                       f"{self.timeout:.0f}s: is g1 twin running on domain {self.domain}?") from None
+                time.sleep(0.1)
+        self._stopping = False
+        self.thread = threading.Thread(target=self._run, name="shm-camera", daemon=True)
+        self.thread.start()
+        while self.latest() is None:
+            if time.monotonic() - t0 > self.timeout:
+                self.stop()
+                raise TimeoutError(f"g1 twin's camera sent no frame within {self.timeout:.0f}s")
+            time.sleep(0.02)
+
+    def _run(self) -> None:
+        while not self._stopping:
+            got = self.reader.read()
+            if got is not None:
+                self.publish(*got)
+            time.sleep(self.poll_s)
+
+    def stop(self) -> None:
+        self._stopping = True
+        if self.thread is not None:
+            self.thread.join(timeout=2.0)
+            self.thread = None
+        if self.reader is not None:
+            self.reader.close()
+            self.reader = None
+
 
 class Viewer:
-    """``--view``: an MJPEG server on ``127.0.0.1:port`` (0 = any free port).
+    """``g1 run TASK --mode ... --view``: the robot's head camera in a browser, an MJPEG
+    server on ``127.0.0.1:port`` (0 = any free port), reading the same latest-only slot as
+    the agent on its own threads, so it never touches the control tick. The robot takes
+    one WebRTC client, so the live picture has to come out of this process.
     ``/`` is a page showing the stream, ``/stream`` the multipart stream (a
     new JPEG whenever the slot's seq changes; a slow browser skips frames),
     ``/frame`` one JPEG. Encoding happens on the request's thread."""
 
-    def __init__(self, camera: Camera, port: int = 8765, *, width: int = 960, quality: int = 80,
+    def __init__(self, camera: Camera, port: int = limits.get("view_port"), *,
+                 width: int = limits.get("view_width_px"), quality: int = limits.get("view_jpeg_quality"),
                  title: str = "g1", host: str = "127.0.0.1") -> None:
         self.camera = camera
         self.width = width
@@ -284,7 +328,7 @@ class Viewer:
                         while viewer.server is not None:
                             data, seq = viewer.jpeg()
                             if data is None or seq == last:
-                                time.sleep(1 / 30)
+                                time.sleep(1 / limits.get("view_fps"))
                                 continue
                             last = seq
                             self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n"
@@ -326,157 +370,3 @@ class Viewer:
         if self.thread is not None:
             self.thread.join(timeout=2.0)
             self.thread = None
-
-
-class Recorder:
-    """``--record``: every published frame to an .mp4 (PyAV, libx264, yuv420p),
-    variable frame rate with each frame's own stamp as its time, so a headless
-    sim run plays back at sim speed and a robot run at real time. Frames are
-    queued from the producer's thread (bounded; the oldest is dropped when the
-    encoder falls behind) and encoded on this thread."""
-
-    def __init__(self, camera: Camera, path: Path | str, *, codec: Optional[str] = None, queue_size: int = 8) -> None:
-        try:
-            import av  # noqa: F401
-        except ImportError:
-            raise RuntimeError("--record needs PyAV: pip install av") from None
-        self.camera = camera
-        self.path = Path(path)
-        self.codec = codec
-        self._q: "queue.Queue[Optional[Frame]]" = queue.Queue(maxsize=queue_size)
-        self._thread: threading.Thread | None = None
-        self.frames = 0
-        self.dropped = 0
-        self.duration_s = 0.0
-        self.error: Optional[BaseException] = None
-
-    def _on_frame(self, frame: Frame) -> None:
-        try:
-            self._q.put_nowait(frame)
-        except queue.Full:
-            try:
-                self._q.get_nowait()          # drop the oldest, keep the newest
-                self.dropped += 1
-            except queue.Empty:
-                pass
-            try:
-                self._q.put_nowait(frame)
-            except queue.Full:
-                self.dropped += 1
-
-    def start(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._thread = threading.Thread(target=self._run, name="recorder", daemon=True)
-        self._thread.start()
-        self.camera.subscribe(self._on_frame)
-
-    def stop(self, join: float = 30.0) -> None:
-        self.camera.unsubscribe(self._on_frame)
-        if self._thread is None:
-            return
-        self._q.put(None)                     # blocks until there is room: nothing is lost at the end
-        self._thread.join(timeout=join)
-        self._thread = None
-
-    def summary(self) -> str:
-        if self.error is not None:
-            return f"recording failed: {self.error}"
-        return (f"recorded {self.frames} frames, {self.duration_s:.1f} s, {self.dropped} dropped -> {self.path}")
-
-    def _run(self) -> None:
-        import av
-        container = None
-        stream = None
-        t0: Optional[float] = None
-        last_pts = -1
-        try:
-            while True:
-                frame = self._q.get()
-                if frame is None:
-                    break
-                h, w = frame.image.shape[:2]
-                image = frame.image[:h - h % 2, :w - w % 2]      # yuv420p needs even sides
-                if container is None:
-                    container = av.open(str(self.path), mode="w")
-                    stream = _add_stream(container, self.codec, image.shape[1], image.shape[0])
-                    t0 = frame.stamp
-                pts = max(last_pts + 1, round((frame.stamp - t0) * 1000))
-                last_pts = pts
-                vf = av.VideoFrame.from_ndarray(np.ascontiguousarray(image), format="rgb24")
-                vf.pts = pts
-                vf.time_base = Fraction(1, 1000)
-                for packet in stream.encode(vf):
-                    container.mux(packet)
-                self.frames += 1
-                self.duration_s = pts / 1000
-        except Exception as e:
-            self.error = e
-            print(f"recorder: {e}")
-        finally:
-            if container is not None:
-                try:
-                    for packet in stream.encode(None):
-                        container.mux(packet)
-                finally:
-                    container.close()
-
-
-def _add_stream(container, codec: Optional[str], width: int, height: int):
-    """libx264 when PyAV has it, else mpeg4; ``codec`` forces one."""
-    import av
-    names = [codec] if codec else ["libx264", "mpeg4"]
-    for name in names:
-        try:
-            stream = container.add_stream(name, rate=30)       # nominal; frames carry their own pts
-        except Exception:
-            continue
-        stream.width, stream.height = width, height
-        stream.pix_fmt = "yuv420p"
-        stream.time_base = Fraction(1, 1000)
-        if name == "libx264":
-            stream.options = {"preset": "veryfast", "crf": "23"}
-        return stream
-    raise RuntimeError(f"no video encoder available among {names} (av {av.__version__})")
-
-
-def main(argv: list[str] | None = None) -> int:
-    from g1.vlm import load_dotenv
-    load_dotenv()              # $UNITREE_ROBOT_IP / $UNITREE_AES_128_KEY may live in .env
-    p = argparse.ArgumentParser(prog="g1 camera",
-                                description="print the head camera frame rate; no robot control")
-    p.add_argument("--ip", default=os.environ.get("UNITREE_ROBOT_IP"),
-                   help="robot IP (default: $UNITREE_ROBOT_IP)")
-    p.add_argument("--seconds", type=float, default=5.0)
-    p.add_argument("--save", default=None, metavar="PNG",
-                   help="also save the last frame, to look at it or to try the vision model on it")
-    args = p.parse_args(argv)
-    if not args.ip:
-        p.error("--ip is required (or set $UNITREE_ROBOT_IP)")
-    cam = WebRTCCamera(args.ip, os.environ.get("UNITREE_AES_128_KEY"))
-    cam.start()
-    try:
-        t0 = time.monotonic()
-        last = cam.latest()
-        n0 = last.seq
-        gaps: list[float] = []
-        while time.monotonic() - t0 < args.seconds:
-            f = cam.latest()
-            if f.seq != last.seq:
-                gaps.append(f.stamp - last.stamp)
-                last = f
-            time.sleep(0.005)
-        n = cam.count - n0
-        print(f"{n} frames in {args.seconds:.1f}s = {n / args.seconds:.1f} fps; "
-              f"shape {last.image.shape}; frame gap mean {np.mean(gaps) * 1e3:.1f} ms, "
-              f"max {np.max(gaps) * 1e3:.1f} ms")
-        if args.save:
-            from g1.core import images
-            images.write_png(args.save, last.image)
-            print(f"saved {args.save}")
-    finally:
-        cam.stop()
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

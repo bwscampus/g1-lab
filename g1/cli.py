@@ -1,102 +1,37 @@
-"""``g1``: one command, one subcommand per job.
+"""``g1``: run a task, on the robot or on the twin.
 
-    g1 run    --env sim --tools tpose --headless               # a tool (or a chain), fully checked
-    g1 run    --env sim --tools walk_forward:0.5,hold:1,turn:45 --headless
-    g1 run    --env sim --tools search --instruction "find the mug" ...   # the model decides
-    g1 run    --env sim --tools replay --episode runs/<dir>     # a recorded run, no camera or model
-    g1 run    --env robot --tools tpose --iface <iface> --mode standing
-    g1 task   run tasks/find_the_mug --env sim --headless      # a task folder: instruction + context
-    g1 tools  [--json] [--joints]                              # the menu; the catalog the model reads
-    g1 status --iface <iface>                                  # read-only: link ok / robot refuses / no link
-    g1 limits [--source guess]                                 # every tunable number
-    g1 camera | decide | episode | demo | scene                # the other entry points
-    g1 new tool NAME | g1 new task NAME                        # scaffold a tool file or a task folder
+    g1 run TASK --mode standing|gantry     # the robot (UNITREE_IFACE, UNITREE_ROBOT_IP from .env)
+    g1 run TASK --mode standing --view     # ... and its head camera live in a browser
+    g1 run TASK --sim [--mode gantry]      # the twin, in the MuJoCo window: the same robot code, over DDS
+    g1 status                              # is the robot reachable, and what state is it in
+    g1 twin fetch | status                 # the twin's model, walker and room assets
+    g1 trace compare RUN_A RUN_B | show RUN   # how far the twin is from the robot on the same task
+    g1 limits [SOURCE]                     # every number and default, from configs/limits.json
 
-``--env`` defaults to $G1_ENV, then ``sim``; ``--tools`` to $G1_TOOLS. On macOS
-the sim viewer needs ``mjpython -m g1 run ...``; ``--headless`` needs nothing.
+TASK is a folder under tasks/ (or its path): an ``instruction`` the vision model
+works on, or a fixed ``tools`` chain (``g1/agent/task.py``). ``--mode standing``
+lets the base walk; ``gantry`` never does. Every other number and default is in
+configs/limits.json (``g1 limits``) or the task's task.json; .env holds only what is
+private to this machine (the token, the robot's address and key). ``G1_VERBOSE=1``
+prints every SDK call and a health line a second.
 """
 from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import sys
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from g1.agent.agent import AGENTS
 from g1.core import limits
 from g1.core.action import Action, Obs, Runnable, Segment
-from g1.envs import ENVS, Env, EnvAbort
+from g1.envs import Env, EnvAbort
 from g1.envs.base import shield_sigint
-from g1.tools import TOOLS, Tool, describe_menu, joint_table, menu, parse_chain
+from g1.tools import Tool, parse_chain
 from g1.vlm import load_dotenv
 
 ROOT = limits.ROOT
-
-
-def run_parser(prog: str = "g1 run") -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog=prog, description="run a tool, a chain of tools, the agent, or a replay")
-    p.add_argument("--env", "-e", choices=sorted(ENVS), default=os.environ.get("G1_ENV", "sim"),
-                   help="where to run (default: $G1_ENV or 'sim')")
-    p.add_argument("--tools", "-t", default=os.environ.get("G1_TOOLS"),
-                   help="comma-separated tools with arguments, e.g. tpose,turn:45 (see `g1 tools`), or "
-                        "'search' (the model decides) or 'replay' (--episode DIR). Default: $G1_TOOLS")
-    p.add_argument("--pause", type=float, default=1.0, help="seconds to hold between chained tools (default 1.0)")
-    p.add_argument("--camera", choices=("auto", "on", "off"), default="auto",
-                   help="open the env's camera: auto = only if the program uses it (default)")
-    p.add_argument("--view", type=int, nargs="?", const=8765, default=None, metavar="PORT",
-                   help="show the head camera live at http://127.0.0.1:PORT (default 8765; 0 = any free port); "
-                        "opens the camera even for a chain")
-    p.add_argument("--view-width", type=int, default=960, help="width of the live view's JPEGs (default 960)")
-    p.add_argument("--record", nargs="?", const="auto", default=None, metavar="PATH",
-                   help="record every camera frame to an .mp4 (PyAV): into the run directory as camera.mp4, or "
-                        "runs/<ts>_<env>_<name>.mp4 for a chain, or the given PATH")
-    p.add_argument("--verbose", "-v", action="store_true",
-                   help="print every SDK call with its return code and a health line every second "
-                        "(LowState rate, ticks, overruns, base RPC, camera)")
-    p.add_argument("--max-time", type=float, default=limits.get("max_time_s"),
-                   help="stop (and return to a safe state) if the program runs longer than this many seconds "
-                        "(default: limit max_time_s)")
-    a = p.add_argument_group("agent (--tools search / replay)")
-    a.add_argument("--instruction", "-i", default=None, help="what the model is asked to do, e.g. \"find the mug\"")
-    a.add_argument("--input-json", default=None, metavar="FILE",
-                   help="a manifest: {\"instruction\", \"content\": [text, {\"image\"}, {\"video\", \"mode\"}]} "
-                        "(--instruction may then be omitted)")
-    a.add_argument("--demo", default=None, metavar="PATH",
-                   help="a demonstration shown to the model on turn 0: a video file, a recorded runs/<dir>, "
-                        "or a demo.json bundle (g1 demo prepare)")
-    a.add_argument("--demo-mode", choices=("video", "video+action"), default=None,
-                   help="video: images only (default for video files); video+action: also the tools, joint "
-                        "angles and base poses (default for recorded runs)")
-    a.add_argument("--demo-select", choices=("auto", "model", "uniform"), default="auto",
-                   help="how keyframes are picked from a video file: the vision model (default when its key is set) "
-                        "or evenly spaced")
-    a.add_argument("--demo-frames", type=int, default=limits.get("demo_frames"),
-                   help="keyframes to keep per demonstration (default: limit demo_frames, at most demo_frames_max)")
-    a.add_argument("--ref", action="append", default=None, metavar="IMAGE",
-                   help="a reference image (a photo of the goal) shown on turn 0; repeatable")
-    a.add_argument("--episode", default=None, metavar="DIR", help="recorded run to replay (--tools replay)")
-    a.add_argument("--model", default=None, help="model id to query (default: $VLM_MODEL or vlm.DEFAULT_MODEL)")
-    a.add_argument("--echo", action="store_true", help="print the model's streamed text live")
-    a.add_argument("--max-decisions", type=int, default=limits.get("max_decisions"),
-                   help="model decisions per run, rejected replies included (default: limit max_decisions)")
-    a.add_argument("--step-timeout", type=float, default=limits.get("step_timeout_s"),
-                   help="wall seconds to wait for one decision before the run fails (default: limit step_timeout_s)")
-    a.add_argument("--live-image-window", type=int, default=limits.get("live_image_window"),
-                   help="observation images kept in the conversation; older turns keep their text "
-                        "(default: limit live_image_window)")
-    a.add_argument("--fresh-turns", action="store_true",
-                   help="no conversation memory: every decision is a fresh chat with only the current observation")
-    a.add_argument("--safety-note", action="append", default=None, metavar="TEXT",
-                   help="a persistent physical fact the camera cannot see, added to the prompt (repeatable)")
-    a.add_argument("--no-verdict", action="store_true",
-                   help="do not ask for the human success/failed verdict after the run")
-    a.add_argument("--log", default="runs", metavar="DIR", help="where search records its steps (default runs/)")
-    a.add_argument("--no-log", action="store_true", help="do not record the run")
-    for env_cls in ENVS.values():
-        env_cls.add_args(p)
-    return p
 
 
 # --------------------------------------------------------------------------
@@ -144,43 +79,6 @@ def _return_to_safety(program: Runnable, env: Env, last: Optional[Action], obs: 
     program.on_returned(outcome)
 
 
-def _taps(args, env: Env, program: Runnable) -> list:
-    """``--view`` / ``--record``: start the taps on the env's camera slot."""
-    from g1.camera import Recorder, Viewer
-    view = getattr(args, "view", None)
-    record = getattr(args, "record", None)
-    if view is None and record is None:
-        return []
-    source = env.source()
-    if source is None:
-        raise SystemExit("--view/--record need the camera, but the env opened none")
-    taps = []
-    if view is not None:
-        viewer = Viewer(source, view, width=getattr(args, "view_width", 960), title=f"{program.name} @ {env.name}")
-        viewer.start()
-        print(f"view: {viewer.url}")
-        taps.append(viewer)
-    if record is not None:
-        if record == "auto":
-            recorder = getattr(program, "recorder", None)
-            if recorder is not None:
-                path = Path(recorder.dir) / "camera.mp4"
-            else:
-                stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-                name = "".join(c if c.isalnum() or c in "+-_" else "_" for c in program.name)[:40]
-                path = Path(getattr(args, "log", "runs")) / f"{stamp}_{env.name}_{name}.mp4"
-        else:
-            path = Path(record)
-        try:
-            rec = Recorder(source, path)
-        except RuntimeError as e:
-            raise SystemExit(str(e)) from None
-        rec.start()
-        print(f"recording: {path}")
-        taps.append(rec)
-    return taps
-
-
 def run(program: Runnable, env: Env, max_time: float = limits.get("max_time_s")) -> bool:
     """The one loop every env shares:
 
@@ -188,24 +86,21 @@ def run(program: Runnable, env: Env, max_time: float = limits.get("max_time_s"))
                   loop: action = program.step(t, obs); obs = env.observe(env.step(action))
         env.report()
 
-    ``--view`` / ``--record`` taps start after the camera is up and stop before
-    the env is left and before ``program.close()`` (which may rename the run
-    directory the recording is in).
+    The camera opens only when the program reads it (``Runnable.uses_camera``).
     """
     duration = getattr(program, "duration", None)
     if duration is not None and duration > max_time:
-        print(f"warning: {program.name} lasts {duration:.1f}s but --max-time is {max_time:.0f}s; "
+        print(f"warning: {program.name} lasts {duration:.1f}s but max_time_s is {max_time:.0f}s; "
               f"it will be cut short")
-    mode = getattr(env.args, "camera", "auto")
-    tapped = getattr(env.args, "view", None) is not None or getattr(env.args, "record", None) is not None
-    if mode == "off" and tapped:
-        raise SystemExit("--camera off but --view/--record need frames; drop --camera off")
-    env.use_camera = (program.uses_camera or tapped) if mode == "auto" else mode == "on"
-    taps: list = []
+    camera = getattr(env.args, "camera", "auto")
+    view = getattr(env.args, "view", False)
+    env.use_camera = (program.uses_camera or view) if camera == "auto" else camera == "on"
+    viewer = None
     try:
         with env:
             obs = env.observe(env.reset())
-            taps = _taps(env.args, env, program)
+            if view:
+                viewer = _start_view(env, program)
             if hasattr(program, "attach"):
                 program.attach(env)
             program.reset(obs)
@@ -215,7 +110,7 @@ def run(program: Runnable, env: Env, max_time: float = limits.get("max_time_s"))
                 while True:
                     t = n * program.dt
                     if t > max_time:
-                        print(f"aborted: the program exceeded --max-time {max_time}s")
+                        print(f"aborted: the program exceeded max_time_s {max_time}s")
                         _return_to_safety(program, env, last, obs, "max_time")
                         return False
                     action = program.step(t, obs)
@@ -235,114 +130,150 @@ def run(program: Runnable, env: Env, max_time: float = limits.get("max_time_s"))
                 _return_to_safety(program, env, last, obs, "error", repr(e))
                 raise
             finally:
-                for tap in taps:
-                    tap.stop()
-                    if hasattr(tap, "summary"):
-                        print(tap.summary())
+                if viewer is not None:
+                    viewer.stop()
     finally:
         program.close()
     return env.report()
 
 
+VIEW_PORT = limits.get("view_port")
+
+
+def _start_view(env: Env, program: Runnable):
+    """``--view``: the head camera at http://127.0.0.1:VIEW_PORT (or a free port when that is taken)."""
+    from g1.camera import Viewer
+    source = env.source()
+    if source is None:
+        raise SystemExit("--view needs the head camera, but none opened")
+    for port in (VIEW_PORT, 0):
+        viewer = Viewer(source, port, title=f"{program.name} @ {env.name}")
+        try:
+            viewer.start()
+            break
+        except OSError:
+            continue
+    print(f"view: {viewer.url}")
+    return viewer
+
+
 # --------------------------------------------------------------------------
-# g1 run
+# g1 run TASK
 # --------------------------------------------------------------------------
 
-def build_program(args, env: Env, parser: argparse.ArgumentParser) -> Runnable:
-    """``--tools``: an agent by name, or a chain of tools."""
+def run_settings(task: Optional[dict] = None, *, sim: bool = False, mode: Optional[str] = None,
+                 view: bool = False, **overrides) -> argparse.Namespace:
+    """Everything an env reads, from the task, configs/limits.json and the environment.
+    The CLI decides only sim or robot, the mode, and the live view; ``overrides`` are for tests."""
+    from g1.envs.scene import parse_object
+    task = task or {}
+    s = argparse.Namespace(
+        sim=sim, mode=mode, view=view,
+        iface=os.environ.get("UNITREE_IFACE"), domain=None,
+        camera_ip=os.environ.get("UNITREE_ROBOT_IP"), camera_timeout=limits.get("camera_timeout_s"),
+        camera_source="auto", camera="auto", trace=None,
+        verbose=os.environ.get("G1_VERBOSE", "") not in ("", "0"),
+        scene=task.get("scene") or "none", sim_objects=[parse_object(o) for o in task.get("objects") or []],
+        camera_size=task.get("camera_size"), sim_start=task.get("start"),
+        # the in-process twin (tests): headless, its own pacing and checks
+        headless=True, realtime=None, hold_end=limits.get("sim_viewer_hold_s"), camera_dir=None,
+        camera_fps=limits.get("twin_camera_fps"),
+        camera_every=max(1, round(1.0 / (limits.get("twin_camera_fps") * limits.get("control_dt_s")))),
+        sim_obstacle=None, twin_fsm=None, margin=limits.get("joint_margin_rad"),
+        max_vel=limits.get("command_vel_max"), max_violations=int(limits.get("max_violations")),
+    )
+    for k, v in overrides.items():
+        if not hasattr(s, k):
+            raise TypeError(f"run_settings has no setting {k!r}")
+        setattr(s, k, v)
+    return s
+
+
+def build_program(task: dict, env, runs: Path) -> Runnable:
+    """The task's agent (an instruction) or its chain (tools)."""
+    if task["tools"]:
+        return parse_chain(task["tools"], pause=limits.get("chain_pause_s"))
+    from g1.agent.agent import build_agent
+    return build_agent(task, env_name=env.name, can_walk=env.can_walk, has_loco=env.has_loco, runs=runs)
+
+
+def run_task(task: dict, *, sim: bool, mode: Optional[str], view: bool = False, env: Optional[Env] = None) -> int:
+    """One run of a task, recorded. ``env`` (tests) is an in-process twin used instead of
+    starting one over DDS."""
+    from g1.agent.task import label_run, record_result, run_dir, write_status
+    from g1.envs import RobotEnv
+    if not sim and mode is None:
+        raise SystemExit("the robot needs --mode gantry (hanging: Damp, stand, run, Damp; no walking) or "
+                         "--mode standing (standing on its own: walks; never damps); or add --sim")
+    mode = mode or "standing"
+    in_process = env is not None
+    if env is None:
+        env = RobotEnv(run_settings(task, sim=sim, mode=mode, view=view))
+    settings = env.args
+    runs = task["dir"] / "runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    before = {p.name for p in runs.iterdir()}
     try:
-        if args.tools in AGENTS:
-            return AGENTS[args.tools](args, env.can_walk, env.has_loco)
-        return parse_chain(args.tools, pause=args.pause)
-    except KeyError as e:
-        parser.error(f"unknown tool {e}; agents: {', '.join(sorted(AGENTS))}; "
-                     f"tools: {', '.join(n for n, t in TOOLS.items() if t.kind == 'motion' and n not in ('takeover', 'handback'))}")
-    except (ValueError, RuntimeError) as e:
-        parser.error(str(e))
-
-
-def run_main(argv: list[str], parser: Optional[argparse.ArgumentParser] = None,
-             defaults: Optional[dict] = None) -> int:
-    parser = parser or run_parser()
-    if defaults:
-        parser.set_defaults(**defaults)
-    args = parser.parse_args(argv)
-    if args.tools is None:
-        parser.error("--tools is required (or set $G1_TOOLS); see `g1 tools`")
-    env = ENVS[args.env](args)
-    program = build_program(args, env, parser)
+        program = build_program(task, env, runs)
+    except (KeyError, ValueError, RuntimeError) as e:
+        raise SystemExit(f"{task['dir'] / 'task.json'}: {e}") from None
     segments = getattr(program, "segments", None)
     if segments is not None and any(s.base for s in segments()) and not env.can_walk:
-        parser.error(f"{program.name} drives the base; {env.name} cannot walk here"
-                     + (" (pass --walk after reading its pre-flight)" if args.env == "robot"
-                        else " (drop --free-base)" if args.env == "sim" else ""))
-    print(f"== {program.name} @ {env.name} ==")
-    if args.tools == "search" and args.max_time <= 120.0:
-        print("hint: search is open-ended (6-10 s per decision); raise --max-time, e.g. --max-time 600")
-    ok = run(program, env, max_time=args.max_time)
+        raise SystemExit(f"{task['name']} drives the base, and --mode gantry never walks (use --mode standing)")
+    recorder = getattr(program, "recorder", None)
+    folder = Path(recorder.dir) if recorder is not None else run_dir(task, "sim" if sim else "robot")
+    settings.trace = str(folder / "trace.npz")
+    print(f"== {task['name']} ({'instruction' if task['instruction'] else 'tools'}) @ "
+          f"{'the twin' if sim else 'the robot'}, mode {mode} ==")
+    if sim and not in_process:
+        from g1.twin.main import TwinProcess
+        # the MuJoCo window always; G1_TWIN_HEADLESS=1 is for tests only
+        window = os.environ.get("G1_TWIN_HEADLESS", "") in ("", "0")
+        with TwinProcess(task, mode=mode, viewer=window, camera=program.uses_camera) as twin:
+            settings.iface, settings.domain = twin.iface, twin.domain
+            ok = run(program, env, max_time=task["max_time_s"])
+    else:
+        ok = run(program, env, max_time=task["max_time_s"])
+    if recorder is not None:                     # the agent's close renamed its directory
+        new = [p for p in runs.iterdir() if p.name not in before and p.is_dir()]
+        folder = max(new, key=lambda p: p.stat().st_mtime) if new else folder
+    else:
+        write_status(folder, ok, "sim" if sim else "robot")
+    if not sim:                                  # the robot: keep it? then the human's verdict
+        from g1.agent import agent as prompts
+        if not prompts.ask_save():
+            shutil.rmtree(folder, ignore_errors=True)
+            print("run not saved")
+            return 0 if ok else 1
+        human = prompts.ask_verdict()
+        if human is not None:
+            folder = label_run(folder, human)
+    row = record_result(task, folder)
+    if row is not None:
+        shown = folder.relative_to(ROOT) if folder.is_relative_to(ROOT) else folder
+        print(f"result: {row['outcome']} ({row['outcome_source']}) -> {shown}")
     return 0 if ok else 1
 
 
-# --------------------------------------------------------------------------
-# g1 tools, g1 new
-# --------------------------------------------------------------------------
-
-def tools_main(argv: list[str]) -> int:
-    from g1.tools import function_schemas
-    p = argparse.ArgumentParser(prog="g1 tools", description="the tools, and what the model reads about them")
-    p.add_argument("--json", action="store_true", help="the function schemas the model is given (every visible tool)")
-    p.add_argument("--joints", action="store_true", help="the joints arm_path may command: limits and stand pose")
-    p.add_argument("--prompts", action="store_true", help="also print each tool's prompt")
+def run_main(argv: list[str]) -> int:
+    from g1.agent.task import find, load_task
+    p = argparse.ArgumentParser(prog="g1 run", description="run a task on the robot, or on the twin with --sim")
+    p.add_argument("task", help="a folder under tasks/ (e.g. find_the_mug) or its path")
+    p.add_argument("--sim", action="store_true", help="run on the twin instead of the robot, in the MuJoCo window")
+    p.add_argument("--mode", choices=("standing", "gantry"), default=None,
+                   help="standing: on its own feet, may walk (default with --sim). gantry: hanging; "
+                        "Damp, stand, run, Damp; never walks. Required on the robot")
+    p.add_argument("--view", action="store_true",
+                   help=f"the robot: show its head camera live in a browser (http://127.0.0.1:{VIEW_PORT}). "
+                        "--sim always shows the MuJoCo window")
     args = p.parse_args(argv)
-    import json
-    if args.json:
-        print(json.dumps(function_schemas(menu(True, True)), ensure_ascii=False, indent=1))
-        return 0
-    if args.joints:
-        for r in joint_table():
-            print(f"  {r['name']:<22} [{r['min']:+.3f}, {r['max']:+.3f}] rad   stand {r['stand']:+.3f}")
-        return 0
-    visible = [t for t in TOOLS.values() if t.visible]
-    presets = [t for t in TOOLS.values() if not t.visible and t.kind == "motion" and t.name not in ("takeover", "handback")]
-    print("offered to the model (menu(allow_base, has_loco) hides what an env cannot do):")
-    print(describe_menu(visible))
-    print("\npresets (CLI chains and replay only):")
-    print(describe_menu(presets))
-    print("\nagents: search --instruction \"...\" (the model decides), replay --episode DIR")
-    print("chain them: g1 run --env sim --tools walk_forward:0.5,hold:1,turn:45,tpose --headless")
-    if args.prompts:
-        print()
-        for t in visible:
-            print(f"- {t.name}: {t.describe()}\n")
-    return 0
-
-
-def new_main(argv: list[str]) -> int:
-    import re
-    import shutil
-    p = argparse.ArgumentParser(prog="g1 new", description="scaffold a tool file or a task folder")
-    p.add_argument("kind", choices=("tool", "task"))
-    p.add_argument("name", help="snake_case, e.g. bow or find_the_mug")
-    args = p.parse_args(argv)
-    if re.fullmatch(r"[a-z][a-z0-9_]*", args.name) is None:
-        p.error("the name must be snake_case: letters, digits and underscores, starting with a letter")
-    if args.kind == "tool":
-        if args.name in TOOLS:
-            p.error(f"a tool named {args.name!r} already exists ({TOOLS[args.name].__module__})")
-        dest = ROOT / "g1" / "tools" / f"{args.name}.py"
-        if dest.exists():
-            p.error(f"{dest} already exists")
-        cls = "".join(part.capitalize() for part in args.name.split("_"))
-        text = (ROOT / "g1" / "tools" / "_template.py").read_text(encoding="utf-8")
-        dest.write_text(text.replace("ClassName", cls).replace("NAME", args.name), encoding="utf-8")
-        print(f"wrote {dest.relative_to(ROOT)}\nedit it, then:  g1 run --env sim --tools {args.name} --headless")
-        return 0
-    dest = ROOT / "tasks" / args.name
-    if dest.exists():
-        p.error(f"{dest} already exists")
-    shutil.copytree(ROOT / "tasks" / "_template", dest)
-    print(f"wrote {dest.relative_to(ROOT)}/task.json\nedit it, then:  g1 task run tasks/{args.name} --env sim --headless")
-    return 0
+    if args.view and args.sim:
+        p.error("--view is the robot's camera; --sim already shows the twin in the MuJoCo window")
+    try:
+        task = load_task(find(args.task))
+    except ValueError as e:
+        p.error(str(e))
+    return run_task(task, sim=args.sim, mode=args.mode, view=args.view)
 
 
 # --------------------------------------------------------------------------
@@ -350,22 +281,16 @@ def new_main(argv: list[str]) -> int:
 # --------------------------------------------------------------------------
 
 COMMANDS = {
-    "run": "run a tool, a chain of tools, the agent (search) or a replay",
-    "task": "run, show or evaluate a task folder",
+    "run": "run a task on the robot, or on the twin with --sim",
     "status": "is the robot reachable and what state is it in (read-only)",
-    "tools": "list the tools and the catalog the model reads",
-    "limits": "print every tunable limit with its source",
-    "camera": "smoke-test the robot's head camera (no robot control)",
-    "decide": "one real model decision from a saved frame",
-    "episode": "inspect a recorded run",
-    "demo": "compile or inspect a demonstration",
-    "scene": "fetch the room's assets",
-    "new": "scaffold a tool file or a task folder",
+    "twin": "fetch the twin's model, walker and room assets (fetch | status)",
+    "trace": "compare two runs of a task, e.g. the twin's and the robot's (compare | show)",
+    "limits": "print every limit and default in configs/limits.json as one table (or one source: g1 limits guess)",
 }
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    load_dotenv()              # before any parser: defaults read $G1_ENV, $UNITREE_ROBOT_IP, ...
+    load_dotenv()              # before anything reads $UNITREE_IFACE, $HF_TOKEN, ...
     argv = list(sys.argv[1:] if argv is None else argv)
     p = argparse.ArgumentParser(prog="g1", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("command", choices=sorted(COMMANDS), nargs="?",
@@ -379,33 +304,16 @@ def main(argv: Optional[list[str]] = None) -> int:
     command, rest = argv[0], argv[1:]
     if command == "run":
         return run_main(rest)
-    if command == "task":
-        from g1.agent.task import main as task_main
-        return task_main(rest)
-    if command == "tools":
-        return tools_main(rest)
     if command == "status":
         from g1.envs.robot import status_main
         return status_main(rest)
     if command == "limits":
-        from g1.core.limits import main as limits_main
-        return limits_main(rest)
-    if command == "camera":
-        from g1.camera import main as camera_main
-        return camera_main(rest)
-    if command == "decide":
-        from g1.agent.decider import main as decide_main
-        return decide_main(rest)
-    if command == "episode":
-        from g1.agent.episode import main as episode_main
-        return episode_main(rest)
-    if command == "demo":
-        from g1.agent.demo import main as demo_main
-        return demo_main(rest)
-    if command == "scene":
-        from g1.envs.scene import main as scene_main
-        return scene_main(rest)
-    return new_main(rest)
+        return limits.main(rest)
+    if command == "twin":
+        from g1.twin.main import main as twin_main
+        return twin_main(rest)
+    from g1.envs.trace import main as trace_main
+    return trace_main(rest)
 
 
 if __name__ == "__main__":

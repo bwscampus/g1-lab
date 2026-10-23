@@ -20,7 +20,7 @@ The arms are taken where they are (a 2 s weight ramp, nothing moves) and
 released where the last tool left them; no move to a neutral pose, no
 countdown.
 
-Walking (``--walk``): a tool's ``Action.base`` velocity is sent as
+Walking (``--mode standing`` only; gantry never walks): a tool's ``Action.base`` velocity is sent as
 ``LocoClient.Move(vx, vy, vyaw)`` from a 10 Hz commander thread (the RPC blocks,
 so it never runs on the tick thread), clamped to ``config.BASE_VEL_MAX``. Move
 is a 1 s dead-man command on the robot; the commander re-sends while a command
@@ -30,7 +30,7 @@ Pre-flight for walking: standing on the floor or hoisted with feet touching,
 ~2 m clear in every direction, no tether to snag, spotter on the remote (L2+B).
 
 Camera: for the agent (which decides on it), the head camera is streamed over WebRTC
-(``--camera-ip``, ``$UNITREE_AES_128_KEY``) and connected *before* any FSM
+(``$UNITREE_ROBOT_IP``, ``$UNITREE_AES_128_KEY``) and connected *before* any FSM
 transition, so a bad camera link fails before the robot is touched. The robot
 accepts one WebRTC client: disconnect the Unitree app first.
 
@@ -39,12 +39,17 @@ Pre-flight:
   * clear space around the arms
   * someone on the remote with L2+B ready
 
-    g1 run --env robot --tools tpose --iface eth0 --mode standing
+    g1 run tpose --mode standing           # the robot ($UNITREE_IFACE)
+    g1 run tpose --sim                     # the twin, the same code over DDS on lo0
+
+Every SDK object comes from ``self.link`` (``envs/link.py``), and every sleep and
+clock read goes through it too, so the tests run this class unchanged on the
+in-process twin's clock (``envs/sim.py``). ``args.sim`` makes the monitor strict and
+reads the twin's verdict at the end.
 """
 from __future__ import annotations
 
 import argparse
-import json
 import math
 import os
 import threading
@@ -54,12 +59,14 @@ from typing import Optional
 import numpy as np
 
 from g1.camera import WebRTCCamera
+from g1.core import limits
 from g1.core.action import Action
-from g1.core.config import (ARM_SDK_WEIGHT_IDX, AUDIO_METHODS, BASE_VEL_MAX, CONTROL_DT, LOCO_METHODS, NUM_JOINTS,
+from g1.core.config import (ARM_SDK_WEIGHT_IDX, AUDIO_METHODS, BASE_VEL_MAX, CONTROL_DT, FSM_SIT_TO_STAND, LOCO_FSM, LOCO_METHODS, NUM_JOINTS,
                             UPPER_BODY)
 from g1.envs import sdk
-from g1.envs.base import Env, shield_sigint
-from g1.envs.monitor import JointMonitor
+from g1.envs.base import Env, EnvAbort, shield_sigint
+from g1.envs.link import DdsLink, dds_domain, is_loopback
+from g1.envs.monitor import JointMonitor, TooManyViolations
 
 
 FSM_LOCKED_STAND = 4
@@ -70,13 +77,14 @@ MODES = ("gantry", "standing")
 class Health:
     """LowState arrival times, written on the DDS thread, read on the tick thread."""
 
-    def __init__(self) -> None:
+    def __init__(self, clock=time.monotonic) -> None:
+        self.clock = clock
         self.count = 0
-        self.last = 0.0            # time.monotonic() of the newest LowState
+        self.last = 0.0            # clock() of the newest LowState
         self._window: list[float] = []
 
     def tick(self) -> None:
-        now = time.monotonic()
+        now = self.clock()
         self.count += 1
         self.last = now
         self._window.append(now)
@@ -84,30 +92,24 @@ class Health:
             del self._window[:500]
 
     def rate(self, seconds: float = 1.0) -> float:
-        now = time.monotonic()
+        now = self.clock()
         return sum(1 for t in self._window if t > now - seconds) / seconds
 
     def age_ms(self) -> float:
-        return math.inf if not self.last else (time.monotonic() - self.last) * 1e3
+        return math.inf if not self.count else (self.clock() - self.last) * 1e3
 
 
 class ArmSdk:
     """Thin publisher for rt/arm_sdk plus a LowState subscriber."""
 
-    def __init__(self, health: Optional[Health] = None) -> None:
-        from unitree_sdk2py.core.channel import ChannelPublisher, ChannelSubscriber
-        from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowCmd_
-        from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_, LowState_
-        from unitree_sdk2py.utils.crc import CRC
-
+    def __init__(self, health: Optional[Health] = None, link=None) -> None:
+        self.link = link or DdsLink()
         self.state = None
         self.health = health or Health()
-        self.crc = CRC()
-        self.sub = ChannelSubscriber("rt/lowstate", LowState_)
-        self.sub.Init(self._on_state, 10)
-        self.pub = ChannelPublisher("rt/arm_sdk", LowCmd_)
-        self.pub.Init()
-        self.cmd = unitree_hg_msg_dds__LowCmd_()
+        self.crc = self.link.crc()
+        self.sub = self.link.lowstate(self._on_state)
+        self.pub = self.link.arm_sdk()
+        self.cmd = self.link.lowcmd()
         # Zero gains everywhere so a stale buffer can never command the legs.
         for j in range(NUM_JOINTS):
             mc = self.cmd.motor_cmd[j]
@@ -117,17 +119,18 @@ class ArmSdk:
         self.state = msg
         self.health.tick()
 
-    def fresh_state(self, settle: float = 0.5, timeout: float = 5.0, iface: str = "") -> np.ndarray:
-        t0 = time.time()
+    def fresh_state(self, settle: float = limits.get("lowstate_settle_s"),
+                    timeout: float = limits.get("lowstate_timeout_s"), iface: str = "") -> np.ndarray:
+        t0 = self.link.now()
         while self.state is None:
-            if time.time() - t0 > timeout:
+            if self.link.now() - t0 > timeout:
                 raise TimeoutError(f"no LowState received in {timeout:.0f}s on {iface or 'the interface'}: "
                                    "the DDS link (interface, subnet, the robot's services); run g1 status")
-            time.sleep(0.05)
-        time.sleep(settle)
+            self.link.sleep(limits.get("lowstate_poll_s"))
+        self.link.sleep(settle)
         return np.array([m.q for m in self.state.motor_state[:NUM_JOINTS]])
 
-    def release(self, duration: float = 1.0) -> None:
+    def release(self, duration: float = limits.get("release_s")) -> None:
         """Publish weight=0 with zero gains so ai_sport drops any arm_sdk takeover."""
         for j in UPPER_BODY:
             mc = self.cmd.motor_cmd[j]
@@ -136,7 +139,7 @@ class ArmSdk:
         self.cmd.crc = self.crc.Crc(self.cmd)
         for _ in range(int(duration / CONTROL_DT)):
             self.pub.Write(self.cmd)
-            time.sleep(CONTROL_DT)
+            self.link.sleep(CONTROL_DT)
 
     def send(self, action: Action) -> None:
         for j in action.joints:
@@ -154,18 +157,21 @@ class ArmSdk:
 class BaseCommander:
     """Owns LocoClient.Move on its own thread with a latest-only command slot.
     ``command(base)`` never blocks; the worker re-sends every ``period`` seconds
-    while a command is set and sends StopMove once when it clears or on stop."""
+    while a command is set and sends StopMove once when it clears or on stop.
+    Without the thread (the lockstep twin) the link calls ``poll(now)`` every tick
+    and it sends exactly what the worker would."""
 
-    def __init__(self, loco, period: float = 0.1, limits=BASE_VEL_MAX) -> None:
+    def __init__(self, loco, period: float = limits.get("base_send_period_s"), vel_max=BASE_VEL_MAX) -> None:
         self.loco = loco
         self.period = period
-        self.limits = np.asarray(limits, dtype=float)
+        self.limits = np.asarray(vel_max, dtype=float)
         self._cond = threading.Condition()
         self._cmd = None
         self._changed = False
         self._stop = False
         self._thread: threading.Thread | None = None
         self._last_sent = None
+        self._sent_at = -math.inf
         self.calls = 0
         self.failures = 0
         self.latency_max = 0.0
@@ -193,6 +199,23 @@ class BaseCommander:
         t = self._thread
         if t is not None:
             t.join(timeout=join)     # the robot's own 1 s dead-man is the backstop
+        elif self._last_sent is not None:
+            self._send(self.loco.StopMove, "StopMove")
+            self._last_sent = None
+
+    def poll(self, now: float) -> None:
+        """One pass of the worker's loop at time ``now``: Move on a change or every
+        ``period`` while a command is set; StopMove once when it has cleared."""
+        with self._cond:
+            cmd, changed = self._cmd, self._changed
+            self._changed = False
+        if cmd is not None:
+            if changed or now - self._sent_at >= self.period - 1e-9:
+                self._send(lambda: self.loco.Move(*cmd), "Move")
+                self._last_sent, self._sent_at = cmd, now
+        elif self._last_sent is not None:
+            self._send(self.loco.StopMove, "StopMove")
+            self._last_sent = None
 
     def _run(self) -> None:
         while True:
@@ -238,67 +261,84 @@ class BaseCommander:
 class RobotEnv(Env):
     name = "robot"
     monitor = None        # created in setup(); report-only
+    link_cls = DdsLink
 
-    @classmethod
-    def add_args(cls, parser: argparse.ArgumentParser) -> None:
-        g = parser.add_argument_group("robot")
-        g.add_argument("--iface", default=os.environ.get("UNITREE_IFACE"),
-                       help="network interface (e.g. en7) or IP of the robot for DDS (default: $UNITREE_IFACE, "
-                            "e.g. from .env; required for --env robot)")
-        g.add_argument("--mode", choices=sorted(MODES), default=None,
-                       help="required for --env robot. gantry: Damp->FSM4->FSM200, run, release, Damp. "
-                            "standing: remember FSM, ->FSM200, run, release, ->remembered FSM, no Damp")
-        g.add_argument("--walk", action="store_true",
-                       help="let a tool drive the base with LocoClient.Move (FSM 200), clamped to "
-                            "BASE_VEL_MAX. PRE-FLIGHT: on the floor or hoisted with feet touching, ~2 m "
-                            "clear all round, no tether to snag, spotter on the remote with L2+B")
-        g.add_argument("--camera-ip", default=os.environ.get("UNITREE_ROBOT_IP"),
-                       help="robot IP for the head camera stream (default: $UNITREE_ROBOT_IP)")
-        g.add_argument("--camera-timeout", type=float, default=15.0,
-                       help="seconds to wait for the first camera frame (default 15)")
-        g.add_argument("--volume", type=int, default=None, metavar="0-100",
-                       help="set the speaker volume before the run (the say tool uses the onboard TTS)")
+    def __init__(self, args: argparse.Namespace) -> None:
+        super().__init__(args)
+        self.link = self.link_cls()
+
+    def _check_args(self) -> None:
+        if not self.args.iface:
+            raise SystemExit("the robot's network interface is not set: put UNITREE_IFACE=<iface or IP> in .env")
+        if self.args.mode not in MODES:
+            raise SystemExit("the robot needs --mode gantry|standing (no default: "
+                             "gantry damps the robot at the end, standing does not)")
+
+    def _open_camera(self):
+        """The head camera, connected before any FSM change: the robot's WebRTC stream,
+        or the shared-memory frames of a ``g1 twin`` on this machine."""
+        source = getattr(self.args, "camera_source", "auto")
+        if source == "shm" or (source == "auto" and is_loopback(self.args.iface)):
+            from g1.camera import ShmCamera
+            domain = dds_domain(self.args.iface, getattr(self.args, "domain", None))
+            camera = ShmCamera(domain, timeout=self.args.camera_timeout)
+            print(f"camera: g1 twin's head camera (shared memory, domain {domain})")
+            camera.start()
+            return camera
+        if not self.args.camera_ip:
+            raise SystemExit("this run uses the camera: pass --camera-ip or set "
+                             "$UNITREE_ROBOT_IP")
+        key = os.environ.get("UNITREE_AES_128_KEY")
+        if not key:
+            print("warning: $UNITREE_AES_128_KEY not set; firmware >= 1.5.1 needs it "
+                  "(see unitree-fetch-aes-key)")
+        print(f"camera: connecting to {self.args.camera_ip}")
+        t0 = time.monotonic()
+        camera = WebRTCCamera(self.args.camera_ip, key, timeout=self.args.camera_timeout)
+        camera.start()
+        print(f"camera: first frame {camera.latest().image.shape} after {time.monotonic() - t0:.1f}s")
+        return camera
+
+    def _make_monitor(self) -> JointMonitor:
+        if getattr(self.args, "sim", False):
+            # the twin: the pre-flight, strict; the legs are the onboard controller's, held to the hardware limits
+            return JointMonitor(margin=self.args.margin, max_vel=self.args.max_vel,
+                                max_violations=self.args.max_violations, leg_margin=0.0)
+        # the robot: report-only: flag any joint that left its bounds, but never stop a live run
+        return JointMonitor(strict=False, gate_targets=False, gate_velocity=False, gate_base=False)
+
+    def _walk_banner(self) -> None:
+        if getattr(self.args, "sim", False):
+            return
+        print("WALKING ENABLED (--mode standing): the program may drive the base (Move, <= "
+              f"{BASE_VEL_MAX[0]} m/s). On the floor, ~2 m clear all round, spotter on the remote with L2+B.")
 
     def setup(self) -> None:
-        if not self.args.iface:
-            raise SystemExit("--env robot requires --iface <network_interface_or_ip> (or UNITREE_IFACE in .env)")
-        if self.args.mode not in MODES:
-            raise SystemExit("--env robot requires --mode gantry|standing (no default: "
-                             "gantry damps the robot at the end, standing does not)")
-        from unitree_sdk2py.core.channel import ChannelFactoryInitialize
-        from unitree_sdk2py.g1.loco.g1_loco_client import LocoClient
-
+        self._check_args()
+        link = self.link
+        self.trace = None
+        if getattr(self.args, "trace", None):
+            from g1.envs.trace import Trace
+            self.trace = Trace(self.args.trace, "twin" if self.args.sim and self.name == "robot" else self.name)
         self.camera = None
         if self.use_camera:
-            if not self.args.camera_ip:
-                raise SystemExit("this run uses the camera: pass --camera-ip or set "
-                                 "$UNITREE_ROBOT_IP")
-            key = os.environ.get("UNITREE_AES_128_KEY")
-            if not key:
-                print("warning: $UNITREE_AES_128_KEY not set; firmware >= 1.5.1 needs it "
-                      "(see unitree-fetch-aes-key)")
-            print(f"camera: connecting to {self.args.camera_ip}")
-            t0 = time.monotonic()
-            self.camera = WebRTCCamera(self.args.camera_ip, key, timeout=self.args.camera_timeout)
-            self.camera.start()          # before any FSM change
-            print(f"camera: first frame {self.camera.latest().image.shape} after {time.monotonic() - t0:.1f}s")
+            self.camera = self._open_camera()          # before any FSM change
 
-        self._say(f"dds: ChannelFactoryInitialize(0, {self.args.iface!r})")
-        ChannelFactoryInitialize(0, self.args.iface)
-        self.health = Health()
-        self.loco = LocoClient()
-        self.loco.SetTimeout(10.0)
+        domain = dds_domain(self.args.iface, getattr(self.args, "domain", None))
+        self._say(f"dds: ChannelFactoryInitialize({domain}, {self.args.iface!r})")
+        link.init(domain, self.args.iface)
+        self.health = Health(clock=link.now)
+        self.loco = link.loco()
+        self.loco.SetTimeout(limits.get("rpc_timeout_s"))
         self.loco.Init()
+        self.seated = False                    # a sit tool sat it down: the teardown stands it up
         self.audio = None
         self.audio_calls = 0
         self._audio_warned = False
         try:
-            from unitree_sdk2py.g1.audio.g1_audio_client import AudioClient
-            self.audio = AudioClient()
-            self.audio.SetTimeout(10.0)
+            self.audio = link.audio()
+            self.audio.SetTimeout(limits.get("rpc_timeout_s"))
             self.audio.Init()
-            if self.args.volume is not None:
-                self._call(self.audio, "SetVolume", max(0, min(100, int(self.args.volume))))
             code, volume = self._call(self.audio, "GetVolume")
             if code == 0:
                 print(f"audio: volume {volume}")
@@ -310,10 +350,10 @@ class RobotEnv(Env):
 
         if self.args.mode == "gantry":
             self._require(self._call(self.loco, "Damp")[0], "Damp")
-            time.sleep(1.0)
+            link.sleep(limits.get("gantry_damp_s"))
             self._require(self._call(self.loco, "SetFsmId", FSM_LOCKED_STAND)[0], "SetFsmId(4)")
             print(f"fsm: {sdk.fsm_name(FSM_LOCKED_STAND)}")
-            time.sleep(7.0)
+            link.sleep(limits.get("gantry_lock_stand_s"))
             self.initial_fsm = None
         else:  # standing
             self.initial_fsm = self._fsm()
@@ -327,28 +367,24 @@ class RobotEnv(Env):
             print(f"entering control mode (FSM {FSM_MAIN}, main operation)"
                   + (f"; will return to FSM {self.initial_fsm} after the run" if self.initial_fsm is not None else ""))
             self._require(self._call(self.loco, "SetFsmId", FSM_MAIN)[0], f"SetFsmId({FSM_MAIN})")
-            t0 = time.monotonic()
+            t0 = link.now()
             while True:
                 fsm = self._fsm()
-                self._say(f"fsm: {sdk.fsm_name(fsm)} after {time.monotonic() - t0:.1f}s")
+                self._say(f"fsm: {sdk.fsm_name(fsm)} after {link.now() - t0:.1f}s")
                 if fsm == FSM_MAIN:
                     break
-                if time.monotonic() - t0 > 3.0:
-                    raise SystemExit(f"the robot did not enter FSM {FSM_MAIN} within 3 s (reports "
+                if link.now() - t0 > limits.get("fsm_enter_timeout_s"):
+                    raise SystemExit(f"the robot did not enter FSM {FSM_MAIN} within {limits.get('fsm_enter_timeout_s'):g} s (reports "
                                      f"{sdk.fsm_name(fsm)}): another controller may own the FSM, or it is in "
                                      "a protection state; check the app and the remote, run g1 status")
-                time.sleep(0.2)
-        self.arm = ArmSdk(self.health)
-        # report-only: flag any joint that left its bounds, but never stop a live run
-        self.monitor = JointMonitor(strict=False, gate_targets=False, gate_velocity=False,
-                                    gate_base=False)
+                link.sleep(limits.get("fsm_poll_s"))
+        self.arm = ArmSdk(self.health, link=link)
+        self.monitor = self._make_monitor()
         self.base = None
-        if self.args.walk:
-            print("WALKING ENABLED: the program may drive the base (Move, <= "
-                  f"{BASE_VEL_MAX[0]} m/s). Clear floor, spotter ready."
-                  + (" Gantry mode: mind the tether." if self.args.mode == "gantry" else ""))
+        if self.can_walk:
+            self._walk_banner()
             self.base = BaseCommander(self.loco)
-            self.base.start()
+            link.start_commander(self.base)
 
     # -- the SDK, checked ---------------------------------------------------------------------
     def _call(self, client, name: str, *args, label: Optional[str] = None, **kw):
@@ -361,10 +397,10 @@ class RobotEnv(Env):
         """A failed call during bring-up stops before the arms are touched."""
         if code == 0:
             return
-        hint = ("no reply from the robot: check the interface and the DDS link (g1 status --iface ...)"
+        hint = ("no reply from the robot: check the interface and the DDS link (g1 status)"
                 if sdk.is_transport(code) else
                 "the robot refused: the app or the remote may own the FSM, or it is in a protection state "
-                "(g1 status --iface ... shows what it reports)")
+                "(g1 status shows what it reports)")
         raise SystemExit(f"{what} failed with {sdk.explain(code)}; {hint}")
 
     def _fsm(self):
@@ -388,6 +424,9 @@ class RobotEnv(Env):
                 camera = getattr(self, "camera", None)
                 if camera is not None:
                     camera.stop()
+                trace = getattr(self, "trace", None)
+                if trace is not None:
+                    trace.save()
 
     def _teardown_robot(self) -> None:
         """Nothing here raises: the release must always finish."""
@@ -398,20 +437,25 @@ class RobotEnv(Env):
         arm = getattr(self, "arm", None)
         if arm is not None:
             print("leaving control mode: releasing the arms")
-            arm.release(1.0)
+            arm.release()
         loco = getattr(self, "loco", None)
         if loco is None:
             return
+        if getattr(self, "seated", False):
+            self._stand_up(loco)
         if self.args.mode == "gantry":
             code, _ = self._call(loco, "Damp")
             print("Damp" if code == 0 else f"warning: Damp failed with {sdk.explain(code)}")
-            time.sleep(1.0)
+            self.link.sleep(limits.get("gantry_damp_s"))
         else:  # standing
             initial = getattr(self, "initial_fsm", None)
-            if initial is not None and initial != FSM_MAIN:
+            if getattr(self, "seated", False):
+                print(f"warning: the robot is still seated; stand it up with the remote "
+                      f"(SetFsmId({FSM_SIT_TO_STAND}), then FSM {FSM_MAIN})")
+            elif initial is not None and initial != FSM_MAIN:
                 if initial in sdk.STANDING_FSMS:
                     code, _ = self._call(loco, "SetFsmId", initial)
-                    time.sleep(3.0)
+                    self.link.sleep(limits.get("restore_fsm_s"))
                     print(f"FSM {sdk.fsm_name(initial)} restored" if code == 0 else
                           f"warning: could not restore FSM {initial}: {sdk.explain(code)}")
                 else:
@@ -420,14 +464,39 @@ class RobotEnv(Env):
         code, fsm = self._call(loco, "GetFsmId")
         print(f"fsm: {sdk.fsm_name(fsm) if code == 0 else sdk.explain(code)}; done")
 
+    def _stand_up(self, loco) -> None:
+        """After a sit: SetFsmId(801), wait for a standing FSM, then back to main operation.
+        Never raises; a robot that does not stand stays seated and ``seated`` stays set."""
+        print("standing up from the sit")
+        code, _ = self._call(loco, "SetFsmId", FSM_SIT_TO_STAND)
+        if code != 0:
+            print(f"warning: sit to stand (SetFsmId({FSM_SIT_TO_STAND})) failed: {sdk.explain(code)}")
+            return
+        end = self.link.now() + limits.get("sit_stand_timeout_s")
+        fsm = None
+        while self.link.now() < end:
+            self.link.sleep(limits.get("fsm_poll_s"))
+            code, fsm = self._call(loco, "GetFsmId")
+            if code == 0 and fsm in sdk.STANDING_FSMS:
+                break
+        else:
+            print(f"warning: no standing FSM within {limits.get('sit_stand_timeout_s')} s "
+                  f"(last {sdk.fsm_name(fsm)})")
+            return
+        if fsm != FSM_MAIN:
+            code, _ = self._call(loco, "SetFsmId", FSM_MAIN)
+            self.link.sleep(limits.get("restore_fsm_s"))
+        self.seated = False
+        print(f"stood up (FSM {sdk.fsm_name(fsm)})")
+
     def reset(self) -> np.ndarray:
-        self.arm.release(1.0)                 # drop any stale arm_sdk takeover
+        self.arm.release()                    # drop any stale arm_sdk takeover
         q0 = self.arm.fresh_state(iface=self.args.iface)
         self._say(f"lowstate: first message, age {self.health.age_ms():.0f} ms, {self.health.rate():.0f}/s")
         self.overruns = 0
         self.ticks = 0
-        self._wall = time.time()
-        self._health_at = time.monotonic()
+        self._wall = self.link.now()
+        self._health_at = self.link.now()
         return q0
 
     def frame(self):
@@ -438,7 +507,8 @@ class RobotEnv(Env):
 
     @property
     def can_walk(self) -> bool:
-        return bool(self.args.walk)
+        """Standing on its own feet it may walk; hanging in a gantry it never does."""
+        return self.args.mode == "standing"
 
     @property
     def has_loco(self) -> bool:
@@ -456,35 +526,55 @@ class RobotEnv(Env):
     def joint_torque(self):
         return self._motor("tau_est")
 
+    def imu_quat(self):
+        imu = getattr(getattr(getattr(self, "arm", None), "state", None), "imu_state", None)
+        return None if imu is None else np.asarray(imu.quaternion, dtype=float)
+
     def step(self, action: Action) -> np.ndarray:
         bad = [j for j in action.joints if j not in UPPER_BODY]
         if bad:
             raise RuntimeError(f"arm_sdk can only command waist+arms, the program tried {bad}")
         base = getattr(self, "base", None)
         if action.base is not None and base is None:
-            raise RuntimeError("the program commands the base; pass --walk (read its pre-flight first)")
+            raise RuntimeError("the program commands the base, and --mode gantry never walks")
         if base is not None:
             base.command(action.base)
         if action.command is not None:
             self._command(*action.command)
         self.arm.send(action)
         self._wall += CONTROL_DT
-        lag = self._wall - time.time()
+        lag = self._wall - self.link.now()
         if lag > 0:
-            time.sleep(lag)
+            self.link.sleep(lag)
         elif lag < -CONTROL_DT:
             self.overruns += 1          # the program step took longer than a tick
         q = np.array([m.q for m in self.arm.state.motor_state[:NUM_JOINTS]])
         if self.monitor is not None:
-            self.monitor.observe(q)
+            self._observe(q, action)
+        if getattr(self, "trace", None) is not None:
+            imu = getattr(self.arm.state, "imu_state", None)
+            self.trace.add(self.clock(), action, q, self.joint_vel(), self.joint_torque(),
+                           None if imu is None else list(imu.quaternion), self._true_base())
         self.ticks += 1
-        if self.verbose and time.monotonic() - self._health_at >= 1.0:
-            self._health_at = time.monotonic()
+        if self.verbose and self.link.now() - self._health_at >= limits.get("health_period_s") - 1e-6:
+            self._health_at = self.link.now()
             print(self.health_line())
         return q
 
+    def _observe(self, q: np.ndarray, action: Action) -> None:
+        if not getattr(self.args, "sim", False):
+            self.monitor.observe(q)
+            return
+        try:
+            self.monitor.observe(q, action)
+        except TooManyViolations as e:
+            raise EnvAbort(str(e)) from None
+
+    def _true_base(self):
+        return None                      # the robot has no ground truth; the twin does
+
     def health_line(self) -> str:
-        """One line a second in --verbose: the link, the tick, the base, the camera."""
+        """One line a second with G1_VERBOSE=1: the link, the tick, the base, the camera."""
         h = getattr(self, "health", None)
         parts = [f"t={self.ticks * CONTROL_DT:6.1f}"]
         if h is not None:
@@ -497,7 +587,7 @@ class RobotEnv(Env):
         cam = getattr(self, "camera", None)
         if cam is not None:
             f = cam.latest()
-            parts.append(f"camera {cam.count} frames" + (f", age {(time.monotonic() - f.stamp) * 1e3:.0f} ms" if f else ""))
+            parts.append(f"camera {cam.count} frames" + (f", age {(self.clock() - f.stamp) * 1e3:.0f} ms" if f else ""))
         return "  ".join(parts)
 
     def _command(self, name: str, kw: dict) -> None:
@@ -515,6 +605,16 @@ class RobotEnv(Env):
             self.audio_calls += 1
         else:
             raise RuntimeError(f"onboard call {name!r} is not allowed (allowed: {sorted(LOCO_METHODS | AUDIO_METHODS)})")
+        if name in LOCO_FSM:                 # an FSM switch: SetFsmId itself, for its return code
+            fsm = LOCO_FSM[name]
+            print(f"{label}.{name}: SetFsmId({fsm})")
+            code, data = self._call(client, "SetFsmId", fsm, label=label)
+            self.last_command = {"name": name, "args": {"fsm_id": fsm}, "code": code}
+            if code != 0:
+                raise RuntimeError(f"{label}.SetFsmId({fsm}) ({name}) failed: "
+                                   f"{sdk.explain(code) if code != -1 else data}")
+            self.seated = True
+            return
         print(f"{label}.{name}({kw})")
         code, data = self._call(client, name, label=label, **kw)
         if code == -1 and label != "AudioClient":
@@ -528,9 +628,13 @@ class RobotEnv(Env):
         return getattr(self, "audio", None) is not None
 
     def report(self) -> bool:
+        sim = getattr(self.args, "sim", False)
         monitor = getattr(self, "monitor", None)
+        ok = True
         if monitor is not None and monitor.ticks:
-            monitor.report("robot")
+            ok = monitor.report("sim" if sim else "robot")
+        if sim:
+            ok = self._twin_verdict() and ok
         base = getattr(self, "base", None)
         if base is not None:
             print(base.summary())
@@ -544,8 +648,26 @@ class RobotEnv(Env):
         if overruns:
             print(f"robot: {overruns} tick overrun(s) > {CONTROL_DT * 1e3:.0f} ms; "
                   f"the program step is too slow for 50 Hz")
-        else:
+        elif not sim:
             print("robot: no tick overruns")
+        return ok
+
+    def _twin_verdict(self) -> bool:
+        """What only the twin knows: did it fall, where did the base really go."""
+        try:
+            client = self.link.twin_client()
+            client.SetTimeout(limits.get("twin_summary_timeout_s"))
+            client.Init()
+            code, report = client.Summary()
+        except Exception as e:
+            code, report = -1, f"{type(e).__name__}: {e}"
+        if code != 0 or not isinstance(report, dict):
+            print(f"twin: no summary ({sdk.explain(code) if code != -1 else report})")
+            return True
+        print(f"twin: {report['summary']}")
+        if report.get("fallen_at") is not None:
+            print(f"FAIL: the robot fell at t = {report['fallen_at']:.2f} s (twin time)")
+            return False
         return True
 
 
@@ -553,24 +675,19 @@ class RobotEnv(Env):
 # g1 status: is it the link, or is the robot refusing?
 # --------------------------------------------------------------------------
 
-def probe(iface: str, seconds: float = 5.0, verbose: bool = False, factory=None, loco_cls=None,
-          subscribe=None) -> dict:
+def probe(iface: str, seconds: float = limits.get("status_probe_s"), verbose: bool = False, factory=None, loco_cls=None,
+          subscribe=None, domain: Optional[int] = None) -> dict:
     """Read-only: count LowState for ``seconds``, ask the FSM, and say which of
     the two failures it is. Never publishes to arm_sdk, never changes the FSM.
     The SDK pieces are injectable for tests."""
+    domain = dds_domain(iface, domain)
     if factory is None or loco_cls is None or subscribe is None:
-        from unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelSubscriber
-        from unitree_sdk2py.g1.loco.g1_loco_client import LocoClient
-        from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowState_
-        factory = factory or (lambda: ChannelFactoryInitialize(0, iface))
-        loco_cls = loco_cls or LocoClient
-
-        def subscribe(on_state):
-            sub = ChannelSubscriber("rt/lowstate", LowState_)
-            sub.Init(on_state, 10)
-            return sub
+        link = DdsLink()
+        factory = factory or (lambda: link.init(domain, iface))
+        loco_cls = loco_cls or link.loco
+        subscribe = subscribe or link.lowstate
     log: list = []
-    out: dict = {"iface": iface, "seconds": seconds}
+    out: dict = {"iface": iface, "domain": domain, "seconds": seconds}
     factory()
     health = Health()
     latest: dict = {}
@@ -581,13 +698,13 @@ def probe(iface: str, seconds: float = 5.0, verbose: bool = False, factory=None,
 
     subscribe(on_state)
     loco = loco_cls()
-    loco.SetTimeout(min(seconds, 5.0))
+    loco.SetTimeout(min(seconds, limits.get("rpc_timeout_s")))
     loco.Init()
     t0 = time.monotonic()
     code, fsm = sdk.call(loco, "GetFsmId", log=log, verbose=verbose)
     out["rpc"] = {"code": code, "fsm": fsm, "explain": sdk.explain(code), "elapsed_s": log[-1]["elapsed_s"]}
     while time.monotonic() - t0 < seconds:
-        time.sleep(0.05)
+        time.sleep(limits.get("lowstate_poll_s"))
     out["lowstate"] = {"count": health.count, "rate": health.count / seconds, "age_ms": health.age_ms()}
     msg = latest.get("msg")
     if msg is not None:
@@ -617,24 +734,18 @@ def status_main(argv: list[str]) -> int:
     from g1.vlm import load_dotenv
     load_dotenv()
     p = argparse.ArgumentParser(prog="g1 status", description="is the robot reachable, and what state is it in? "
-                                "Read-only: no arm_sdk, no FSM change.")
-    p.add_argument("--iface", default=os.environ.get("UNITREE_IFACE"),
-                   help="network interface or IP of the robot for DDS (default: $UNITREE_IFACE, e.g. from .env)")
-    p.add_argument("--seconds", type=float, default=5.0, help="how long to count LowState (default 5)")
-    p.add_argument("--json", action="store_true")
-    p.add_argument("--verbose", "-v", action="store_true")
-    args = p.parse_args(argv)
-    if not args.iface:
-        p.error("--iface is required (or UNITREE_IFACE in .env)")
+                                "Read-only: no arm_sdk, no FSM change. The interface is UNITREE_IFACE (.env).")
+    p.parse_args(argv)
+    iface = os.environ.get("UNITREE_IFACE")
+    if not iface:
+        p.error("set UNITREE_IFACE=<iface or IP> in .env")
+    seconds = limits.get("status_probe_s")
     try:
-        out = probe(args.iface, args.seconds, args.verbose)
+        out = probe(iface, seconds, os.environ.get("G1_VERBOSE", "") not in ("", "0"))
     except ImportError as e:
         p.error(f"unitree_sdk2py is not installed ({e})")
-    if args.json:
-        print(json.dumps(out, indent=1, default=str))
-        return 0
     ls = out["lowstate"]
-    print(f"lowstate: {ls['count']} messages in {args.seconds:.0f}s = {ls['rate']:.0f}/s"
+    print(f"lowstate: {ls['count']} messages in {seconds:.0f}s on {iface} = {ls['rate']:.0f}/s"
           + (f", newest {ls['age_ms']:.0f} ms old" if ls["count"] else "")
           + (f", joint0 q {ls['joint0_q']:+.3f}" if "joint0_q" in ls else "")
           + (f", battery {ls['battery_soc']}%" if "battery_soc" in ls else ""))

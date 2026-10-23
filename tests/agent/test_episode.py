@@ -3,7 +3,7 @@ import json
 import numpy as np
 import pytest
 
-from g1.agent.episode import EpisodeWriter, StepRecord, chain_of, load_episode, main
+from g1.agent.episode import EpisodeWriter, StepRecord, load_episode
 
 
 def record(step, name, args, status="completed"):
@@ -52,20 +52,6 @@ def test_threaded_writer_flushes_on_close(tmp_path):
     assert len((w.dir / "states.jsonl").read_text().splitlines()) == 20      # 20 Hz from a 50 Hz tick
 
 
-def test_chain_of_and_cli(tmp_path, capsys):
-    w = EpisodeWriter(tmp_path, env="sim", instruction="g", model="m", tools=[], threaded=False)
-    w.write_step(record(1, "turn", {"angle_deg": 45.0}), None)
-    w.write_step(record(2, "walk_forward", {"distance_m": 0.5}), None)
-    w.write_step(record(3, "hold", {"seconds": 1.0}, status="rejected"), None)
-    w.write_step(record(4, "done", {}, status="done"), None)
-    w.finish("completed"); w.close("completed", human="failed")
-    assert w.dir.name.endswith("_failed")
-    _, steps = load_episode(w.dir, images=False)
-    assert chain_of(steps) == "turn:angle_deg=45.0,walk_forward:distance_m=0.5"    # notes left out
-    assert main([str(w.dir)]) == 0
-    out = capsys.readouterr().out
-    assert "replay:  --tools turn:angle_deg=45.0,walk_forward:distance_m=0.5" in out and "4 step(s)" in out
-    assert "outcome failed (human)" in out
 
 
 def test_events_transcript_and_status(tmp_path):

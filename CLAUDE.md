@@ -7,80 +7,78 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 A Unitree G1 (29-DoF) driven one **tool** at a time by a vision-language model, in
 GPT-Policy's shape (arXiv:2609.19138): the model picks a tool from a menu and fills in its
 arguments; the host plans a fixed motion from them, checks it, runs it, waits for the joints
-to settle and reports. The same tools chain from the CLI without a model. Two envs, chosen
-with `--env`: `sim` (MuJoCo, and the checks that gate a run; `--headless` is the fast
-pre-flight) and `robot` (live via `unitree_sdk2py`). Run sim before the robot for anything new.
+to settle and reports. The same tools chain without a model. `g1 run TASK` runs a task on the
+robot (`RobotEnv`, live via `unitree_sdk2py`); `--sim` runs the *same* `RobotEnv` code over DDS
+against the **twin** (`g1/twin/`): unitree_mujoco's 29-DoF G1 with a free base and torque
+motors, behind a stand-in onboard controller that answers LocoClient/AudioClient, blends
+arm_sdk, stands and walks with NVIDIA's GR00T whole-body controller (Balance and Walk networks,
+onnxruntime). Nothing is pinned or slid.
+Run it with `--sim` before the robot for anything new.
 
 ## Vocabulary (GPT-Policy's; use these words in code, CLI, docs)
 
 - **tool** — one class in `g1/tools/`: `name`, `prompt`, `params` (JSON-schema fragments), `segments()`.
   A fixed motion (or a query) computed from the arguments; ends by construction; **never watches
   the camera while it runs** — the model is the closed loop. Visible to the model by default.
-- **instruction** — the goal text. **task** — a folder (`tasks/<name>/task.json`) with an instruction and
-  its context, no code. **observation / decision / execution result / verdict** — as in the paper.
+- **instruction** — the goal text. **task** — a folder (`tasks/<name>/task.json`) with an instruction (or a
+  fixed `tools` chain) and its context, no code; it is the only thing `g1 run` runs. **observation / decision / execution result / verdict** — as in the paper.
 - Retired, do not reintroduce: *skill*, *policy*, *primitive*, *routine*, *goal*, a catalog file, a
   tool that servos on vision, a per-tool timeout.
 
 ## Commands
 
+The whole CLI. Everything else is in a file: the task's `task.json`, `configs/limits.json`, `.env`.
+Do not add flags; add a task.json key or a limit. `.env` is private to one machine (secrets and the
+robot's address): never put an editable setting there.
+
 ```
-pip install -e ".[sim,dev]"          # unitree_sdk2py / unitree_webrtc_connect come from their repos for --env robot
+pip install -e ".[sim,dev]"          # unitree_sdk2py (needed for --sim too) / unitree_webrtc_connect come from their repos
+g1 twin fetch                        # once: the twin's model (unitree_mujoco), walker (NVIDIA GR00T) and room into assets/
 
-g1 run --env sim --tools tpose --headless                        # one tool, fully checked
-g1 run --env sim --tools walk_forward:0.5,hold:1,turn:45 --headless   # a chain (--pause between)
-g1 run --env sim --tools 'move:1:0.3:-45,arm_path:waypoints=[{"joints":{"left_elbow":-0.4}}]' --headless
-mjpython -m g1 run --env sim --tools tpose                        # macOS: the viewer only works under mjpython
-g1 run --env robot --tools tpose --iface <iface_or_ip> --mode gantry|standing   # --mode is required; --iface and
-                                                                                # --camera-ip default to $UNITREE_IFACE / $UNITREE_ROBOT_IP (.env)
-g1 run --env robot --tools search -i "find the mug" --iface <iface> --mode standing --camera-ip <ip> --walk
-g1 run --env robot --tools 'say:text=hello' --iface <iface> --mode standing --volume 60   # hear the TTS; then fix limits
+g1 run TASK --sim [--mode gantry]    # the twin in the MuJoCo window (always; mjpython): starts it (TwinProcess),
+                                     # runs RobotEnv over DDS on lo0, stops it. Headless only in tests: G1_TWIN_HEADLESS=1
+g1 run TASK --mode standing|gantry [--view]   # the robot; --mode is required. standing may walk, gantry never does;
+                                     # --view: its head camera at http://127.0.0.1:8765 (live only)
+g1 status                            # read-only: link ok / robot refuses / no link (UNITREE_IFACE)
+g1 twin fetch|status
+g1 trace compare RUN_A RUN_B | show RUN   # two run dirs of the same task: tracking, sag, lag, A-B difference
+g1 limits [SOURCE]                   # every limit and default in configs/limits.json as one table
 
-HF_TOKEN=hf_... g1 run --env sim --scene room --tools search --instruction "find the mug" \
-        --sim-objects mug@1.5,1.2 --camera-size 720x1280 --headless --max-time 600
-g1 task run tasks/find_the_mug --env sim --headless             # the same from a task folder; records under tasks/<name>/runs/
-g1 task eval tasks/find_the_mug -n 5 --env sim --headless       # success rate, decisions to success
-g1 task show tasks/find_the_mug
-g1 run --env sim --tools replay --episode runs/<dir> --headless  # a saved run, no camera or model
-g1 run ... --tools search --demo runs/<earlier run> | walk.mp4 | out/demo.json   # demonstration on turn 0
-g1 run ... --view [PORT]     # the head camera live at http://127.0.0.1:8765 (MJPEG, browser); works in sim
-g1 run ... --record [PATH]   # every frame to camera.mp4 in the run dir (PyAV, H.264, stamps on the env clock)
+TASK = a folder under tasks/ (tpose, find_the_mug) or a path. .env: UNITREE_IFACE, UNITREE_ROBOT_IP,
+UNITREE_AES_128_KEY, UNITREE_DOMAIN, HF_TOKEN, VLM_BASE_URL; G1_VERBOSE=1 prints every SDK call.
+The model (`vlm_model`), `reasoning_effort` and `max_tokens` are limits; VLM_MODEL etc. in .env are refused.
 
-g1 tools [--json | --joints | --prompts]   # the menu; the catalog the model reads; the joint table
-g1 status --iface <iface> [--json]         # read-only: link ok / robot refuses / no link (LowState rate + GetFsmId)
-g1 run ... --verbose|-v                    # every SDK call with its named code + a health line every second
-g1 limits [--source guess]                 # every tunable number (configs/limits.json)
-g1 new tool NAME | g1 new task NAME        # scaffold from g1/tools/_template.py | tasks/_template/
-g1 decide runs/head.png --instruction "find the mug"   # one real model decision from a frame
-g1 camera [--save PNG]                     # head camera smoke test, no robot control
-g1 episode runs/<dir>                      # step table + the --tools chain that replays it
-g1 demo prepare|show ; g1 scene fetch|status
-python -m g1 ...  ==  g1 ...   ; --env/--tools fall back to $G1_ENV/$G1_TOOLS
-
-pytest                               # all tests; everything through headless sim (~3 min)
+pytest                               # all tests, on the in-process twin (~2 min)
+pytest -m dds                        # also: g1 run --sim end to end over DDS (needs unitree_sdk2py)
 pytest tests/tools/test_tools.py::test_every_tool_pair_is_continuous
 ```
 
 ## Layout
 
 ```
-g1/cli.py          one command; run_parser() + run() + safe_return; subcommands dispatch to each module's main()
+g1/cli.py          run | status | twin | trace; run_settings() (every setting an env reads), run_task(), run(), safe_return
 g1/core/           config (joint table, STAND_Q, UPPER_BODY, LOCO_METHODS, BASE_VEL_MAX), limits (configs/limits.json),
                    action (Action, Obs, Segment, Runnable, ease, EPS), poses, images (Pillow, RGB), worker
-g1/tools/          __init__: discovery (TOOLS), menu(), the three renderings, parse_tool/parse_chain/chain_spec, Chain
+g1/tools/          __init__: discovery (TOOLS), menu(), the three renderings, parse_tool/parse_chain, Chain
                    base: the Tool contract + the segment player + validate_args + num/integer/text/flag/limit
-                   move (move, walk_forward, turn) · arms (arm_path, look, tpose, sixseven) · gestures (wave_hand,
-                   shake_hand) · speech (say: AudioClient.TtsMaker; sim prints) · control (hold, check + dry_run, done,
-                   give_up, takeover, handback) · _template (bow)
-g1/envs/           base (Env, EnvAbort, shield_sigint, verbose, sdk_log), monitor (JointMonitor), sim, scene (the room),
-                   robot (RobotEnv, ArmSdk, BaseCommander, Health, probe/status_main), sdk (RPC_CODES, explain, call, FSM_NAMES)
-g1/camera.py       Frame, Camera (+subscribe), DirCamera, WebRTCCamera, Viewer (--view), Recorder (--record)
+                   move (move, walk_forward, turn) · arms (arm_path, look, point, tpose, sixseven) · gestures (wave_hand,
+                   shake_hand) · posture (sit: SetFsmId(3)) · speech (say: AudioClient.TtsMaker) · control (hold, check + dry_run, done,
+                   give_up, takeover, handback)
+g1/envs/           base (Env, EnvAbort, shield_sigint, verbose, sdk_log), monitor (JointMonitor), scene (the room),
+                   robot (RobotEnv, ArmSdk, BaseCommander, Health, probe/status_main), sdk (RPC_CODES, explain, call, FSM_NAMES),
+                   link (DdsLink: the SDK seam), sim (SimEnv = RobotEnv on the in-process twin: the tests' env), trace
+g1/twin/           assets (g1 twin fetch), model (unitree_mujoco G1 + head camera), walker (GR00T: Balance + Walk),
+                   onboard (the stand-in onboard controller: FSM, arm_sdk blend, stand/walk, gestures, falls),
+                   services (sport/voice/motion_switcher/twin handlers), core (Twin), loopback (in-process link, lockstep),
+                   bridge (DDS servers + rt/lowstate + rt/arm_sdk), shm (camera frames), main (TwinProcess, serve, fetch)
+g1/camera.py       Frame, Camera (+subscribe), DirCamera, WebRTCCamera, ShmCamera (the twin's), Viewer (--view)
 g1/vlm.py          VLMClient (Hugging Face), load_dotenv
-g1/agent/          agent (Agent, build_search, build_replay, AGENTS), decider (AgentContext/AgentTurn/Decision,
-                   observation(), instructions(), VLMDecider), demo, episode (EpisodeWriter, StepRecord), task
-tasks/             _template/, find_the_mug/; runs and results.jsonl inside are git-ignored
+g1/agent/          agent (Agent, build_agent), decider (AgentContext/AgentTurn/Decision, observation(), instructions(),
+                   VLMDecider), episode (EpisodeWriter, StepRecord, load_episode), task (find, load_task, record_result)
+tasks/             tpose/ (a tools chain), find_the_mug/, point_at_the_laptop/, find_and_point_at_the_laptop/, sit_in_the_chair/ (instructions); runs and results.jsonl inside are git-ignored
 docs/              architecture, writing-a-tool, writing-a-task, running-on-the-robot, vision-model
-tests/             mirrors g1/ (core, tools, envs, agent) + test_camera, test_cli, test_vlm; doubles.py (RedBallDecider,
-                   red_blob, sim_env, scripted_sim); conftest keeps tests away from the real .env
+tests/             mirrors g1/ (core, tools, envs, agent, twin) + test_camera, test_cli, test_vlm; doubles.py (RedBallDecider,
+                   red_blob, sim_env(**settings), scripted_sim); conftest keeps tests away from the real .env
 ```
 
 Absolute imports (`from g1.core.config import ...`); tests are a package (`tests/__init__.py`), pytest gets the
@@ -92,6 +90,9 @@ root via `pythonpath`. `limits.ROOT` is the repo root (configs/, tasks/, assets/
   generated by import (`g1/tools/__init__.py:discover`). Limits are referenced (`limit("name")`,
   `{limit:name}`) and resolved when the schema is read, never copied. Every limit is in
   `configs/limits.json` with a unit, a note and a source; a name the file lacks fails at import.
+  No tunable number is a literal in code, tool ranges and defaults included (`test_limits.py` guards
+  the robot and twin timing); a word setting has unit `text` (and `choices`). Plumbing (thread joins,
+  queue lengths, seqlock retries) and robot facts (joint table, poses, SDK ids) stay in code.
 - **Parameters are numbers with ranges** (`num(lo, hi, default)`), unit-suffixed (`_s`, `_m`, `_deg`,
   `_rad`, or `seconds`), never enums for a continuous quantity; a property without a default is
   required; `note` is added automatically to motion and query tools (required of the model, "" for code).
@@ -105,7 +106,7 @@ root via `pythonpath`. `limits.ROOT` is the repo root (configs/, tasks/, assets/
   the robot refused), appended to `env.sdk_log` (the Agent writes each as an `sdk_call` event). In `setup` a
   failure raises `SystemExit` with a hint **before** arm_sdk is touched (`_require`); in teardown it is printed,
   never raised. `--mode standing` refuses a robot not in `sdk.STANDING_FSMS` and restores only such an FSM.
-  `g1 status` is the read-only probe; `--verbose` prints every call and a per-second health line.
+  `g1 status` is the read-only probe; `G1_VERBOSE=1` prints every call and a per-second health line.
 - **No pose reset.** The bookends only blend the weight (`takeover`: 0→1 holding the observed pose;
   `handback`: 1→0 holding the last pose); walking tools use `{}` (base only); only `arm_path` and the arm
   presets move the arms, and a tool that needs a starting pose makes it its own first segment. No
@@ -116,33 +117,57 @@ root via `pythonpath`. `limits.ROOT` is the repo root (configs/, tasks/, assets/
   moves nothing. **Errors are feedback**: no re-ask loop.
 - **Ctrl-C runs the safe return to completion** (`cli.safe_return`: last commanded pose → STAND 3 s,
   weight → 0 over 2 s, base stopped, SIGINT shielded). Never add a second-Ctrl-C release or a keypress
-  escape. Never call the SDK from `step`. Walking is `LocoClient.Move` behind `--walk` only; no
+  escape. Never call the SDK from `step`. Walking is `LocoClient.Move` in `--mode standing` only; no
   low-level leg control. Onboard calls are allow-listed per service — `config.LOCO_METHODS`
-  (`WaveHand`, `ShakeHand`; `needs_loco`) and `config.AUDIO_METHODS` (`TtsMaker`; `say`) — routed by name
-  in `RobotEnv._command`; a failed speech warns and continues, a failed gesture raises. `--volume` is
-  a robot flag; `PlayStream`/`SetVolume`/`LedControl` are never reachable from a reply.
+  (`WaveHand`, `ShakeHand`; `needs_loco`; and `Sit`, the one FSM, `config.LOCO_FSM`: `sit`, sent as
+  `SetFsmId(3)`, standing mode only, the teardown stands up with 801) and `config.AUDIO_METHODS` (`TtsMaker`; `say`) — routed by name
+  in `RobotEnv._command`; a failed speech warns and continues, a failed gesture raises.
+  `PlayStream`/`SetVolume`/`LedControl` are never reachable from a reply.
 - **Frames are RGB everywhere**; image I/O only through `g1/core/images.py` (Pillow). OpenCV is not
   used and must not be imported (its bundled ffmpeg collides with PyAV's, which decodes the robot's video).
-- **Taps never touch the tick.** `--view`/`--record` subscribe to the env's camera slot (`Env.source()`,
-  `Camera.subscribe`: called on the producer's thread, must only enqueue), run on their own threads and
-  drop frames when behind; `cli.run` starts them after `env.reset()` and stops them inside `with env`
-  and before `program.close()` (the Agent's close renames the run directory the mp4 sits in). The robot
-  takes one WebRTC client, so the view must come out of our process.
-- **Hugging Face only** for the model (`HF_TOKEN`, `VLM_MODEL`, `VLM_BASE_URL`); no other providers,
+- **The view never touches the tick.** `--view` (live runs) serves the env's camera slot (`Env.source()`)
+  from its own threads; `cli.run` starts it after `env.reset()` and stops it inside `with env`. The robot
+  takes one WebRTC client, so the live picture must come out of our process.
+- **Hugging Face only** for the model (`HF_TOKEN`, `VLM_BASE_URL`, limit `vlm_model`); no other providers,
   no Anthropic SDK. Fakes are test doubles only (`tests/doubles.py`); `search` always uses the real model.
-- Sim blend semantics are emulated (`cmd = (1-w)*hold + w*target`), `hold` = the Menagerie stand
-  keyframe; the sim pins the pelvis and slides it on a base command (`--free-base` aborts on one).
-- Joint indexing is DDS order (= Menagerie actuator order); index 29 is the arm_sdk weight slot.
+- **Sim is the robot code.** `--sim` runs `RobotEnv` itself over DDS against the twin process; the tests'
+  `SimEnv` subclasses `RobotEnv` and only swaps the link (`envs/link.py`). Never give sim its own path for
+  something the robot does. Robot code takes every SDK object, sleep and clock read from `self.link`. The
+  twin is where sim-only behaviour lives (`g1/twin/onboard.py`), and every number it adds is a `twin_*`
+  limit. The walker's trained constants are in `g1/twin/walker.py:Trained` (fixed by training, not
+  tunable). Call it the *walker* or the *gait network* (never a policy). It drives legs and waist in FSM 4
+  (Balance only) and 200/500; `Onboard.tick` corrects its command with the twin's velocity estimate
+  (`twin_vel_feedback`, `twin_vel_integral`), only while walking, never pushing a walk into Balance.
+- The twin blends arm_sdk as the robot does: target, kp and kd all `(1-w)*onboard + w*arm_sdk`, so the arms
+  sag under gravity at kp 60 in sim too, and a joint left out of the message (kp 0 at weight 1) goes limp.
+  While it walks, the walker holds the waist (yaw, roll, pitch) whatever arm_sdk sends, as the real G1's
+  controller does (its waist is not locked); standing, arm_sdk's gains apply as sent, so at kp 60 / kd 1.5
+  the waist sags under the torso and is underdamped (it can take more than the agent's 3 s settle after a walk).
+  The report says when the hold applied. One deliberate departure: the strict sim monitor
+  holds the legs to the hardware limits without the joint margin (they belong to the onboard controller).
+- The twin serves only on a loopback interface and refuses DDS domain 0 (the robot's); `--sim` gives it a
+  private domain and reads its camera from shared memory. With `--sim` the monitor is strict and the twin's
+  `Summary` (its `twin` service) fails the run on a fall.
+- Joint indexing is DDS order (= the twin model's motor order); index 29 is the arm_sdk weight slot.
+
+- **The model knows only what the robot knows**: its tools, the camera, the task's objective and rules,
+  its own joints (measured), IMU and commands, and its own earlier turns. Never the room's layout (no
+  furniture, wall or object positions or sizes) and never the twin's truth (true base pose, contacts), in sim
+  or on the robot: `Obs.base_pose` reaches only the records. Task `safety_notes` are behaviour rules; world
+  facts go in `notes` (never sent). `tests/agent/test_what_the_model_knows.py` guards it.
 
 ## The decision step (`g1/agent/agent.py`)
 
 takeover → settle (0.03 rad, 0.05 rad/s, 10 ticks, ≥ 0.5 s, 3 s timeout) → snapshot (a fresh frame) →
 think (background `Decider.request`; the loop holds) → act (the whole tool; a record every `STEP_MAX`
-= 3 s) → settle → feedback (`previous_result`: residuals, base error, settle report | the error) → …
-`done`/`give_up` end it; `check` answers via `dry_run`; overload retried with backoff re-observing;
-quota or `step_timeout` fails the run; `max_decisions` ends as `budget_exhausted`; `close()` asks the
-human verdict and renames the run directory (`_success`/`_failed`/`_unreviewed`/`_interrupted`).
-Records: `runs/<ts>_<env>_<instruction>_<outcome>/` with `episode.json`, `step_NNNN.json/.png`,
-`events.jsonl`, `transcript.json`, `protocol.json`, `states.jsonl`, `usage.json*`, `status.json`.
+= 3 s) → settle → feedback (`previous_result`: residuals, commanded base displacement, settle report | the
+error) → … `done`/`give_up` end it; `check` answers via `dry_run`, `locate_point` with a pixel's direction;
+turns older than `history_full_turns` are sent as one host-written line each; overload retried with backoff re-observing;
+quota or `step_timeout` fails the run; `max_decisions` ends as `budget_exhausted`; `close()` renames the
+run directory (`_success`/`_failed`/`_unreviewed`/`_interrupted`). The agent asks nothing: after a robot run
+`cli.run_task` asks "Save this run?" (no: the folder is deleted) and then the verdict (`task.label_run`);
+`--sim` runs ask nothing.
+Records: `tasks/<name>/runs/<ts>_<env>_<instruction>_<outcome>/` with `episode.json`, `step_NNNN.json/.png`,
+`events.jsonl`, `transcript.json`, `protocol.json`, `states.jsonl`, `usage.json*`, `status.json`, `trace.npz`.
 The observation JSON and the system prompt are in `g1/agent/decider.py`; `Decision.parse` validates a
 whole JSON object against the tool's schema and clamps numbers with a note.

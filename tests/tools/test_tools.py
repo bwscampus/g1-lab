@@ -4,12 +4,12 @@ import math
 
 import pytest
 
-from g1.cli import main, run
+from g1.cli import run
 from g1.core import limits
 from g1.core.action import Obs, Segment
 from g1.core.config import BASE_VEL_MAX, STAND_Q
-from g1.tools import (TOOLS, Chain, Tool, describe_menu, function_schemas, limit, load_module, menu, num, output_schema,
-                      parameters, parse_chain, parse_tool, prefixed, prompt_catalog, register, unregister,
+from g1.tools import (TOOLS, Chain, Tool, function_schemas, limit, load_module, menu, num, output_schema,
+                      parameters, parse_chain, parse_tool, prefixed, prompt_catalog, unregister,
                       validate_args)
 from g1.tools.arms import WAIST_YAW
 from g1.tools.control import Handback, Takeover
@@ -25,7 +25,8 @@ EXTREMES = {                       # (extreme args, cheap args for the pairwise 
     "walk_forward": ([{"distance_m": 0.1}, {"distance_m": 3.0}], {"distance_m": 0.1}),
     "turn": ([{"angle_deg": -180.0}, {"angle_deg": 180.0}, {"angle_deg": 0.0}, {"angle_deg": 3.0}],
              {"angle_deg": 5.0}),
-    "look": ([{"yaw_deg": -45.0}, {"yaw_deg": 45.0, "seconds": 0.5}], {"yaw_deg": 45.0}),
+    "look": ([{"yaw_deg": -45.0}, {"yaw_deg": 45.0, "seconds": 0.5}, {"yaw_deg": 145.0, "seconds": 3.0}, {"yaw_deg": -145.0, "seconds": 3.0}], {"yaw_deg": 45.0}),
+    "point": ([{"down_deg": 0.0, "rise_s": 0.8, "hold_s": 0.5}, {"down_deg": 60.0}], {"hold_s": 0.5, "rise_s": 1.0}),
     "hold": ([{"seconds": 0.1}, {"seconds": 30.0}], {"seconds": 0.5}),
     "tpose": ([{}, {"hold_s": 0.5, "rise_s": 1.0}], {"hold_s": 0.5, "rise_s": 1.0}),
     "sixseven": ([{}, {"reps": 1, "settle_s": 1.0, "hold_s": 0.1}], {"reps": 1, "settle_s": 1.0, "hold_s": 0.1}),
@@ -76,7 +77,8 @@ def test_walk_and_turn_drive_the_base():
     assert env.base_path == pytest.approx(0.4, abs=1e-6) and env.base_peak[0] <= BASE_VEL_MAX[0]
     env = sim_env()
     assert run(bookended(TOOLS["turn"](angle_deg=-30)), env) is True
-    assert env.base_pose()[2] == pytest.approx(math.radians(-30), abs=1e-6)
+    assert env.monitor.base_pose()[2] == pytest.approx(math.radians(-30), abs=1e-6)     # commanded, exactly
+    assert env.base_pose()[2] == pytest.approx(math.radians(-30), abs=math.radians(10))  # the twin's truth
     env = sim_env()
     seg = Segment({}, 0.4, base=(1.0, 0.0, 0.0))
     assert run(Tool.of([seg], joints=[WAIST_YAW]), env) is False
@@ -106,11 +108,38 @@ def test_move_ends_exactly_where_asked():
                       ({"dx_m": -0.5}, (-0.5, 0.0, 0.0)), ({"dyaw_deg": 90.0}, (0.0, 0.0, 90.0)), ({}, (0.0, 0.0, 0.0))]:
         env = sim_env()
         assert run(bookended(TOOLS["move"](**args)), env) is True and env.violations == [], args
-        x, y, yaw = env.base_pose()
-        assert (x, y, math.degrees(yaw)) == pytest.approx(end, abs=1e-6)
+        x, y, yaw = env.monitor.base_pose()
+        assert (x, y, math.degrees(yaw)) == pytest.approx(end, abs=1e-6)                  # commanded, exactly
+        x, y, yaw = env.base_pose()                                                     # walked: the twin's truth
+        assert (x, y) == pytest.approx(end[:2], abs=0.15) and math.degrees(yaw) == pytest.approx(end[2], abs=10), args
     segs = TOOLS["move"](dx_m=1.0, dy_m=0.3, dyaw_deg=-45.0).segments()
     assert len(segs) == 2 and segs[0].base[2] == 0.0 and segs[1].base[:2] == (0.0, 0.0)   # translate, then turn
     assert validate_args(TOOLS["move"], {"dx_m": 9})[0]["dx_m"] == 3.0
+
+
+def test_point_moves_only_the_right_arm_and_lowers_it():
+    from g1.core.poses import STAND
+    from g1.tools.arms import R_ARM
+    p = TOOLS["point"](down_deg=0.0)
+    segs = p.segments()
+    assert all(set(s.goal) == set(R_ARM) for s in segs)
+    assert segs[0].goal[R_ARM[0]] < -1.57 and segs[0].goal[R_ARM[3]] == pytest.approx(1.57)   # level, aimed above the sag
+    assert TOOLS["point"](down_deg=60.0).segments()[0].goal[R_ARM[0]] > segs[0].goal[R_ARM[0]]   # steeper aims lower
+    assert segs[-1].goal == {j: STAND[j] for j in R_ARM}
+    actions = play(bookended(TOOLS["look"](yaw_deg=30), p))
+    assert actions[-1].q[WAIST_YAW] == pytest.approx(math.radians(30), abs=1e-6)              # the waist stays
+
+
+def test_sit_calls_setfsmid_3_once_and_the_twin_sits_on_the_chair_behind(capsys):
+    s = TOOLS["sit"]()
+    cmds = [a.command for a in play(s)]
+    assert cmds.count(("Sit", {})) == 1 and cmds[0] is None and play(s)[-1].weight == pytest.approx(1.0, abs=0.01)
+    env = sim_env(mode="standing", scene="room", sim_objects=[("chair", -0.37, 0.0, None)])   # seat edge 0.1 m behind
+    assert run(bookended(s), env) is True and env.violations == []
+    assert "seated on chair1" in env.twin.summary() and env.seated              # the twin plays no stand-up
+    fsms = [c["parameter"] for c in env.twin.services.log if c["api"] == 7101]
+    assert fsms[-2:] == ['{"data": 3}', '{"data": 801}']                         # sat, then the teardown's stand-up
+    assert "still seated" in capsys.readouterr().out
 
 
 def test_arm_path_waypoints_in_order_and_rejections():
@@ -141,20 +170,23 @@ class NoLoco(TOOLS["wave_hand"]):
     needs_loco = False
 
 
-def test_gestures_emit_one_onboard_call_and_sim_refuses(capsys):
+def test_gestures_emit_one_onboard_call_and_the_twin_waves(capsys):
     w = TOOLS["wave_hand"](turn_flag=True, seconds=2.0)
     cmds = [a.command for a in play(w)]
     assert cmds.count(("WaveHand", {"turn_flag": True})) == 1 and cmds[0] is None       # once, after the handover
     env = sim_env()
-    assert run(bookended(w), env) is True                       # the abort still reports; nothing moved
-    assert "robot-only" in capsys.readouterr().out and env.base_ticks == 0
-    assert not any(t.needs_loco for t in menu(True)) and [t.name for t in menu(True, True) if t.needs_loco] == ["wave_hand", "shake_hand"]
+    assert run(bookended(w), env) is True and env.base_ticks == 0
+    tasks = [c for c in env.twin.services.log if c["api"] == 7106]
+    assert [(c["service"], c["parameter"], c["code"]) for c in tasks] == [("sport", '{"data": 1}', 0)]   # SetArmTask, as the SDK sends it
+    assert env.q_min[23] < -0.8                                  # the onboard wave raised the right arm
+    assert not any(t.needs_loco for t in menu(True)) and [t.name for t in menu(True, True) if t.needs_loco] == ["wave_hand", "shake_hand", "sit"]
     with pytest.raises(ValueError, match="allowed onboard method"):
         DampGesture.check_definition()
     with pytest.raises(ValueError, match="needs_loco"):
         NoLoco.check_definition()
-    assert [t["function"]["name"] for t in function_schemas(menu(True))] == ["move", "arm_path", "hold", "check", "say", "done", "give_up"]
-    assert [t["function"]["name"] for t in function_schemas(menu(True, True))][4:6] == ["wave_hand", "shake_hand"]
+    assert [t["function"]["name"] for t in function_schemas(menu(True))] == ["move", "arm_path", "look", "point", "hold", "check",
+                                                                           "locate_point", "say", "done", "give_up"]
+    assert [t["function"]["name"] for t in function_schemas(menu(True, True))][7:9] == ["wave_hand", "shake_hand"]
 
 
 # --------------------------------------------------------------------------
@@ -180,11 +212,14 @@ def test_validate_args():
 
 
 def test_menu_and_parse():
-    assert [t.name for t in menu(False)] == ["arm_path", "hold", "check", "say", "done", "give_up"]
-    assert [t.name for t in menu(True)] == ["move", "arm_path", "hold", "check", "say", "done", "give_up"]
-    assert [t.name for t in menu(True, True)] == ["move", "arm_path", "hold", "check", "wave_hand", "shake_hand",
-                                                 "say", "done", "give_up"]
-    assert {n for n in TOOLS if not TOOLS[n].visible} == {"walk_forward", "turn", "look", "tpose", "sixseven",
+    assert [t.name for t in menu(False)] == ["arm_path", "look", "point", "hold", "check", "locate_point", "say", "done",
+                                             "give_up"]
+    assert [t.name for t in menu(True)] == ["move", "arm_path", "look", "point", "hold", "check", "locate_point", "say",
+                                            "done", "give_up"]
+    assert [t.name for t in menu(True, True)] == ["move", "arm_path", "look", "point", "hold", "check", "locate_point", "wave_hand",
+                                                 "shake_hand", "sit", "say", "done", "give_up"]
+    assert "sit" not in [t.name for t in menu(False, True)]                    # never on the gantry
+    assert {n for n in TOOLS if not TOOLS[n].visible} == {"walk_forward", "turn", "tpose", "sixseven",
                                                           "takeover", "handback"}
     m = parse_tool("move:1:0.3:-45")
     assert m.args == {"dx_m": 1.0, "dy_m": 0.3, "dyaw_deg": -45.0, "note": ""}
@@ -201,9 +236,6 @@ def test_menu_and_parse():
         parse_tool("fly:1")
     with pytest.raises(ValueError):
         parse_tool("tpose:1:2:3")
-    text = describe_menu(list(TOOLS.values()))
-    assert "walk_forward(distance_m: number [0.1, 3])  [needs --walk]  [preset: not offered to the model]" in text
-    assert "wave_hand(turn_flag: boolean, seconds: number [1, 15])  [robot only]" in text
 
 
 def test_chain_seeds_each_tool_from_the_last_command():
@@ -226,20 +258,8 @@ def test_chain_seeds_each_tool_from_the_last_command():
         parse_chain("check:turn")               # moves nothing
     with pytest.raises(KeyError):
         parse_chain("nope:1")
-    assert main(["run", "--env", "sim", "--headless", "--tools", "turn:30,look:20,hold:1"]) == 0
 
 
-def test_cli_lists_tools_and_gates_base(capsys):
-    assert main(["tools"]) == 0
-    out = capsys.readouterr().out
-    assert "offered to the model" in out and "walk_forward(" in out and "presets" in out
-    assert main(["tools", "--json"]) == 0
-    assert [f["function"]["name"] for f in json.loads(capsys.readouterr().out)] == [t.name for t in menu(True, True)]
-    assert main(["tools", "--joints"]) == 0
-    assert "left_elbow" in capsys.readouterr().out
-    with pytest.raises(SystemExit):
-        main(["run", "--env", "sim", "--tools", "walk_forward:0.3", "--headless", "--free-base"])
-    assert "cannot walk" in capsys.readouterr().err
 
 
 def test_player_prefixes_labels(capsys):
@@ -290,7 +310,7 @@ def test_parameters_are_numbers_with_ranges_not_switches():
             if kind in ("number", "integer"):
                 assert spec["minimum"] < spec["maximum"], (cls.name, key)
                 if kind == "number":
-                    assert key.endswith(("_s", "_m", "_deg", "_rad")) or key == "seconds", (cls.name, key)
+                    assert key.endswith(("_s", "_m", "_deg", "_rad", "_px")) or key == "seconds", (cls.name, key)
             assert "enum" not in spec or (cls.name, key) == ("check", "tool"), (cls.name, key)
     with pytest.raises(ValueError, match="minimum and maximum"):
         type("Bad", (Tool,), {"name": "bad", "prompt": "p", "params": {"x_s": {"type": "number"}}}).check_definition()
@@ -344,43 +364,43 @@ def test_definition_errors_name_the_problem(tmp_path):
     assert "move" in TOOLS and TOOLS["move"].__module__ == "g1.tools.move"    # the built-in survived the clash
 
 
-def test_a_scaffolded_tool_is_discovered_and_runs(tmp_path):
-    """What `g1 new tool bow` writes: load it, see it in the menu, run it in sim, chain it."""
-    src = (limits.ROOT / "g1" / "tools" / "_template.py").read_text()
+BOW = """
+import math
+from g1.core.action import Segment
+from g1.tools.base import Tool, num
+
+
+class Bow(Tool):
+    name = "bow"
+    prompt = "Bow from the waist and come back up."
+    params = {"angle_deg": num(5.0, 25.0, 15.0, "how far forward"), "down_s": num(0.5, 3.0, 1.5, "time to bend")}
+
+    def segments(self):            # the waist only: every other joint stays where it is
+        return (Segment({14: math.radians(self.angle_deg)}, self.down_s, label="bending"),
+                Segment({14: 0.0}, self.down_s, label="back up"))
+"""
+
+
+def test_a_tool_file_is_discovered_and_runs(tmp_path):
+    """A file with a Tool subclass: load it, see it in the menu, run it in sim, chain it."""
     p = tmp_path / "bow.py"
-    p.write_text(src.replace("ClassName", "Bow").replace("NAME", "bow"))
+    p.write_text(BOW)
     (cls,) = load_module(p)
     try:
         assert cls.name == "bow" and "bow" in TOOLS and cls in menu(False)
         assert cls.schema()["properties"]["down_s"]["default"] == 1.5 and "note" in cls.schema()["required"]
         assert "bow" in [f["function"]["name"] for f in function_schemas(menu(True))]
         env = sim_env()
-        assert run(parse_chain("bow:20:1:0.5:1,hold:0.5,bow:angle_deg=10:reps=2", pause=0.5), env) is True
-        assert env.violations == [] and env.cmd_max[14] == pytest.approx(math.radians(20), abs=1e-6)
-        assert env.q_max[14] > math.radians(15)                                # the waist really bent
+        assert run(parse_chain("bow:10:1,hold:0.5,bow:angle_deg=5", pause=0.5), env) is True
+        assert env.violations == [] and env.cmd_max[14] == pytest.approx(math.radians(10), abs=1e-6)
+        assert env.q_max[14] > math.radians(12)            # the waist bent, further than asked: kp 60 sags under the torso
         assert env.cmd_min[16] == env.cmd_max[16]                              # and the arms were left alone
-        b = parse_tool("bow")
-        assert b.duration == pytest.approx(1.5 + 1.0 + 1.5) and cls(hold_s=0).duration == pytest.approx(3.0)
+        assert parse_tool("bow").duration == pytest.approx(3.0)
     finally:
         unregister("bow")
     assert "bow" not in TOOLS
 
 
-def test_new_tool_scaffolder_writes_and_refuses(tmp_path, monkeypatch, capsys):
-    import g1.cli as cli
-    root = tmp_path / "repo"
-    (root / "g1" / "tools").mkdir(parents=True)
-    (root / "g1" / "tools" / "_template.py").write_text((limits.ROOT / "g1" / "tools" / "_template.py").read_text())
-    monkeypatch.setattr(cli, "ROOT", root)
-    assert main(["new", "tool", "nod_head"]) == 0
-    text = (root / "g1" / "tools" / "nod_head.py").read_text()
-    assert "class NodHead(Tool):" in text and 'name = "nod_head"' in text and "ClassName" not in text
-    with pytest.raises(SystemExit):
-        main(["new", "tool", "nod_head"])                          # already there
-    with pytest.raises(SystemExit):
-        main(["new", "tool", "move"])                              # a built-in
-    with pytest.raises(SystemExit):
-        main(["new", "tool", "Nod-Head"])                          # not snake_case
 
 
 # --------------------------------------------------------------------------

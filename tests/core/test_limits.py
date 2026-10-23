@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 from g1.agent.decider import build_context
-from g1.cli import main
 from g1.core import limits
 from g1.core.config import BASE_VEL_MAX, CONTROL_DT
 from g1.tools import TOOLS, menu, validate_args
@@ -24,7 +23,7 @@ def test_the_file_defines_exactly_the_names_the_code_reads():
 
 def test_code_reads_its_numbers_from_the_file():
     from g1 import cli, vlm
-    from g1.agent import agent, demo, episode
+    from g1.agent import agent, episode
     from g1.envs.monitor import JointMonitor
     from g1.tools import STEP_MAX, move
     assert CONTROL_DT == limits.get("control_dt_s")
@@ -36,7 +35,6 @@ def test_code_reads_its_numbers_from_the_file():
     assert vlm.MAX_TOKENS == limits.get("max_tokens") and vlm.IMAGE_WIDTH == limits.get("image_width_px")
     assert len(agent.RETRY_DELAYS) == limits.get("retry_max") and max(agent.RETRY_DELAYS) == limits.get("retry_delay_cap_s")
     assert agent.RECOVERY_TIMEOUT == limits.get("recovery_timeout_s") and episode.STATES_HZ == limits.get("states_hz")
-    assert demo.DEFAULT_FRAMES == limits.get("demo_frames") and demo.VideoConfig().target_fps == limits.get("video_fps")
     m = JointMonitor()
     assert (m.margin, m.max_vel, m.max_violations) == tuple(
         limits.get(n) for n in ("joint_margin_rad", "command_vel_max", "max_violations"))
@@ -99,6 +97,8 @@ def test_a_bad_limits_file_is_refused_with_the_name(tmp_path):
     broken(lambda d: d["limits"].pop("max_tokens"), "missing .*max_tokens")
     broken(lambda d: d["limits"].update(max_tokns=d["limits"]["max_tokens"]), "unknown .*max_tokns")
     broken(lambda d: d["limits"]["walk_speed"].update(value="fast"), "walk_speed.value must be a number")
+    broken(lambda d: d["limits"]["reasoning_effort"].update(value="a little"), "reasoning_effort.value must be one of")
+    broken(lambda d: d["limits"]["vlm_model"].update(value=""), "vlm_model.value must be a word")
     broken(lambda d: d["limits"]["walk_speed"].update(value=-1), "must not be negative")
     broken(lambda d: d["limits"]["walk_speed"].update(value=0.5), "walk_speed .* must not exceed base_vx_max")
     broken(lambda d: d["limits"]["side_speed"].update(value=0.3), "side_speed .* must not exceed base_vy_max")
@@ -109,10 +109,20 @@ def test_a_bad_limits_file_is_refused_with_the_name(tmp_path):
         limits.load(tmp_path / "none.json")
 
 
-def test_cli_prints_the_table(capsys):
-    assert main(["limits"]) == 0
-    out = capsys.readouterr().out
-    assert "move_dx_max_m" in out and "guess" in out and "gpt-policy" in out
-    assert main(["limits", "--source", "guess"]) == 0
-    out = capsys.readouterr().out
-    assert "base_vy_max" in out and "settle_pos_tol_rad" not in out and "guess" in out.splitlines()[-1]
+def test_robot_and_twin_timing_is_never_a_literal():
+    # bring-up, teardown and RPC timeouts move the real robot: they come from limits.json
+    pattern = re.compile(r"(?:sleep|SetTimeout|release)\(\s*[0-9.]+\s*\)")
+    for rel in ("g1/envs/robot.py", "g1/envs/sim.py", "g1/twin/core.py", "g1/twin/onboard.py", "g1/twin/main.py",
+                "g1/twin/services.py", "g1/cli.py"):
+        hits = pattern.findall((ROOT / rel).read_text())
+        assert not hits, (rel, hits)
+
+
+def test_env_holds_nothing_editable():
+    # .env is private to one machine; every setting anyone may edit is in limits.json
+    from g1 import vlm
+    assert vlm.DEFAULT_MODEL == limits.get("vlm_model") and vlm.REASONING_EFFORT == limits.get("reasoning_effort")
+    keys = [line.split("=")[0].lstrip("# ").strip() for line in (ROOT / ".env.example").read_text().splitlines()
+            if "=" in line and line.lstrip("# ").split("=")[0].strip().isupper()]
+    assert set(keys) <= {"HF_TOKEN", "VLM_BASE_URL", "UNITREE_IFACE", "UNITREE_ROBOT_IP", "UNITREE_AES_128_KEY",
+                         "UNITREE_DOMAIN", "G1_VERBOSE"}, keys

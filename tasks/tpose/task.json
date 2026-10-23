@@ -1,0 +1,4 @@
+{
+  "tools": "tpose",
+  "notes": "The first thing to run: arms out to a T and back, no model, no walking. g1 run tpose --sim, then on the robot g1 run tpose --mode gantry (hanging) or --mode standing."
+}

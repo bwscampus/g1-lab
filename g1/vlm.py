@@ -3,19 +3,16 @@ their OpenAI-compatible chat-completions endpoint, with image input, stdlib
 urllib, streamed SSE and structured output with a step-down. Shared by the
 decider (choose a tool) and the demo keyframe selector.
 
-Configured by environment:
+The model, its token budget and its reasoning effort are in configs/limits.json
+(``vlm_model``, ``max_tokens``, ``reasoning_effort``). The environment holds only
+what is private to this machine:
 
     HF_TOKEN       the key (a fine-grained token with "Make calls to Inference Providers")
-    VLM_MODEL      the model id to query (default: DEFAULT_MODEL); a suffix such as
-                   ":deepinfra" pins one of the router's providers
     VLM_BASE_URL   another Hugging Face endpoint, e.g. a dedicated Inference Endpoint
                    (default: the router)
-    VLM_MAX_TOKENS the reply budget, reasoning included (default: MAX_TOKENS)
 
 A ``.env`` file in the repo root (copy ``.env.example``) is read on first use;
 exported variables win over it.
-
-    HF_TOKEN=hf_... g1 decide frame.png --instruction "find the mug"
 """
 from __future__ import annotations
 
@@ -34,12 +31,14 @@ from g1.core import limits
 
 PROVIDER = "huggingface"
 HF_BASE_URL = "https://router.huggingface.co/v1"
-# Verified live on the HF router (2026-09): image input, structured output on its
-# providers, a small active-parameter MoE that answers fast; ":deepinfra" etc. pins a provider.
-DEFAULT_MODEL = "Qwen/Qwen3-VL-30B-A3B-Instruct"
+DEFAULT_MODEL = limits.get("vlm_model")
 # The reply budget, reasoning included. A reasoning model thinks before it answers and the
-# thinking counts: at 400 it never reached the answer. The numbers are in configs/limits.json.
+# thinking counts: at 400 it never reached the answer.
 MAX_TOKENS = int(limits.get("max_tokens"))
+# Sent as ``reasoning_effort`` ("default": not sent). A server that rejects it gets the request without it.
+REASONING_EFFORT = limits.get("reasoning_effort")
+# Settings that moved from .env to configs/limits.json: refused if still set, so none is silently ignored.
+MOVED = {"VLM_MODEL": "vlm_model", "VLM_MAX_TOKENS": "max_tokens", "VLM_REASONING_EFFORT": "reasoning_effort"}
 IMAGE_WIDTH = int(limits.get("image_width_px"))
 JPEG_QUALITY = int(limits.get("jpeg_quality"))
 
@@ -75,11 +74,15 @@ def resolve(model: Optional[str] = None, env: Optional[dict] = None) -> tuple[st
     if env is None:
         load_dotenv()
     env = os.environ if env is None else env
+    moved = [f"{var} (now {name})" for var, name in MOVED.items() if env.get(var)]
+    if moved:
+        raise RuntimeError(f"set in configs/limits.json, not .env: {', '.join(moved)}; remove them from .env "
+                           "or the environment (g1 limits shows the values in use)")
     key = env.get("HF_TOKEN")
     if not key:
         raise RuntimeError("no Hugging Face token: set HF_TOKEN (in .env or the environment)")
     base_url = (env.get("VLM_BASE_URL") or HF_BASE_URL).rstrip("/")
-    return base_url, model or env.get("VLM_MODEL") or DEFAULT_MODEL, key
+    return base_url, model or DEFAULT_MODEL, key
 
 
 class RequestError(RuntimeError):
@@ -103,7 +106,7 @@ class TruncatedReply(RequestError):
     def __init__(self, max_tokens, reasoning_tokens, text: str = "") -> None:
         spent = f", {reasoning_tokens} of them on reasoning" if reasoning_tokens else ""
         super().__init__(200, f"the reply was cut off at max_tokens={max_tokens}{spent}; "
-                              f"raise VLM_MAX_TOKENS (now {max_tokens})")
+                              f"raise max_tokens in configs/limits.json (now {max_tokens})")
         self.text = text
 
 
@@ -203,27 +206,23 @@ class VLMClient:
         self.last_elapsed = 0.0
         self.calls = 0
         self.max_tokens = MAX_TOKENS
+        self.reasoning_effort: Optional[str] = None if REASONING_EFFORT == "default" else REASONING_EFFORT
 
     @classmethod
     def from_env(cls, model: Optional[str] = None, **kw) -> "VLMClient":
         base_url, model, key = resolve(model)
-        client = cls(model, key, base_url=base_url, **kw)
-        raw = os.environ.get("VLM_MAX_TOKENS")
-        if raw:
-            try:
-                client.max_tokens = max(1, int(raw))
-            except ValueError:
-                raise RuntimeError(f"VLM_MAX_TOKENS must be a whole number, got {raw!r}") from None
-        return client
+        return cls(model, key, base_url=base_url, **kw)
 
     def complete(self, messages: list[dict], *, max_tokens: Optional[int] = None,
-                 temperature: float = 0.0, schema: Optional[dict] = None) -> str:
+                 temperature: float = limits.get("vlm_temperature"), schema: Optional[dict] = None) -> str:
         body = {"model": self.model, "stream": self.stream, "temperature": temperature,
                 "max_tokens": max_tokens or self.max_tokens, "messages": messages}
         while True:
             attempt = dict(body)               # a fresh body per attempt, so records see what was sent
             if self.stream and self.stream_options:
                 attempt["stream_options"] = {"include_usage": True}
+            if self.reasoning_effort is not None:
+                attempt["reasoning_effort"] = self.reasoning_effort
             if schema is not None and self.json_schema:
                 self.response_mode = "json_schema"
                 attempt["response_format"] = {"type": "json_schema",
@@ -240,12 +239,20 @@ class VLMClient:
                 if e.status == 400 and self.stream_options and "stream_options" in e.body:
                     self.stream_options = False
                     continue
+                if e.status == 400 and self.reasoning_effort is not None and "reasoning_effort" in e.body:
+                    self.reasoning_effort = None
+                    continue
                 mentions = e.status == 400 and any(k in e.body for k in ("response_format", "json_schema", "schema"))
                 if mentions and self.response_mode == "json_schema":
                     self.json_schema = False
                     continue
                 if mentions and self.response_mode == "json_object":
                     self.json_mode = False
+                    continue
+                # Some providers refuse reasoning_effort without naming it ("invalid request error"):
+                # a 400 that names nothing above drops it once.
+                if e.status == 400 and self.reasoning_effort is not None:
+                    self.reasoning_effort = None
                     continue
                 raise
 

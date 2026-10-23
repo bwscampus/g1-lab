@@ -1,0 +1,10 @@
+{
+  "instruction": "find the laptop by turning your waist, without walking, then point at it with your right arm",
+  "scene": "room",
+  "objects": ["laptop@1.75,-1.5,0.77"],
+  "start": [1.2, -0.95, 0],
+  "safety_notes": ["Do not walk in this task: search with the waist and point with the right arm only."],
+  "max_decisions": 12,
+  "max_time_s": 300,
+  "notes": "Demo 1: the twin starts beside the table, 0.8 m from an open laptop on it about 45 degrees to the right, so the laptop is only at the edge of the first view (the model is told none of this) and the model has to turn the waist (look) to centre it, then point (about 15 degrees down: it is raised, not on the floor). Needs HF_TOKEN. Twin: g1 run point_at_the_laptop --sim (--mode gantry too: nothing walks). Robot: stand it about 0.8 m from a table with an open laptop on it, 45 degrees to its right, and run g1 run point_at_the_laptop --mode gantry --view (or --mode standing)."
+}

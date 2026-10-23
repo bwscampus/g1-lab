@@ -149,9 +149,9 @@ class Tool(Runnable):
     prompt: str = ""                    # what the model reads about this tool (visible tools)
     params: dict = {}                   # argument name -> spec (see num/integer/text/flag)
     kind: str = "motion"                # motion (plays segments) | query (answers) | terminal (ends the run)
-    visible: bool = True                # in the model's menu; False: CLI chains and replay only
+    visible: bool = True                # in the model's menu; False: tools chains only
     needs_base: bool = False            # hidden where the env cannot walk
-    needs_loco: bool = False            # hidden where the env has no onboard LocoClient (sim)
+    needs_loco: bool = False            # hidden where the env has no onboard LocoClient
     order: int = 50                     # menu position (lower first; terminal tools go last)
     # -- what the robot runs -----------------------------------------------------------
     joints: list[int] = UPPER_BODY
@@ -168,8 +168,10 @@ class Tool(Runnable):
         """The motion, computed from the arguments. ``()`` for a query or terminal tool."""
         return ()
 
-    def query(self, cmd: np.ndarray, joints: Sequence[int]) -> dict:
-        """A query tool's answer, given the commanded pose. Never moves anything."""
+    def query(self, cmd: np.ndarray, joints: Sequence[int], *, view: Optional[dict] = None) -> dict:
+        """A query tool's answer, given the commanded pose and ``view``, what the robot measured
+        when the latest image was taken: ``frame_size`` (width, height as the model saw it),
+        ``q`` (joint positions) and ``imu_quat`` (pelvis w, x, y, z). Never moves anything."""
         raise NotImplementedError(f"{self.name} is not a query tool")
 
     @property
