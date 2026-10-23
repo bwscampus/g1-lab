@@ -33,8 +33,8 @@ g1 run find_the_marker --mode standing        # on the robot
 | `instruction` | what the model is asked to do, one sentence (needs `HF_TOKEN`). |
 | `tools` | instead: a fixed chain, `name:args` separated by commas, each tool starting where the last ended. Exactly one of `instruction` and `tools`. |
 | `scene`, `objects` | the twin's room (`g1 twin fetch` once) and what to put in it: `name@x,y[,z]` (`mug`, `marker`, `cracker_box`, `mustard`, `pencil`, `chair`, `laptop`; chair and laptop face the start). z defaults to the floor; the table's top is at z = 0.77 (its centre is x 2.2, y −1.5, 1.2 × 0.7 m), so `laptop@1.75,-1.5,0.77` stands on it. The room spans x −2..4, y −3..3. Ignored on the robot. |
-| `start` | the twin only: where the robot starts, `[x, y, yaw_deg]` in the room (default the origin facing +x). The room's safety notes are written from there. |
-| `safety_notes` | rules for the robot's behaviour in this task ("do not walk", "never touch furniture"), added to the system prompt. Never claims about the world (where a chair or wall is): the model knows only what the robot can sense, and such a claim is false wherever the room differs. World facts for people go in `notes`. |
+| `start` | the twin only: where the robot starts, `[x, y, yaw_deg]` in the room (default the origin facing +x). Never sent to the model. |
+| `safety_notes` | rules for the robot's behaviour in this task ("do not walk", "never touch furniture"), added to the system prompt. Never claims about the world (where a chair or wall is): the model knows only what the robot can sense, and such a claim is false wherever the room differs. The same holds for `instruction`: a goal, never where its target is ("find a free-standing chair", not "the chair 1.5 m ahead"). World facts for people go in `notes`; `tests/agent/test_what_the_model_knows.py` fails a task whose text says where something is. |
 | `max_decisions`, `max_time_s` | the budget; a rejected reply costs a decision too. `max_time_s` also stops a tools chain (with the safe return). |
 | `camera_size` | the twin's head camera, `"HxW"` (default `480x640`; the robot streams `720x1280`). |
 | `notes` | for people. |

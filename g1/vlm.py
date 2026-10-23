@@ -249,6 +249,11 @@ class VLMClient:
                 if mentions and self.response_mode == "json_object":
                     self.json_mode = False
                     continue
+                # Some providers refuse reasoning_effort without naming it ("invalid request error"):
+                # a 400 that names nothing above drops it once.
+                if e.status == 400 and self.reasoning_effort is not None:
+                    self.reasoning_effort = None
+                    continue
                 raise
 
     def _send(self, body: dict) -> str:

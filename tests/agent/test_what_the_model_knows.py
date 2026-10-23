@@ -22,6 +22,16 @@ WORDS = ("wall", "doorway", r"(?<!joint )table", "room position", "room's origin
 # the room's own numbers (the ones no tool range or joint limit shares): where the table and door are
 ROOM_NUMBERS = sorted({f"{v:g}" for v in (scene.TABLE[0], scene.TABLE_TOP_Z, scene.DOOR_Y[1], scene.ROOM_H)})
 STATE = {"joint_pos", "joint_vel", "joint_torque", "waist_yaw_deg", "base_pose_cmd"}
+# A task's text (instruction and rules) states a goal and how to behave, never where anything is:
+# a distance or side from the robot or its start, the start itself, or what stands next to what.
+FURNITURE = r"(?:table|desk|wall|door|doorway|window|sofa|couch|shelf|counter|chair|bed)s?"
+PLACEMENT = (r"\d+(?:\.\d+)?\s*(?:m|cm|metres?|meters?)\s+(?:straight\s+)?(?:ahead|behind|in front|to the|left|right|forward)",
+             r"(?:ahead of|behind|in front of|(?:to the )?(?:left|right) of) (?:you|the robot|the start)\b",
+             r"\bthe start\b|\bstarting (?:point|position)\b|\bwhere you start",
+             r"\b(?:at|on|by|beside|near|next to|under|against|behind) (?:the|a) " + FURNITURE,
+             r"\b(?:to|on) (?:your|the) (?:left|right)\b",
+             r"\b(?:one|two|three|four|\d+) " + FURNITURE + r"\b",
+             r"\b(?:straight|directly) ahead\b")
 
 
 def instruction_tasks():
@@ -34,6 +44,31 @@ def leaks(text: str, numbers=()) -> list[str]:
     found = [w for w in WORDS if re.search(w, low)]
     found += [n for n in numbers if re.search(rf"(?<![\d.]){re.escape(n)}(?![\d])", text)]
     return found
+
+
+def placements(text: str) -> list[str]:
+    return [m.group(0) for p in PLACEMENT for m in re.finditer(p, text.lower())]
+
+
+def test_the_placement_check_tells_where_from_how():
+    for bad in ("a chair stands about 1.5 m straight ahead of you, facing you",
+                "The chair to sit in is the one straight ahead of the start, not the two at the table to the right.",
+                "the laptop is on the table", "a mug 2 m to the left", "the door is behind you",
+                "Walls stand 2 m behind it", "the chair on your right"):
+        assert placements(bad), bad
+    for good in ("find a free-standing chair, walk to it and sit down in it",
+                 "Never touch furniture; stop about 0.8 m from it.",
+                 "Things on furniture can be above the top of the image from more than about 1.5 m away: walk closer to inspect.",
+                 "point at it with your right arm", "look back over a shoulder (look 145 or -145)",
+                 "find the laptop by turning your waist, without walking"):
+        assert not placements(good), good
+
+
+@pytest.mark.parametrize("name", instruction_tasks())
+def test_the_task_says_a_goal_and_rules_never_where_things_are(name):
+    task = load_task(find(name))
+    for text in [task["instruction"], *task["safety_notes"]]:
+        assert not placements(text), (name, text)
 
 
 @pytest.mark.parametrize("name", instruction_tasks())

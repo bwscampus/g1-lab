@@ -12,7 +12,7 @@ VLM_BASE_URL    optional: another Hugging Face endpoint, e.g. a dedicated Infere
 The rest is in `configs/limits.json` (`g1 limits`), not `.env`:
 
 ```
-vlm_model         the model id; a suffix such as ":deepinfra" pins one of the router's providers
+vlm_model         the model id; the suffix (":baseten") pins one of the router's providers
                   (Qwen/Qwen3-VL-30B-A3B-Instruct is the verified fast fallback)
 reasoning_effort  sent as reasoning_effort (none|minimal|low|medium|high, or default to leave it
                   out); dropped if the server rejects it

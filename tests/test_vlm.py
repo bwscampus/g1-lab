@@ -137,3 +137,14 @@ def test_reasoning_effort_is_sent_and_dropped_when_refused():
     assert c.complete([]) == "ok" and c.reasoning_effort is None
     assert calls[0]["reasoning_effort"] == effort and "reasoning_effort" not in calls[1]
     assert c.complete([]) == "ok" and "reasoning_effort" not in calls[2]
+    # a provider that refuses it without naming it (HF router, novita, 2026-10-21)
+    calls.clear()
+    replies[:] = [RequestError(400, '{"message":"invalid request error","type":"invalid_request_error"}'), "ok"]
+    c = VLMClient("m", "k", transport=transport)
+    assert c.complete([]) == "ok" and c.reasoning_effort is None
+    assert calls[0]["reasoning_effort"] == effort and "reasoning_effort" not in calls[1]
+    # a 400 with nothing left to drop is raised
+    replies[:] = [RequestError(400, "bad")]
+    with pytest.raises(RequestError):
+        c.json_mode = False
+        c.complete([])
