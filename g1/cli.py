@@ -189,12 +189,12 @@ def run_settings(task: Optional[dict] = None, *, sim: bool = False, mode: Option
     return s
 
 
-def build_program(task: dict, env, runs: Path) -> Runnable:
-    """The task's agent (an instruction) or its chain (tools)."""
+def build_program(task: dict, env, runs: Path, env_name: str) -> Runnable:
+    """The task's agent (an instruction) or its chain (tools); ``env_name`` labels its records."""
     if task["tools"]:
         return parse_chain(task["tools"], pause=limits.get("chain_pause_s"))
     from g1.agent.agent import build_agent
-    return build_agent(task, env_name=env.name, can_walk=env.can_walk, has_loco=env.has_loco, runs=runs)
+    return build_agent(task, env_name=env_name, can_walk=env.can_walk, has_loco=env.has_loco, runs=runs)
 
 
 def run_task(task: dict, *, sim: bool, mode: Optional[str], view: bool = False, env: Optional[Env] = None) -> int:
@@ -206,6 +206,7 @@ def run_task(task: dict, *, sim: bool, mode: Optional[str], view: bool = False, 
         raise SystemExit("the robot needs --mode gantry (hanging: Damp, stand, run, Damp; no walking) or "
                          "--mode standing (standing on its own: walks; never damps); or add --sim")
     mode = mode or "standing"
+    env_name = "sim" if sim else "robot"          # --sim runs RobotEnv itself: the label comes from the flag
     in_process = env is not None
     if env is None:
         env = RobotEnv(run_settings(task, sim=sim, mode=mode, view=view))
@@ -214,14 +215,14 @@ def run_task(task: dict, *, sim: bool, mode: Optional[str], view: bool = False, 
     runs.mkdir(parents=True, exist_ok=True)
     before = {p.name for p in runs.iterdir()}
     try:
-        program = build_program(task, env, runs)
+        program = build_program(task, env, runs, env_name)
     except (KeyError, ValueError, RuntimeError) as e:
         raise SystemExit(f"{task['dir'] / 'task.json'}: {e}") from None
     segments = getattr(program, "segments", None)
     if segments is not None and any(s.base for s in segments()) and not env.can_walk:
         raise SystemExit(f"{task['name']} drives the base, and --mode gantry never walks (use --mode standing)")
     recorder = getattr(program, "recorder", None)
-    folder = Path(recorder.dir) if recorder is not None else run_dir(task, "sim" if sim else "robot")
+    folder = Path(recorder.dir) if recorder is not None else run_dir(task, env_name)
     settings.trace = str(folder / "trace.npz")
     print(f"== {task['name']} ({'instruction' if task['instruction'] else 'tools'}) @ "
           f"{'the twin' if sim else 'the robot'}, mode {mode} ==")
@@ -238,7 +239,7 @@ def run_task(task: dict, *, sim: bool, mode: Optional[str], view: bool = False, 
         new = [p for p in runs.iterdir() if p.name not in before and p.is_dir()]
         folder = max(new, key=lambda p: p.stat().st_mtime) if new else folder
     else:
-        write_status(folder, ok, "sim" if sim else "robot")
+        write_status(folder, ok, env_name)
     if not sim:                                  # the robot: keep it? then the human's verdict
         from g1.agent import agent as prompts
         if not prompts.ask_save():

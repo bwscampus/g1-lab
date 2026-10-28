@@ -167,7 +167,8 @@ quota or `step_timeout` fails the run; `max_decisions` ends as `budget_exhausted
 run directory (`_success`/`_failed`/`_unreviewed`/`_interrupted`). The agent asks nothing: after a robot run
 `cli.run_task` asks "Save this run?" (no: the folder is deleted) and then the verdict (`task.label_run`);
 `--sim` runs ask nothing.
-Records: `tasks/<name>/runs/<ts>_<env>_<instruction>_<outcome>/` with `episode.json`, `step_NNNN.json/.png`,
-`events.jsonl`, `transcript.json`, `protocol.json`, `states.jsonl`, `usage.json*`, `status.json`, `trace.npz`.
+Records: `tasks/<name>/runs/<ts>_<env>_<instruction>_<outcome>/` (`<env>` = `sim`|`robot`, from `--sim`) with exactly
+`episode.json` (the one meta file), `step_NNNN.json/.png`, `events.jsonl`, `protocol.json`, `usage.jsonl`, `replies.jsonl`,
+`trace.npz` (a tools run: `episode.json`, `trace.npz`). Saving anything new is a deliberate change; the tests assert the set.
 The observation JSON and the system prompt are in `g1/agent/decider.py`; `Decision.parse` validates a
 whole JSON object against the tool's schema and clamps numbers with a note.

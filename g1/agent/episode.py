@@ -1,11 +1,14 @@
 """Episode records: what is read and saved at every decision step.
 
 runs/<YYYYmmdd-HHMMSS>_<env>_<instruction-slug>_<outcome>/
-    episode.json        instruction, env, model, tools, result, verdict, step count (rewritten every step)
+    episode.json        the run's one meta file (see EpisodeWriter)
     step_0001.json      the record below
     step_0001.png       the camera frame, LOSSLESS (the exact RGB matrix reloads)
-    events.jsonl, transcript.json, protocol.json, states.jsonl, usage.jsonl, status.json
+    events.jsonl, protocol.json, usage.jsonl, replies.jsonl
                         the GPT-Policy-style run trace (see EpisodeWriter)
+    trace.npz           every tick, commanded and measured (g1/envs/trace.py, written by the env)
+
+Nothing else is saved: a new file is a deliberate change (tests/agent/test_agent.py checks the set).
 
 A step record holds the joint angles at start and end, the frame it decided
 on, the model's raw reply and parsed decision, the tool that ran and how it
@@ -28,7 +31,7 @@ from typing import Any, Optional
 
 import numpy as np
 
-from g1.core import images, limits
+from g1.core import images
 
 OUTCOMES = ("completed", "running", "done", "give_up", "checked", "rejected", "no_frame")
 
@@ -86,28 +89,26 @@ OUTCOME_OF = {              # runtime status -> outcome suffix of the run direct
     "completed": "success", "failed": "failed", "give_up": "give_up", "budget_exhausted": "give_up",
     "interrupted": "interrupted", "unreviewed": "unreviewed",
 }
-TRANSCRIPT_EVENTS = {"protocol", "input_manifest", "observation", "model_decision", "execution_result",
-                     "tool_error", "human_evaluation", "model_retry", "model_retry_exhausted"}
-STATES_HZ = limits.get("states_hz")          # configs/limits.json
 
 
 class EpisodeWriter:
     """The run recorder: step records (this repo's training data) plus the
     GPT-Policy file set —
 
-        config.json       run metadata, written first
+        episode.json      run metadata, the result and verdict, state, error, elapsed_s and
+                          the usage totals; rewritten after every step and on close
         events.jsonl      append-only: every observation, decision, timing, result,
-                          error, retry, terminal, verdict, with wall-clock at_s
-        transcript.json   the model conversation rebuilt from those events
+                          error, retry, terminal, verdict, with wall-clock at_s (the
+                          conversation is its observation/model_decision/execution_result events)
         protocol.json     the system prompt, tool schemas and output schema
-        states.jsonl      measured joint state sampled at 20 Hz
-        usage.jsonl/json  one line per model call, and the totals
-        status.json       the verdict and the usage summary, written on close
+        usage.jsonl       one line per model call
+        replies.jsonl     one line per model call: everything the server sent back, as sent
 
-    PNG encoding (40-80 ms at 720p) and the state stream run on a writer
-    thread so the control loop never pays for them; events are small and go
-    straight to disk in order. ``episode.json`` is rewritten after every step
-    so a crash never leaves an unreadable run. ``close(status, human)`` decides
+    The measured joint state is the env's trace.npz, not repeated here. PNG
+    encoding (40-80 ms at 720p) runs on a writer thread so the control loop
+    never pays for it; events are small and go straight to disk in order.
+    ``episode.json`` is rewritten after every step so a crash never leaves an
+    unreadable run. ``close(status, human)`` decides
     the outcome like their ``RunRecorder.close`` and renames the directory
     ``<name>_<outcome>``."""
 
@@ -121,19 +122,15 @@ class EpisodeWriter:
                                      "ended": None, "result": None, "steps": 0, "git": _git_head(), **(extra or {})}
         self.threaded = threaded
         self.started_at = time.time()
-        self.transcript: list[dict] = []
         self.usage_calls: list[dict] = []
         self.model_status: Optional[str] = None      # completed | give_up, from the terminal event
         self.human_outcome: Optional[str] = None
         self.closed = False
-        self._last_state_t = -1.0
         self._events = (self.dir / "events.jsonl").open("x", encoding="utf-8")
-        self._states = (self.dir / "states.jsonl").open("x", encoding="utf-8")
         self._q: "queue.Queue[Optional[tuple]]" = queue.Queue()
         self._thread = threading.Thread(target=self._run, name="episode-writer", daemon=False) if threaded else None
         if self._thread is not None:
             self._thread.start()
-        _save(self.dir / "config.json", self.meta)
         self._write_meta()
         self.event("run_started", dict(self.meta))
 
@@ -149,30 +146,20 @@ class EpisodeWriter:
         ev = {"at_s": time.time(), "event": kind, **values}
         self._events.write(json.dumps(ev, ensure_ascii=False, default=_plain) + "\n")
         self._events.flush()
-        self._transcript(kind, values)
         return ev
 
-    def _transcript(self, kind: str, payload: dict) -> None:
-        if kind == "protocol":
-            self.transcript.append({"role": "system", "content": payload.get("base_instructions", "")})
-            _save(self.dir / "protocol.json", payload)
-        elif kind == "input_manifest":
-            self.transcript.append({"role": "user", "content": payload})
-        elif kind == "observation":
-            self.transcript.append({"role": "user", "content": payload.get("input_json", ""),
-                                    "images": payload.get("images", [])})
-        elif kind == "model_decision":
-            self.transcript.append({"role": "assistant", "tool_call": payload.get("decision")})
-        elif kind in ("execution_result", "tool_error"):
-            self.transcript.append({"role": "tool", "content": payload})
-        elif kind in ("human_evaluation", "model_retry", "model_retry_exhausted"):
-            self.transcript.append({"role": "user", "content": {"event": kind, **payload}})
-        if kind in TRANSCRIPT_EVENTS:
-            _save(self.dir / "transcript.json", self.transcript)
+    def protocol(self, record: dict) -> None:
+        """The system prompt, tool schemas and output schema, once (``protocol.json``)."""
+        _save(self.dir / "protocol.json", record)
 
     def usage(self, call: dict) -> None:
         """One model call (their usage ledger; no pricing is shipped)."""
         entry = {**call, "call": len(self.usage_calls) + 1}
+        chunks = entry.pop("chunks", None)
+        if chunks is not None:
+            with (self.dir / "replies.jsonl").open("a", encoding="utf-8") as f:
+                f.write(json.dumps({k: entry.get(k) for k in ("call", "step", "request_id", "status")} | {"chunks": chunks},
+                                   ensure_ascii=False, default=_plain) + "\n")
         entry.setdefault("estimated_cost_usd", None)
         entry.setdefault("cost_unavailable_reason", "model_price_unknown")
         self.usage_calls.append(entry)
@@ -195,17 +182,6 @@ class EpisodeWriter:
                 "tokens": tokens, "usage_missing_calls": missing,
                 "estimated_cost_usd": None, "cost_status": "unknown",
                 "by_model": sorted({c.get("model") for c in calls if c.get("model")})}
-
-    def state(self, t: float, q, cmd, qd=None, base_cmd=None) -> None:
-        """Measured joint state, sampled at STATES_HZ from the 50 Hz tick."""
-        if int(t * STATES_HZ + 1e-6) == int(self._last_state_t * STATES_HZ + 1e-6):
-            return                   # 20 Hz from a 50 Hz tick: alternate 2 and 3 ticks apart
-        self._last_state_t = t
-        row = {"observed_at_s": time.time(), "observed_monotonic_s": time.monotonic(), "t": t,
-               "q": [float(v) for v in q], "cmd": [float(v) for v in cmd],
-               "qd": None if qd is None else [float(v) for v in qd],
-               "base_cmd": None if base_cmd is None else [float(v) for v in base_cmd]}
-        self._submit(("state", row))
 
     # -- step records ---------------------------------------------------------------
     def write_step(self, rec: StepRecord, image: Optional[np.ndarray]) -> None:
@@ -248,14 +224,10 @@ class EpisodeWriter:
             self._q.put(None)
             self._thread.join(timeout=join)
             self._thread = None
-        _save(self.dir / "transcript.json", self.transcript)
-        _save(self.dir / "usage.json", self.usage_summary())
-        _save(self.dir / "status.json", {"state": status, "error": error,
-                                         "elapsed_s": time.time() - self.started_at,
-                                         **self.meta, "usage": self.usage_summary()})
+        self.meta.update(state=status, error=error, elapsed_s=time.time() - self.started_at,
+                         usage=self.usage_summary())
         self._write_meta()
         self._events.close()
-        self._states.close()
         dest = self.dir.with_name(f"{self.dir.name}_{outcome}")
         if dest.exists():
             raise FileExistsError(f"run directory already exists: {dest}")
@@ -280,8 +252,6 @@ class EpisodeWriter:
     def _do(self, job: tuple) -> None:
         if job[0] == "meta":
             self._write_meta()
-        elif job[0] == "state":
-            self._states.write(json.dumps(job[1]) + "\n")
         else:
             self._write(job[1], job[2])
 

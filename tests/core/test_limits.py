@@ -34,7 +34,7 @@ def test_code_reads_its_numbers_from_the_file():
         limits.get(n) for n in ("return_to_stand_s", "return_ramp_s", "return_released_s"))
     assert vlm.MAX_TOKENS == limits.get("max_tokens") and vlm.IMAGE_WIDTH == limits.get("image_width_px")
     assert len(agent.RETRY_DELAYS) == limits.get("retry_max") and max(agent.RETRY_DELAYS) == limits.get("retry_delay_cap_s")
-    assert agent.RECOVERY_TIMEOUT == limits.get("recovery_timeout_s") and episode.STATES_HZ == limits.get("states_hz")
+    assert agent.RECOVERY_TIMEOUT == limits.get("recovery_timeout_s")
     m = JointMonitor()
     assert (m.margin, m.max_vel, m.max_violations) == tuple(
         limits.get(n) for n in ("joint_margin_rad", "command_vel_max", "max_violations"))

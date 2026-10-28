@@ -319,7 +319,7 @@ class RobotEnv(Env):
         self.trace = None
         if getattr(self.args, "trace", None):
             from g1.envs.trace import Trace
-            self.trace = Trace(self.args.trace, "twin" if self.args.sim and self.name == "robot" else self.name)
+            self.trace = Trace(self.args.trace, "sim" if self.args.sim else self.name)
         self.camera = None
         if self.use_camera:
             self.camera = self._open_camera()          # before any FSM change

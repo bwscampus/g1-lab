@@ -154,14 +154,16 @@ deliberately no second-Ctrl-C escape.
 
 ## The record
 
-`tasks/<name>/runs/<ts>_<env>_<instruction>_<outcome>/`: `episode.json`, `step_NNNN.json` + `.png` (the
-frame losslessly), and the run trace — `config.json`, `events.jsonl` (append-only, every
-observation with the verbatim `input_json`, decision, timing, result, error, retry,
-terminal, verdict), `transcript.json`, `protocol.json` (the system prompt and schemas),
-`states.jsonl` (20 Hz), `usage.jsonl`/`usage.json`, `status.json`, `trace.npz`. The human
-verdict wins the outcome; a model conclusion without one is `unreviewed`. A tools run keeps
-`trace.npz` and `status.json` (its checks decide). Each run adds a line to the task's
-`results.jsonl`.
+`tasks/<name>/runs/<ts>_<env>_<instruction>_<outcome>/` (`<env>` is `sim` or `robot`, from `--sim`),
+and nothing else: `episode.json` (the run's one meta file: instruction, env, model, verdict, state,
+error, usage totals), `step_NNNN.json` + `.png` (the frame losslessly), `events.jsonl` (append-only,
+every observation with the verbatim `input_json`, decision, timing, result, error, retry, terminal,
+verdict: the conversation is in it), `protocol.json` (the system prompt and schemas), `usage.jsonl`
+(one line per model call), `replies.jsonl` (everything the server sent back per call, reasoning
+included) and `trace.npz` (every tick, 50 Hz). The human verdict wins the outcome; a model conclusion
+without one is `unreviewed`. A tools run keeps `episode.json` (its checks decide) and `trace.npz`.
+Each run adds a line to the task's `results.jsonl`. A new file is a deliberate change: the tests
+assert the exact set.
 
 ## Conventions
 

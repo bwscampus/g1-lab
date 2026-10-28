@@ -360,12 +360,13 @@ def test_run_files_and_human_verdict(tmp_path):
     d = rec.dir
     assert d.name.endswith("_success")
     names = {p.name for p in d.iterdir()}
-    assert {"config.json", "events.jsonl", "transcript.json", "protocol.json", "states.jsonl", "usage.jsonl",
-            "usage.json", "status.json", "episode.json", "step_0001.json", "step_0001.png"} <= names
+    # exactly these: a new file in a run is a deliberate change (the env's trace.npz is off here)
+    steps = {f"step_{i:04d}.{x}" for i in (1, 2, 3) for x in ("json", "png")}
+    assert names == {"episode.json", "events.jsonl", "protocol.json", "usage.jsonl"} | steps, names
     events = [json.loads(l) for l in (d / "events.jsonl").read_text().splitlines()]
     kinds = [e["event"] for e in events]
     kinds = [k for k in kinds if k != "sdk_call"]                       # the bring-up's GetVolume, GetFsmId
-    assert kinds[:3] == ["run_started", "protocol", "observation"]
+    assert kinds[:2] == ["run_started", "observation"] and "protocol" not in kinds   # protocol.json holds it
     assert kinds.count("observation") == 3 and kinds.count("model_decision") == 2 and kinds.count("tool_error") == 1
     assert {"decision_timing", "tool_timing", "execution_result", "terminal", "return_home", "execution_finished",
             "human_evaluation", "run_finished"} <= set(kinds)
@@ -375,16 +376,11 @@ def test_run_files_and_human_verdict(tmp_path):
     assert "motion_progress" in res["result"]["execution_feedback"]        # the full result is recorded
     fin = events[-1]
     assert fin["outcome"] == "success" and fin["outcome_source"] == "human" and fin["model_outcome"] == "success"
-    tr = json.loads((d / "transcript.json").read_text())
-    assert [m["role"] for m in tr][:4] == ["system", "user", "assistant", "tool"]
-    assert tr[0]["content"] == agent.context.instructions
     proto = json.loads((d / "protocol.json").read_text())
+    assert proto["base_instructions"] == agent.context.instructions
     assert proto["output_schema"] == agent.context.output_schema and proto["menu"] == [s.name for s in menu(True)]
-    status = json.loads((d / "status.json").read_text())
+    status = json.loads((d / "episode.json").read_text())
     assert status["state"] == "completed" and status["human_outcome"] == "success" and status["usage"]["calls"] == 3
-    states = [json.loads(l) for l in (d / "states.jsonl").read_text().splitlines()]
-    assert len(states) > 20 and len(states[0]["q"]) == 29
-    assert (states[-1]["t"] - states[0]["t"]) / (len(states) - 1) == pytest.approx(0.05, abs=0.002)   # 20 Hz
     usage = [json.loads(l) for l in (d / "usage.jsonl").read_text().splitlines()]
     assert [u["status"] for u in usage] == ["completed", "failed", "completed"] and usage[0]["model"] == "sequence"
     meta, steps = load_episode(d, images=False)
