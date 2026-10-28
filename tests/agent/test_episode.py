@@ -42,47 +42,47 @@ def test_threaded_writer_flushes_on_close(tmp_path):
     w = EpisodeWriter(tmp_path, env="sim", instruction="g", model="m", tools=[])
     for i in range(1, 6):
         w.write_step(record(i, "walk_forward", {"distance_m": 0.5}), img)
-    for t in np.arange(0, 1.0, 0.02):
-        w.state(t, np.zeros(29), np.zeros(29))
     w.finish("budget_exhausted")
     assert w.close("budget_exhausted", human="failed").name.endswith("_failed")   # the human's label wins
     meta, steps = load_episode(w.dir, images=False)
     assert len(steps) == 5 and meta["steps"] == 5 and meta["result"] == "budget_exhausted"
     assert all(s.image is None for s in steps)
-    assert len((w.dir / "states.jsonl").read_text().splitlines()) == 20      # 20 Hz from a 50 Hz tick
 
 
 
 
-def test_events_transcript_and_status(tmp_path):
+def test_events_protocol_usage_and_episode(tmp_path):
     w = EpisodeWriter(tmp_path, env="sim", instruction="g", model="m", tools=[], threaded=False)
-    w.event("protocol", {"base_instructions": "SYS", "tools": [], "output_schema": {}})
+    w.protocol({"base_instructions": "SYS", "tools": [], "output_schema": {}})
     w.event("observation", {"step": 0, "input_json": "{}", "images": [{"name": "head", "path": "step_0001.png"}]})
     w.event("model_decision", {"step": 0, "decision": {"name": "turn", "arguments": {}}})
     w.event("tool_error", {"step": 0, "tool": "turn", "error": "tool_rejected: x"})
     w.event("model_retry", {"step": 1, "retry": 1, "delay_s": 2.0})
-    w.usage({"model": "m", "elapsed_s": 1.5, "status": "completed", "usage": {"prompt_tokens": 4, "completion_tokens": 1}})
+    w.usage({"model": "m", "elapsed_s": 1.5, "status": "completed", "usage": {"prompt_tokens": 4, "completion_tokens": 1},
+             "step": 0, "request_id": 1, "chunks": [{"choices": [{"delta": {"content": "{}"}}]}]})
     w.usage({"model": "m", "elapsed_s": 0.5, "status": "failed", "usage": None})
     with pytest.raises(ValueError):
         w.event("human_evaluation", {"outcome": "maybe"})
     d = w.close("failed", error="boom")
     assert d.name.endswith("_failed")
     events = [json.loads(l) for l in (d / "events.jsonl").read_text().splitlines()]
-    assert [e["event"] for e in events] == ["run_started", "protocol", "observation", "model_decision", "tool_error",
+    assert [e["event"] for e in events] == ["run_started", "observation", "model_decision", "tool_error",
                                             "model_retry", "run_finished"]
     assert all("at_s" in e for e in events)
     assert events[-1] == {**events[-1], "status": "failed", "task_status": "failed", "outcome": "failed",
                           "model_outcome": None, "human_outcome": None, "outcome_source": "runtime", "error": "boom"}
-    tr = json.loads((d / "transcript.json").read_text())
-    assert [m["role"] for m in tr] == ["system", "user", "assistant", "tool", "user"]
-    assert tr[0]["content"] == "SYS" and tr[1]["images"][0]["path"] == "step_0001.png" and tr[2]["tool_call"]["name"] == "turn"
     assert json.loads((d / "protocol.json").read_text())["base_instructions"] == "SYS"
-    status = json.loads((d / "status.json").read_text())
+    status = json.loads((d / "episode.json").read_text())         # the one meta file holds the totals
     assert status["error"] == "boom" and status["usage"]["calls"] == 2 and status["usage"]["failed_calls"] == 1
     assert status["usage"]["tokens"] == {"prompt_tokens": 4, "completion_tokens": 1} and status["usage"]["usage_missing_calls"] == 1
     usage = [json.loads(l) for l in (d / "usage.jsonl").read_text().splitlines()]
     assert usage[1]["call"] == 2 and usage[0]["cost_unavailable_reason"] == "model_price_unknown"
-    assert json.loads((d / "config.json").read_text())["instruction"] == "g"
+    assert "chunks" not in usage[0]                     # the returned payloads go to their own file
+    replies = [json.loads(l) for l in (d / "replies.jsonl").read_text().splitlines()]
+    assert replies == [{"call": 1, "step": 0, "request_id": 1, "status": "completed",
+                        "chunks": [{"choices": [{"delta": {"content": "{}"}}]}]}]
+    assert status["instruction"] == "g" and status["state"] == "failed" and status["elapsed_s"] >= 0
+    assert {p.name for p in d.iterdir()} == {"episode.json", "events.jsonl", "protocol.json", "usage.jsonl", "replies.jsonl"}
     # a finished run is never overwritten by the rename
     w2 = EpisodeWriter(tmp_path / "other", env="sim", instruction="g", model="m", tools=[], threaded=False)
     w2.dir.with_name(w2.dir.name + "_failed").mkdir()

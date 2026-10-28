@@ -132,7 +132,7 @@ def test_agent_records_the_interruption(tmp_path):
     kinds = [json.loads(l)["event"] for l in (rec.dir / "events.jsonl").read_text().splitlines()]
     i = kinds.index("interrupted")
     assert kinds[i:i + 3] == ["interrupted", "return_home_started", "return_home"]
-    assert kinds[-1] == "run_finished" and json.loads((rec.dir / "status.json").read_text())["state"] == "interrupted"
+    assert kinds[-1] == "run_finished" and json.loads((rec.dir / "episode.json").read_text())["state"] == "interrupted"
     assert env.actions[-1].weight == pytest.approx(0.0) and env.violations == []
 
 
@@ -177,7 +177,9 @@ def test_a_tools_task_runs_records_and_traces(tmp_path, capsys):
     task = load_task(task_dir(tmp_path, tools="hold:0.3"))
     assert run_task(task, sim=True, mode=None, env=sim_env()) == 0
     (run_dir,) = (task["dir"] / "runs").iterdir()
-    assert (run_dir / "trace.npz").stat().st_size > 0 and json.loads((run_dir / "status.json").read_text())["outcome"] == "success"
+    assert {p.name for p in run_dir.iterdir()} == {"episode.json", "trace.npz"}      # all a tools run saves
+    episode = json.loads((run_dir / "episode.json").read_text())
+    assert (run_dir / "trace.npz").stat().st_size > 0 and episode["outcome"] == "success" and episode["env"] == "sim"
     row = json.loads((task["dir"] / "results.jsonl").read_text())
     assert row["run"] == run_dir.name and row["outcome_source"] == "checks"
     assert "result: success" in capsys.readouterr().out
@@ -203,10 +205,16 @@ def test_an_instruction_task_runs_the_agent(tmp_path, monkeypatch, capsys):
     dec = Sequence([("done", {"summary": "s", "hindsight": "h"})])
     monkeypatch.setattr(agent_module.VLMDecider, "from_env", classmethod(lambda cls, *a, **k: dec))
     task = load_task(task_dir(tmp_path, instruction="find it", safety_notes=["a wall behind"]))
-    assert run_task(task, sim=True, mode=None, env=scripted_sim(Scripted())) == 0
+    env = scripted_sim(Scripted())
+    env.name = "robot"                       # --sim runs RobotEnv itself: the label must come from the flag
+    assert run_task(task, sim=True, mode=None, env=env) == 0
     (run_dir,) = (task["dir"] / "runs").iterdir()
-    assert run_dir.name.endswith("_unreviewed") and (run_dir / "trace.npz").exists() and (run_dir / "episode.json").exists()
-    assert json.loads((task["dir"] / "results.jsonl").read_text())["run"] == run_dir.name
+    assert "_sim_" in run_dir.name and run_dir.name.endswith("_unreviewed")
+    files = {p.name for p in run_dir.iterdir() if not p.name.startswith("step_")}
+    assert files == {"episode.json", "events.jsonl", "protocol.json", "usage.jsonl", "trace.npz"}, files
+    assert json.loads((run_dir / "episode.json").read_text())["env"] == "sim"
+    row = json.loads((task["dir"] / "results.jsonl").read_text())
+    assert row["run"] == run_dir.name and row["env"] == "sim"
     assert "a wall behind" in dec.context.instructions
 
 
@@ -275,7 +283,7 @@ def test_a_robot_run_asks_to_save_then_for_the_verdict(tmp_path, monkeypatch, ca
     assert run_task(task, sim=False, mode="standing", env=sim_env(mode="standing")) == 0
     (run_dir,) = (task["dir"] / "runs").iterdir()
     assert asked[1:] == ["save", "verdict"] and run_dir.name.endswith("_robot_hold-0-3_failed")
-    status = json.loads((run_dir / "status.json").read_text())
+    status = json.loads((run_dir / "episode.json").read_text())
     assert status["outcome"] == "failed" and status["outcome_source"] == "human"     # the human, not the checks
     assert json.loads((task["dir"] / "results.jsonl").read_text())["outcome_source"] == "human"
 
@@ -284,13 +292,12 @@ def test_label_run_marks_an_agent_record(tmp_path):
     from g1.agent.task import label_run
     run = tmp_path / "20261019-120000_robot_find-it_unreviewed"
     run.mkdir()
-    (run / "status.json").write_text(json.dumps({"outcome": "unreviewed", "outcome_source": "unreviewed"}))
-    (run / "episode.json").write_text(json.dumps({"outcome": "unreviewed"}))
+    (run / "episode.json").write_text(json.dumps({"outcome": "unreviewed", "outcome_source": "unreviewed"}))
     (run / "events.jsonl").write_text("")
     out = label_run(run, "success")
     assert out.name == "20261019-120000_robot_find-it_success" and not run.exists()
-    assert json.loads((out / "status.json").read_text())["human_outcome"] == "success"
-    assert json.loads((out / "episode.json").read_text())["outcome"] == "success"
+    episode = json.loads((out / "episode.json").read_text())
+    assert episode["human_outcome"] == "success" and episode["outcome"] == "success"
     assert json.loads((out / "events.jsonl").read_text())["event"] == "human_evaluation"
 
 

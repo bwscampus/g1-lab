@@ -410,4 +410,4 @@ class VLMDecider(Decider):
     def _call_details(self) -> dict:
         return {"usage": self.client.last_usage, "response_mode": self.client.response_mode,
                 "reasoning_effort": self.client.reasoning_effort,
-                "request_elapsed_s": round(self.client.last_elapsed, 6)}
+                "request_elapsed_s": round(self.client.last_elapsed, 6), "chunks": list(self.client.last_chunks)}

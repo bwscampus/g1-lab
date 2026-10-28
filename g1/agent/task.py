@@ -93,8 +93,8 @@ def run_dir(task: dict, env_name: str) -> Path:
 
 
 def write_status(run: Path, ok: bool, env_name: str) -> None:
-    """A tools run's status.json: its checks are the outcome (the agent's recorder writes its own)."""
-    path = run / "status.json"
+    """A tools run's episode.json: its checks are the outcome (the agent's recorder writes its own)."""
+    path = run / "episode.json"
     if not path.exists():
         path.write_text(json.dumps({"outcome": "success" if ok else "failed", "outcome_source": "checks",
                                     "env": env_name, "ended": datetime.now().isoformat(timespec="seconds")}),
@@ -105,16 +105,15 @@ OUTCOMES = ("success", "failed", "unreviewed", "give_up", "interrupted")
 
 
 def label_run(run: Path, outcome: str) -> Path:
-    """The human verdict on a finished run: written into status.json (and episode.json,
-    events.jsonl when the agent recorded it) and the directory renamed ``<name>_<outcome>``."""
+    """The human verdict on a finished run: written into episode.json (and events.jsonl
+    when the agent recorded it) and the directory renamed ``<name>_<outcome>``."""
     task_status = "completed" if outcome == "success" else "failed"
     verdict = {"outcome": outcome, "human_outcome": outcome, "outcome_source": "human", "task_status": task_status}
-    for name in ("status.json", "episode.json"):
-        path = run / name
-        if path.exists():
-            data = json.loads(path.read_text(encoding="utf-8"))
-            data.update(verdict)
-            path.write_text(json.dumps(data, indent=1), encoding="utf-8")
+    path = run / "episode.json"
+    if path.exists():
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data.update(verdict)
+        path.write_text(json.dumps(data, indent=1), encoding="utf-8")
     events = run / "events.jsonl"
     if events.exists():
         with events.open("a", encoding="utf-8") as f:
@@ -128,9 +127,9 @@ def label_run(run: Path, outcome: str) -> Path:
 
 
 def record_result(task: dict, run: Path, *, ok: Optional[bool] = None, env_name: str = "") -> Optional[dict]:
-    """Append what a finished run amounts to, from its status.json (``ok``: a tools run's
+    """Append what a finished run amounts to, from its episode.json (``ok``: a tools run's
     checks, written first if it has none)."""
-    status_path = run / "status.json"
+    status_path = run / "episode.json"
     if ok is not None:
         write_status(run, ok, env_name)
     try:

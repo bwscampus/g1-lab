@@ -139,9 +139,12 @@ def test_reasoning_effort_is_sent_and_dropped_when_refused():
     assert c.complete([]) == "ok" and "reasoning_effort" not in calls[2]
     # a provider that refuses it without naming it (HF router, novita, 2026-10-21)
     calls.clear()
-    replies[:] = [RequestError(400, '{"message":"invalid request error","type":"invalid_request_error"}'), "ok"]
+    refusal = '{"message":"invalid request error","type":"invalid_request_error"}'
+    replies[:] = [RequestError(400, refusal), "ok"]
     c = VLMClient("m", "k", transport=transport)
     assert c.complete([]) == "ok" and c.reasoning_effort is None
+    # last_chunks keeps everything the server sent back for the call: the refusal, then the stream
+    assert c.last_chunks == [{"http_status": 400, "body": refusal}, {"choices": [{"delta": {"content": "ok"}}]}]
     assert calls[0]["reasoning_effort"] == effort and "reasoning_effort" not in calls[1]
     # a 400 with nothing left to drop is raised
     replies[:] = [RequestError(400, "bad")]

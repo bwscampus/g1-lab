@@ -130,7 +130,8 @@ class Agent(Runnable):
         self._wait_until = 0.0
         self._seated = False                      # a sit finished: nothing may walk or call onboard again
         self.decider.start(self.context)
-        self._event("protocol", self.context.record())
+        if self.recorder is not None:
+            self.recorder.protocol(self.context.record())
         self._enter_sub("takeover", 0.0, Takeover())
 
     def on_interrupt(self, reason: str, detail: str = "") -> None:
@@ -398,7 +399,6 @@ class Agent(Runnable):
     # -- the loop ----------------------------------------------------------------------
     def step(self, t: float, obs: Obs) -> Optional[Action]:
         if self.recorder is not None:
-            self.recorder.state(t, obs.q, self._cmd, obs.qd, self._base_cmd)
             self._record_sdk()
         st = self._state
         if st in ("takeover", "handback"):

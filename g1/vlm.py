@@ -182,7 +182,9 @@ class VLMClient:
     prompt alone); ``stream_options`` is dropped the same way for servers that
     reject it. ``response_mode`` says which one the last call used; the caller
     validates the reply itself either way. ``last_usage`` holds the provider's
-    token counts for the last call, ``last_elapsed`` its wall time."""
+    token counts for the last call, ``last_elapsed`` its wall time, ``last_chunks``
+    everything the server sent back for it, as sent: each streamed payload, and the
+    status and body of any attempt it refused before a step-down."""
 
     def __init__(self, model: str = DEFAULT_MODEL, token: Optional[str] = None, *,
                  base_url: str = HF_BASE_URL, stream: bool = True,
@@ -204,6 +206,7 @@ class VLMClient:
         self.response_mode = "none"
         self.last_usage: Optional[dict] = None
         self.last_elapsed = 0.0
+        self.last_chunks: list = []
         self.calls = 0
         self.max_tokens = MAX_TOKENS
         self.reasoning_effort: Optional[str] = None if REASONING_EFFORT == "default" else REASONING_EFFORT
@@ -217,6 +220,7 @@ class VLMClient:
                  temperature: float = limits.get("vlm_temperature"), schema: Optional[dict] = None) -> str:
         body = {"model": self.model, "stream": self.stream, "temperature": temperature,
                 "max_tokens": max_tokens or self.max_tokens, "messages": messages}
+        self.last_chunks = []
         while True:
             attempt = dict(body)               # a fresh body per attempt, so records see what was sent
             if self.stream and self.stream_options:
@@ -235,6 +239,7 @@ class VLMClient:
             try:
                 return self._send(attempt)
             except RequestError as e:
+                self.last_chunks.append({"http_status": e.status, "body": e.body})
                 # Structured output and stream_options are server-dependent: step down and retry.
                 if e.status == 400 and self.stream_options and "stream_options" in e.body:
                     self.stream_options = False
@@ -270,6 +275,7 @@ class VLMClient:
                 if payload.strip() == "[DONE]":
                     break
                 chunk = json.loads(payload)
+                self.last_chunks.append(chunk)
                 if isinstance(chunk, dict) and chunk.get("error"):
                     # some servers answer HTTP 200 and put the failure in the stream
                     err = chunk["error"] if isinstance(chunk["error"], dict) else {"message": str(chunk["error"])}

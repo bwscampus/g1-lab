@@ -73,7 +73,7 @@ def test_record_result_from_an_agent_status_or_the_checks(tmp_path):
     t = load_task(task_dir(tmp_path, instruction="find the mug"))
     run_dir = t["dir"] / "runs" / "r1"
     run_dir.mkdir(parents=True)
-    (run_dir / "status.json").write_text(json.dumps({"outcome": "success", "task_status": "completed", "outcome_source": "human",
+    (run_dir / "episode.json").write_text(json.dumps({"outcome": "success", "task_status": "completed", "outcome_source": "human",
                                                      "decisions": 4, "steps": 6, "model": "m", "env": "sim",
                                                      "usage": {"tokens": {"prompt_tokens": 100}}, "elapsed_s": 30.0, "ended": "t"}))
     row = record_result(t, run_dir)

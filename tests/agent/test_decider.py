@@ -179,6 +179,7 @@ def test_hf_decider_fresh_turns_and_call_details():
     call = dec.last_call
     assert call["status"] == "completed" and call["usage"] == {"prompt_tokens": 10, "completion_tokens": 3}
     assert call["response_mode"] == "json_schema" and call["provider"] == "huggingface" and call["model"] == "m/vl"
+    assert call["chunks"] and all(isinstance(c, dict) for c in call["chunks"])   # what the server sent, for replies.jsonl
 
 
 def test_hf_decider_bad_reply_is_a_protocol_error():

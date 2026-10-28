@@ -175,8 +175,6 @@
     "retry_delay_base_s":         {"value": 2.0,   "unit": "s",     "source": "gpt-policy", "note": "first retry delay; doubles each time"},
     "retry_delay_cap_s":          {"value": 8.0,   "unit": "s",     "source": "gpt-policy", "note": "largest retry delay"},
     "retry_jitter_s":             {"value": 0.5,    "unit": "s",      "source": "guess",      "note": "up to this much random time is added to each retry delay"},
-    "recovery_timeout_s":         {"value": 300.0, "unit": "s",     "source": "gpt-policy", "note": "total time allowed for retries before the run fails"},
-
-    "states_hz":                  {"value": 20.0,  "unit": "Hz",    "source": "guess",      "note": "rate the measured joint state is logged at (gpt-policy logs at 50)"}
+    "recovery_timeout_s":         {"value": 300.0, "unit": "s",     "source": "gpt-policy", "note": "total time allowed for retries before the run fails"}
   }
 }
