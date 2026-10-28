@@ -42,11 +42,11 @@ g1 run find_the_marker --mode standing        # on the robot
 ## What a run produces
 
 `tasks/<name>/runs/<ts>_<env>_<...>/` (`<env>`: `sim` or `robot`) and one line in
-`tasks/<name>/results.jsonl`. Every run has `trace.npz` (every tick commanded and measured, for
-`g1 trace`) and `episode.json` (meta and outcome). An instruction run also has every frame the
-model decided on (`step_NNNN.png`, lossless), every decision with the raw reply, the execution
-results (`events.jsonl`), the system prompt and schemas (`protocol.json`), token usage
-(`usage.jsonl`) and everything the model server sent back (`replies.jsonl`).
+`tasks/<name>/results.jsonl`. Every run has `summary.json` (which run, how it ended, usage,
+health), `config.json` (the task, settings, limits and a restorable code snapshot) and `trace.npz`
+(every tick commanded and measured, for `g1 trace`). An instruction run also has one
+`step_NNNN.json` + `.png` per query to the model: the frame, the query and response as sent and
+received, the action and its result. See `docs/architecture.md`, "The record".
 
 A run on the twin (`--sim`) asks nothing: it is kept, its outcome the run's checks for a tools
 chain and `unreviewed` for an instruction. A run on the robot asks `Save this run? [y / n]`

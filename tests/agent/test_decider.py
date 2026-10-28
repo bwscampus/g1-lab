@@ -165,7 +165,10 @@ def test_hf_decider_keeps_the_conversation_and_prunes_images():
     assert json.loads(first[0]["text"])["extra"]["env_step"] == 0
     assert any(b["type"] == "image_url" for b in msgs[3]["content"]) and any(b["type"] == "image_url" for b in msgs[5]["content"])
     tr = dec.transcript()
-    assert tr[0]["role"] == "system" and {"type": "image"} in tr[3]["content"]
+    assert tr[0]["role"] == "system" and {"type": "image", "image": "step_0002.png"} in tr[3]["content"]
+    sent = dec.queries[3]                                            # the query as recorded: no system prompt,
+    assert [m["role"] for m in sent] == [m["role"] for m in msgs[1:]]   # each image named by its step file
+    assert {"type": "image", "image": "step_0003.png"} in sent[-1]["content"]
 
 
 def test_hf_decider_fresh_turns_and_call_details():
@@ -178,8 +181,9 @@ def test_hf_decider_fresh_turns_and_call_details():
     assert dec.latest().name == "hold" and dec.latest().request_id == 2 and dec.latest().latency >= 0
     call = dec.last_call
     assert call["status"] == "completed" and call["usage"] == {"prompt_tokens": 10, "completion_tokens": 3}
-    assert call["response_mode"] == "json_schema" and call["provider"] == "huggingface" and call["model"] == "m/vl"
-    assert call["chunks"] and all(isinstance(c, dict) for c in call["chunks"])   # what the server sent, for replies.jsonl
+    assert call["response_mode"] == "json_schema" and call["request_id"] == 2
+    assert call["chunks"] and all(isinstance(c, dict) for c in call["chunks"])   # what the server sent, for the step file
+    assert dec.settings()["model"] == "m/vl" and "base_url" not in dec.settings()  # config.json: never a .env value
 
 
 def test_hf_decider_bad_reply_is_a_protocol_error():

@@ -175,8 +175,12 @@ class Twin:
 
     def report(self) -> dict:
         """What the twin knows that a robot cannot say: the Summary call of its ``twin`` service."""
+        from g1.core.config import JOINT_NAMES
         return {"fallen_at": self.onboard.fallen_at, "base_pose": list(self.base_pose()),
-                "pelvis_z": self.pelvis_z, "fsm": self.onboard.fsm, "summary": self.summary()}
+                "pelvis_z": self.pelvis_z, "fsm": self.onboard.fsm,
+                "torque_limit_s": {JOINT_NAMES[i]: round(int(n) * twin_model.PHYSICS_DT, 4)
+                                   for i, n in enumerate(self.onboard.saturated) if n},
+                "summary": self.summary()}
 
     def summary(self) -> str:
         o = self.onboard

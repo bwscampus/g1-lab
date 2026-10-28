@@ -11,7 +11,7 @@ from g1.agent.episode import EpisodeWriter, load_episode
 from g1.camera import ClockedCamera
 from g1.cli import run
 from g1.core.config import CONTROL_DT, STAND_Q
-from g1.tools import STEP_MAX, TOOLS, menu
+from g1.tools import TOOLS, menu
 from g1.tools.control import dry_run
 from g1.vlm import Overloaded, QuotaExceeded
 from tests.doubles import RedBallDecider, scripted_sim, select
@@ -85,7 +85,17 @@ def observations(dec):
 
 
 def recorder(tmp_path, dec, instruction="g"):
-    return EpisodeWriter(tmp_path, env="sim", instruction=instruction, model=dec.model, tools=list(TOOLS), threaded=False)
+    return EpisodeWriter(tmp_path, env="sim", instruction=instruction, model=dec.model, config={},
+                         task="t", mode="standing", max_decisions=30, threaded=False)
+
+
+def chosen(s):
+    """The tool a step's response chose (None for an invalid reply)."""
+    return ((s["response"] or {}).get("decision") or {}).get("name")
+
+
+def status(s):
+    return (s["result"] or {}).get("status")
 
 
 def test_search_finds_the_ball_and_records(tmp_path):
@@ -96,25 +106,29 @@ def test_search_finds_the_ball_and_records(tmp_path):
     assert run(agent, env, max_time=120) is True
     agent.close()
     assert agent.result == "completed" and env.violations == []
-    names = [s.tool["name"] for s in agent.steps]
+    names = [chosen(s) for s in agent.steps]
     assert names[-1] == "done" and set(names[:-1]) == {"move"}
-    assert agent.steps[-2].tool["args"]["dx_m"] == 0.5 and all(s.tool["args"]["dx_m"] == 0 for s in agent.steps[:-2])
-    assert [s.outcome["status"] for s in agent.steps] == ["completed"] * (len(names) - 1) + ["done"]
+    assert agent.steps[-2]["action"]["args"]["dx_m"] == 0.5
+    assert all(s["action"]["args"]["dx_m"] == 0 for s in agent.steps[:-2])
+    assert [status(s) for s in agent.steps] == ["completed"] * (len(names) - 1) + ["done"]
     for a, b in zip(agent.steps, agent.steps[1:]):
-        assert a.cmd_end == b.cmd_start                       # seeded from the last command
-        assert a.base_pose["cmd_end"] == b.base_pose["cmd_start"]
-        assert b.step == a.step + 1 and b.t["run_start"] > a.t["run_end"]
-    assert agent.steps[0].frame["shape"] == [48, 64, 3] and agent.steps[0].t["think_wall"] is not None
+        if b["action"] is not None:
+            assert a["action"]["cmd_end"] == b["action"]["cmd_start"]          # seeded from the last command
+            assert a["action"]["base_cmd_end"] == b["action"]["base_cmd_start"]
+        assert b["step"] == a["step"] + 1 and b["t_start"] >= a["t_end"]
+    first = agent.steps[0]
+    assert first["frame"]["shape"] == [48, 64, 3] and first["response"]["decide_s"] is not None
+    assert first["t_start"] <= first["action"]["t_start"] < first["action"]["t_end"] <= first["t_end"]
+    assert first["action"]["tick_end"] - first["action"]["tick_start"] == round(first["action"]["duration_s"] / CONTROL_DT)
     assert env.base_path == pytest.approx(0.5) and env.base_pose()[2] > 0.7
-    meta, steps = load_episode(rec.dir)
+    summary, steps = load_episode(rec.dir)
     assert rec.dir.name.endswith("_unreviewed")                              # no human verdict
-    assert meta["result"] == "completed" and meta["outcome"] == "unreviewed" and meta["model_outcome"] == "success"
-    assert meta["steps"] == len(names) and len(steps) == len(names)
-    assert np.array_equal(steps[-2].image, red_square(32, 24, 5))             # the frame it walked on
-    assert steps[-2].decision["name"] == "move" and steps[-2].decision["model"] == "red-ball-rules"
-    assert "floor clear" in steps[-2].decision["arguments"]["note"]
-    assert steps[0].base_pose["env_start"] == pytest.approx([0.0, 0.0, 0.0], abs=0.01)   # the twin's truth
-    assert math.hypot(*steps[-1].base_pose["env_end"][:2]) == pytest.approx(0.5, abs=0.15)
+    assert summary["end_reason"] == "done" and summary["outcome"] == "unreviewed" and summary["model_outcome"] == "success"
+    assert summary["steps"] == len(names) and len(steps) == len(names) and summary["tools_used"] == names
+    assert np.array_equal(steps[-2]["image"], red_square(32, 24, 5))         # the frame it walked on
+    assert chosen(steps[-2]) == "move" and "floor clear" in steps[-2]["response"]["decision"]["arguments"]["note"]
+    fb = steps[-2]["result"]["execution_feedback"]                           # the full result, truth included
+    assert math.hypot(*fb["base_measured_pose"][:2]) == pytest.approx(0.5, abs=0.15)
     # the base is never commanded while the agent is thinking, so StopMove lands before each frame
     idx = [i for i, a in enumerate(env.actions) if a.base is not None]
     assert all(env.actions[i].base is None for i in range(idx[-1] + 1, len(env.actions)))
@@ -160,31 +174,21 @@ def test_observation_and_feedback_follow_the_contract():
     assert agent.result == "completed"
 
 
-def test_long_skill_runs_as_three_second_chunks(tmp_path):
-    """One model call, one continuous motion, a record every STEP_MAX seconds."""
+def test_a_long_tool_is_one_step(tmp_path):
+    """One model call, one continuous motion, one step; the ticks in between are trace.npz."""
     env = check()
     dec = Sequence([("tpose", {}), ("done", {"summary": "s", "hindsight": ""})])     # tpose is 11 s
     rec = recorder(tmp_path, dec)
     agent = Agent("g", dec, menu(True) + [TOOLS["tpose"]], recorder=rec)               # a preset, offered here
     assert run(agent, env, max_time=120) is True
     agent.close()
-    tpose = [s for s in agent.steps if s.tool["name"] == "tpose"]
-    assert len(tpose) == 4 and dec.requests == 2                   # 11 s / 3 s, and only two calls
-    assert [s.tool["chunk"] for s in tpose] == [1, 2, 3, 4]
-    assert all(s.tool["chunks"] == 4 for s in tpose)
-    assert [s.outcome["status"] for s in tpose] == ["running", "running", "running", "completed"]
-    for s in tpose[:3]:
-        assert s.outcome["duration"] == pytest.approx(STEP_MAX, abs=CONTROL_DT)
-    assert all(s.decision["name"] == "tpose" for s in tpose)       # the same decision throughout
-    for a, b in zip(tpose, tpose[1:]):
-        assert a.cmd_end == b.cmd_start and a.t["run_end"] == b.t["run_start"]
-    assert tpose[1].t["think_wall"] is None                        # only the first chunk thought
-    # the arms never pause at a chunk boundary: the joint keeps moving through it
-    arm = [s.q_end[16] for s in tpose]
-    assert arm[0] < arm[1] and max(arm) > 1.4                     # 1.57 commanded; it sags at kp 60
-    _, steps = load_episode(rec.dir, images=False)
-    done = [s for s in steps if s.tool["name"] == "tpose" and s.outcome.get("status") == "completed"]
-    assert len(done) == 1 and {k: v for k, v in done[0].tool["args"].items() if k != "note"} == {"hold_s": 5.0, "rise_s": 3.0}
+    tpose = agent.steps[0]
+    assert len(agent.steps) == 2 and dec.requests == 2 and chosen(tpose) == "tpose"
+    a = tpose["action"]
+    assert a["duration_s"] == pytest.approx(11.0, abs=2 * CONTROL_DT) and a["planned_s"] == pytest.approx(11.0)
+    assert env.q_max[16] > 1.4 and a["q_end"][16] < 0.5            # raised (1.57, sagging at kp 60), then lowered
+    assert {k: v for k, v in a["args"].items() if k != "note"} == {"hold_s": 5.0, "rise_s": 3.0}
+    assert status(tpose) == "completed" and tpose["t_end"] >= a["t_end"]   # the result comes after the settle
 
 
 def test_search_without_base_skills_looks_instead():
@@ -192,7 +196,7 @@ def test_search_without_base_skills_looks_instead():
     agent = Agent("find the red ball", RedBallDecider(), menu(False), max_decisions=4, can_walk=False)
     assert run(agent, env, max_time=120) is True
     assert env.violations == [] and env.base_ticks == 0
-    assert agent.steps[0].tool["name"] == "arm_path" and agent.result in ("budget_exhausted", "completed")
+    assert chosen(agent.steps[0]) == "arm_path" and agent.result in ("budget_exhausted", "completed")
     assert "no walking tools" in agent.context.instructions
 
 
@@ -209,8 +213,9 @@ def test_rejected_and_invalid_replies_are_feedback_and_cost_a_decision():
     assert o[1]["previous_result"] == {"tool": None, "error": "invalid_selection: invalid selection: not json at all"}
     assert o[2]["previous_result"]["tool"] == "move" and "tool_rejected" in o[2]["previous_result"]["error"]
     assert o[3]["previous_result"]["tool"] == "hold" and o[3]["previous_result"]["result"]["status"] == "completed"
-    assert [s.outcome["status"] for s in agent.steps] == ["rejected", "rejected", "completed", "give_up"]
-    assert agent.steps[0].decision["raw"] == "not json at all" and agent.steps[0].tool is None
+    assert [status(s) for s in agent.steps] == ["rejected", "rejected", "completed", "give_up"]
+    assert agent.steps[0]["response"]["text"] == "not json at all" and agent.steps[0]["action"] is None
+    assert agent.steps[1]["result"]["tool"] == "move" and agent.steps[1]["action"] is None
     assert agent.result == "give_up" and env.base_ticks == 0
 
 
@@ -226,7 +231,8 @@ def test_check_dry_runs_without_moving():
     assert r["tool"] == "check" and r["result"]["status"] == "ok" and r["result"]["duration_s"] == pytest.approx(5.0)
     assert r["result"]["base_delta"] == pytest.approx([1.0, 0.0, 0.0], abs=1e-6) and r["result"]["violations"] == []
     assert "tool_rejected" in o[2]["previous_result"]["error"]      # bad inner arguments
-    assert env.base_ticks == 0 and [s.outcome["status"] for s in agent.steps] == ["checked", "rejected", "done"]
+    assert env.base_ticks == 0 and [status(s) for s in agent.steps] == ["ok", "rejected", "done"]
+    assert agent.steps[0]["result"]["base_delta"] == pytest.approx([1.0, 0.0, 0.0], abs=1e-6)   # the answer, in full
     verdict = dry_run(TOOLS["turn"](angle_deg=90, note="n"), STAND_Q.copy(), agent.joints)
     assert verdict["status"] == "ok" and verdict["base_delta"][2] == pytest.approx(90.0, abs=1e-6)
 
@@ -242,7 +248,7 @@ def test_too_fast_or_out_of_reach_motion_is_not_executed():
     err = o[1]["previous_result"]
     assert err["tool"] == "arm_path" and err["error"] == "motion_not_executed" and err["n_violations"] > 0
     assert "velocity" in err["violations"][0] and err["requested_motion"] == fast
-    assert agent.steps[0].outcome["status"] == "rejected" and env.cmd_max[18] == pytest.approx(1.28, abs=0.01)   # the observed pose, held
+    assert status(agent.steps[0]) == "rejected" and env.cmd_max[18] == pytest.approx(1.28, abs=0.01)   # the observed pose, held
     assert env.violations == []
 
 
@@ -297,7 +303,8 @@ def test_decision_timeout_fails_the_run():
     agent = Agent("g", Never(), menu(True), step_timeout=0.05)
     assert run(agent, env, max_time=120) is True
     agent.close()
-    assert agent.result == "failed" and "timeout" in agent.error and agent.steps == []
+    assert agent.result == "failed" and "timeout" in agent.error and agent.end_reason == "step_timeout"
+    assert [status(s) for s in agent.steps] == ["timeout"] and agent.steps[0]["response"]["status"] == "timeout"
 
 
 def test_overload_retries_reobserve_then_quota_fails():
@@ -323,15 +330,17 @@ def test_overload_retries_reobserve_then_quota_fails():
     o = observations(dec)
     assert [x["extra"].get("attempt") for x in o] == [None, 1, 2] and [x["extra"]["env_step"] for x in o] == [0, 0, 0]
     assert dec.turns[0].frame_seq != dec.turns[1].frame_seq       # every retry re-observes
+    assert [s["attempt"] for s in agent.steps] == [0, 1, 2] and [status(s) for s in agent.steps] == ["retry", "retry", "done"]
+    assert "busy" in agent.steps[0]["response"]["error"]          # each retry is a step of its own
     env = check()
     dec = Flaky([Overloaded(429, "busy")] * 3)
     agent = Agent("g", dec, menu(True), retry_delays=(0.01, 0.01))
     assert run(agent, env, max_time=120) is True
-    assert agent.result == "failed" and "retry_limit" in agent.error
+    assert agent.result == "failed" and "retry_limit" in agent.error and agent.end_reason == "model_overloaded"
     env = check()
     agent = Agent("g", Flaky([QuotaExceeded(402, "no credits")]), menu(True))
     assert run(agent, env, max_time=120) is True
-    assert agent.result == "failed" and "quota" in agent.error
+    assert agent.result == "failed" and "quota" in agent.error and agent.end_reason == "quota"
 
 
 def test_budget_and_no_frame():
@@ -347,7 +356,8 @@ def test_budget_and_no_frame():
     assert agent.result == "failed" and agent.error == "no_frame"
     o = observations(dec)                                            # observed once without an image
     assert len(o) == 1 and o[0]["images"] == [] and o[0]["previous_result"]["error"].startswith("frame_unavailable")
-    assert agent.steps[-1].outcome["status"] == "no_frame"
+    assert agent.end_reason == "no_frame" and agent.steps[0]["frame"] is None
+    assert agent.steps[0]["frame_error"].startswith("frame_unavailable")
 
 
 def test_run_files_and_human_verdict(tmp_path):
@@ -362,29 +372,23 @@ def test_run_files_and_human_verdict(tmp_path):
     names = {p.name for p in d.iterdir()}
     # exactly these: a new file in a run is a deliberate change (the env's trace.npz is off here)
     steps = {f"step_{i:04d}.{x}" for i in (1, 2, 3) for x in ("json", "png")}
-    assert names == {"episode.json", "events.jsonl", "protocol.json", "usage.jsonl"} | steps, names
-    events = [json.loads(l) for l in (d / "events.jsonl").read_text().splitlines()]
-    kinds = [e["event"] for e in events]
-    kinds = [k for k in kinds if k != "sdk_call"]                       # the bring-up's GetVolume, GetFsmId
-    assert kinds[:2] == ["run_started", "observation"] and "protocol" not in kinds   # protocol.json holds it
-    assert kinds.count("observation") == 3 and kinds.count("model_decision") == 2 and kinds.count("tool_error") == 1
-    assert {"decision_timing", "tool_timing", "execution_result", "terminal", "return_home", "execution_finished",
-            "human_evaluation", "run_finished"} <= set(kinds)
-    obs = next(e for e in events if e["event"] == "observation")
-    assert json.loads(obs["input_json"])["instruction"] == "g" and obs["images"][0]["path"] == "step_0001.png"
-    res = next(e for e in events if e["event"] == "execution_result")
-    assert "motion_progress" in res["result"]["execution_feedback"]        # the full result is recorded
-    fin = events[-1]
-    assert fin["outcome"] == "success" and fin["outcome_source"] == "human" and fin["model_outcome"] == "success"
-    proto = json.loads((d / "protocol.json").read_text())
-    assert proto["base_instructions"] == agent.context.instructions
-    assert proto["output_schema"] == agent.context.output_schema and proto["menu"] == [s.name for s in menu(True)]
-    status = json.loads((d / "episode.json").read_text())
-    assert status["state"] == "completed" and status["human_outcome"] == "success" and status["usage"]["calls"] == 3
-    usage = [json.loads(l) for l in (d / "usage.jsonl").read_text().splitlines()]
-    assert [u["status"] for u in usage] == ["completed", "failed", "completed"] and usage[0]["model"] == "sequence"
-    meta, steps = load_episode(d, images=False)
-    assert [s.outcome["status"] for s in steps] == ["completed", "rejected", "done"]
+    assert names == {"summary.json", "config.json"} | steps, names
+    summary, steps = load_episode(d, images=False)
+    assert [status(s) for s in steps] == ["completed", "rejected", "done"]
+    assert summary["outcome"] == "success" and summary["outcome_source"] == "human" and summary["model_outcome"] == "success"
+    assert summary["usage"]["calls"] == 3 and summary["usage"]["failed_calls"] == 1
+    assert summary["decisions"] == {"used": 3, "max": 30} and summary["tools_used"] == ["move", "(invalid)", "done"]
+    assert summary["closing"] == {"summary": "s", "hindsight": "h"}
+    first = steps[0]
+    # the query: the observation exactly as sent (the system prompt is config.json's)
+    assert first["query"][-1]["content"] == dec.turns[0].observation
+    assert json.loads(first["query"][-1]["content"])["instruction"] == "g"
+    assert first["response"]["status"] == "completed" and first["response"]["decision"]["name"] == "move"
+    assert first["action"]["tool"] == "move" and first["action"]["dry_run"]["status"] == "ok"
+    assert "motion_progress" in first["result"]["execution_feedback"]        # the full result is recorded
+    assert steps[1]["response"]["status"] == "failed" and steps[1]["response"]["text"] == "junk"
+    sdk = summary["sdk_outside_steps"]                                       # the bring-up's GetVolume, GetFsmId
+    assert all("name" in c and "code" in c for c in sdk)
 
 
 def test_give_up_and_skipped_verdict(tmp_path):
@@ -395,6 +399,6 @@ def test_give_up_and_skipped_verdict(tmp_path):
     assert run(agent, env, max_time=120) is True
     agent.close()
     assert agent.result == "give_up" and rec.dir.name.endswith("_unreviewed")
-    events = [json.loads(l) for l in (rec.dir / "events.jsonl").read_text().splitlines()]
-    assert any(e["event"] == "human_evaluation_skipped" for e in events)
-    assert events[-1]["model_outcome"] == "give_up" and events[-1]["status"] == "give_up"
+    summary = json.loads((rec.dir / "summary.json").read_text())
+    assert summary["model_outcome"] == "give_up" and summary["end_reason"] == "give_up"
+    assert summary["closing"] == {"reason": "r", "hindsight": "h"} and summary["outcome_source"] == "unreviewed"

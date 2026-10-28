@@ -26,7 +26,7 @@ SOURCES = ("guess", "gpt-policy", "repo", "unitree", "measured", "user", "robot"
 
 # Every name the code reads. The file must define exactly these.
 NAMES = (
-    "control_dt_s", "chain_pause_s", "camera_timeout_s", "camera_poll_hz", "view_port", "view_width_px", "view_jpeg_quality", "view_fps", "png_compress_level", "record_step_s",
+    "control_dt_s", "chain_pause_s", "camera_timeout_s", "camera_poll_hz", "view_port", "view_width_px", "view_jpeg_quality", "view_fps", "png_compress_level",
     "base_vx_max", "base_vy_max", "base_vyaw_max", "walk_speed", "side_speed", "turn_rate", "min_segment_s",
     "joint_margin_rad", "command_vel_max", "arm_sdk_kp", "arm_sdk_kd", "max_violations", "joint_moved_rad", "max_printed_violations",
     "move_dx_max_m", "move_dy_max_m", "move_dyaw_max_deg", "walk_forward_min_m", "look_yaw_max_deg", "look_seconds_min", "look_seconds_max", "look_seconds_default",
