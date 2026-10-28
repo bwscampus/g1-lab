@@ -118,6 +118,7 @@ class Runnable:
     def on_interrupt(self, reason: str, detail: str = "") -> None:
         """The runner is about to return the robot to a safe state because of
         ``reason`` (ctrl_c | max_time | error). Record it; do not act."""
+        self.interrupted = reason
 
     def on_returned(self, outcome: str) -> None:
         """The safe return finished with ``outcome`` (completed | failed)."""

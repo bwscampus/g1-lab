@@ -122,17 +122,17 @@ def test_agent_records_the_interruption(tmp_path):
             raise KeyboardInterrupt("test")
 
     dec = Boom()
-    rec = EpisodeWriter(tmp_path, env="sim", instruction="g", model="boom", tools=list(TOOLS), threaded=False)
+    rec = EpisodeWriter(tmp_path, env="sim", instruction="g", model="boom", config={}, task="t", mode="standing",
+                        threaded=False)
     agent = Agent("g", dec, [TOOLS["hold"], TOOLS["done"]], recorder=rec, verdict=lambda: None)
     env = scripted_sim(Scripted())
     assert run(agent, env) is False
     agent.close()
     assert rec.dir.name.endswith("_interrupted")
     import json
-    kinds = [json.loads(l)["event"] for l in (rec.dir / "events.jsonl").read_text().splitlines()]
-    i = kinds.index("interrupted")
-    assert kinds[i:i + 3] == ["interrupted", "return_home_started", "return_home"]
-    assert kinds[-1] == "run_finished" and json.loads((rec.dir / "episode.json").read_text())["state"] == "interrupted"
+    summary = json.loads((rec.dir / "summary.json").read_text())
+    assert summary["end_reason"] == "interrupted" and summary["outcome"] == "interrupted"
+    assert summary["interrupt"]["trigger"] == "ctrl_c" and summary["interrupt"]["safe_return"] == "completed"
     assert env.actions[-1].weight == pytest.approx(0.0) and env.violations == []
 
 
@@ -177,11 +177,16 @@ def test_a_tools_task_runs_records_and_traces(tmp_path, capsys):
     task = load_task(task_dir(tmp_path, tools="hold:0.3"))
     assert run_task(task, sim=True, mode=None, env=sim_env()) == 0
     (run_dir,) = (task["dir"] / "runs").iterdir()
-    assert {p.name for p in run_dir.iterdir()} == {"episode.json", "trace.npz"}      # all a tools run saves
-    episode = json.loads((run_dir / "episode.json").read_text())
-    assert (run_dir / "trace.npz").stat().st_size > 0 and episode["outcome"] == "success" and episode["env"] == "sim"
+    assert {p.name for p in run_dir.iterdir()} == {"summary.json", "config.json", "trace.npz"}   # all a tools run saves
+    summary = json.loads((run_dir / "summary.json").read_text())
+    assert (run_dir / "trace.npz").stat().st_size > 0 and summary["outcome"] == "success" and summary["env"] == "sim"
+    assert summary["end_reason"] == "completed" and summary["mode"] == "standing" and summary["run"] == run_dir.name
+    assert summary["health"]["joint_check"] == "pass" and summary["health"]["violations"] == 0
+    config = json.loads((run_dir / "config.json").read_text())
+    assert config["task"]["tools"] == "hold:0.3" and config["mode"] == "standing" and config["code"]["snapshot"]
+    assert config["limits"]["control_dt_s"] == CONTROL_DT and config["versions"]["python"]
     row = json.loads((task["dir"] / "results.jsonl").read_text())
-    assert row["run"] == run_dir.name and row["outcome_source"] == "checks"
+    assert row["run"] == run_dir.name and row["outcome_source"] == "checks" and row["joint_check"] == "pass"
     assert "result: success" in capsys.readouterr().out
 
 
@@ -211,37 +216,49 @@ def test_an_instruction_task_runs_the_agent(tmp_path, monkeypatch, capsys):
     (run_dir,) = (task["dir"] / "runs").iterdir()
     assert "_sim_" in run_dir.name and run_dir.name.endswith("_unreviewed")
     files = {p.name for p in run_dir.iterdir() if not p.name.startswith("step_")}
-    assert files == {"episode.json", "events.jsonl", "protocol.json", "usage.jsonl", "trace.npz"}, files
-    assert json.loads((run_dir / "episode.json").read_text())["env"] == "sim"
+    assert files == {"summary.json", "config.json", "trace.npz"}, files
+    summary = json.loads((run_dir / "summary.json").read_text())
+    assert summary["env"] == "sim" and summary["end_reason"] == "done" and summary["health"]["joint_check"] == "pass"
+    config = json.loads((run_dir / "config.json").read_text())
+    assert config["env"] == "sim" and config["task"]["safety_notes"] == ["a wall behind"]
+    assert config["system_prompt"] == dec.context.instructions and config["menu"] == [t.name for t in dec.context.menu]
+    assert config["output_schema"] == dec.context.output_schema and "a wall behind" in config["system_prompt"]
+    import numpy as np
+    trace = np.load(run_dir / "trace.npz")                          # a step's ticks are rows of the trace
+    step = json.loads((run_dir / "step_0001.json").read_text())
+    assert step["tick_end"] < len(trace["t"]) and np.allclose(trace["q"][step["tick_start"]][:12],
+                                                               json.loads(step["query"][-1]["content"])["state"]["joint_pos"][:12], atol=1e-3)
     row = json.loads((task["dir"] / "results.jsonl").read_text())
-    assert row["run"] == run_dir.name and row["env"] == "sim"
+    assert row["run"] == run_dir.name and row["env"] == "sim" and row["end_reason"] == "done"
     assert "a wall behind" in dec.context.instructions
 
 
 def test_agent_records_sdk_calls_and_verbose_health(tmp_path, capsys):
-    """Every SDK call an env makes lands in events.jsonl; -v prints the health line."""
+    """Every SDK call an env makes lands in the record: in the step it happened in, or (bring-up)
+    in summary.json; -v prints the health line."""
     import json
     from g1.tools import TOOLS, menu
     dec = Sequence([("hold", {"seconds": 0.3}), ("done", {"summary": "s", "hindsight": "h"})])
-    rec = EpisodeWriter(tmp_path, env="sim", instruction="g", model="sequence", tools=list(TOOLS), threaded=False)
+    rec = EpisodeWriter(tmp_path, env="sim", instruction="g", model="sequence", config={}, task="t", mode="standing",
+                        threaded=False)
     agent = Agent("g", dec, menu(True), recorder=rec, verdict=lambda: None)
     env = scripted_sim(Scripted())
     env.verbose = True
     original = env.step
 
     def step(action):                                                   # an env that talks to an SDK
-        if len(env.actions) == 5:
+        if agent._state == "act" and not any(e["name"] == "StopMove" for e in env.sdk_log):
             env.sdk_log.append({"at_s": 0.0, "client": "LocoClient", "name": "StopMove", "args": [], "kwargs": {},
                                 "code": 3104, "elapsed_s": 0.5})
         return original(action)
     env.step = step
     assert run(agent, env, max_time=60) is True
     agent.close()
-    events = [json.loads(l) for l in (rec.dir / "events.jsonl").read_text().splitlines()]
-    calls = [e for e in events if e["event"] == "sdk_call"]
-    assert [(c["client"], c["name"]) for c in calls[:2]] == [("AudioClient", "GetVolume"), ("LocoClient", "GetFsmId")]
-    calls = calls[2:]                                                    # after the bring-up: the injected failure
-    assert len(calls) == 1 and calls[0]["name"] == "StopMove" and calls[0]["code"] == 3104 and "step" in calls[0]
+    summary = json.loads((rec.dir / "summary.json").read_text())
+    bring_up = summary["sdk_outside_steps"]
+    assert [(c["client"], c["name"]) for c in bring_up[:2]] == [("AudioClient", "GetVolume"), ("LocoClient", "GetFsmId")]
+    calls = [c for s in agent.steps for c in s["sdk_calls"]]          # after the bring-up: the injected failure
+    assert len(calls) == 1 and calls[0]["name"] == "StopMove" and calls[0]["code"] == 3104
     out = capsys.readouterr().out
     assert "t=   1.0  lowstate " in out and "ticks 50 " in out      # the robot's health line, on the twin's clock
 
@@ -283,8 +300,9 @@ def test_a_robot_run_asks_to_save_then_for_the_verdict(tmp_path, monkeypatch, ca
     assert run_task(task, sim=False, mode="standing", env=sim_env(mode="standing")) == 0
     (run_dir,) = (task["dir"] / "runs").iterdir()
     assert asked[1:] == ["save", "verdict"] and run_dir.name.endswith("_robot_hold-0-3_failed")
-    status = json.loads((run_dir / "episode.json").read_text())
+    status = json.loads((run_dir / "summary.json").read_text())
     assert status["outcome"] == "failed" and status["outcome_source"] == "human"     # the human, not the checks
+    assert status["run"] == run_dir.name
     assert json.loads((task["dir"] / "results.jsonl").read_text())["outcome_source"] == "human"
 
 
@@ -292,13 +310,11 @@ def test_label_run_marks_an_agent_record(tmp_path):
     from g1.agent.task import label_run
     run = tmp_path / "20261019-120000_robot_find-it_unreviewed"
     run.mkdir()
-    (run / "episode.json").write_text(json.dumps({"outcome": "unreviewed", "outcome_source": "unreviewed"}))
-    (run / "events.jsonl").write_text("")
+    (run / "summary.json").write_text(json.dumps({"outcome": "unreviewed", "outcome_source": "unreviewed"}))
     out = label_run(run, "success")
     assert out.name == "20261019-120000_robot_find-it_success" and not run.exists()
-    episode = json.loads((out / "episode.json").read_text())
-    assert episode["human_outcome"] == "success" and episode["outcome"] == "success"
-    assert json.loads((out / "events.jsonl").read_text())["event"] == "human_evaluation"
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["outcome"] == "success" and summary["outcome_source"] == "human" and summary["run"] == out.name
 
 
 def test_g1_limits_prints_every_limit_as_one_table(capsys):

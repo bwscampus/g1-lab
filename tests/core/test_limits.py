@@ -25,11 +25,11 @@ def test_code_reads_its_numbers_from_the_file():
     from g1 import cli, vlm
     from g1.agent import agent, episode
     from g1.envs.monitor import JointMonitor
-    from g1.tools import STEP_MAX, move
+    from g1.tools import move
     assert CONTROL_DT == limits.get("control_dt_s")
     assert list(BASE_VEL_MAX) == [limits.get("base_vx_max"), limits.get("base_vy_max"), limits.get("base_vyaw_max")]
-    assert (STEP_MAX, move.WALK_SPEED, move.SIDE_SPEED, move.TURN_RATE) == tuple(
-        limits.get(n) for n in ("record_step_s", "walk_speed", "side_speed", "turn_rate"))
+    assert (move.WALK_SPEED, move.SIDE_SPEED, move.TURN_RATE) == tuple(
+        limits.get(n) for n in ("walk_speed", "side_speed", "turn_rate"))
     assert (cli.TO_STAND, cli.RAMP, cli.RELEASED) == tuple(
         limits.get(n) for n in ("return_to_stand_s", "return_ramp_s", "return_released_s"))
     assert vlm.MAX_TOKENS == limits.get("max_tokens") and vlm.IMAGE_WIDTH == limits.get("image_width_px")

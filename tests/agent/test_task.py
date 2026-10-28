@@ -69,19 +69,48 @@ def test_the_shipped_tasks_load():
     assert t["instruction"] and t["objects"] == ["chair@1.5,0"]
 
 
-def test_record_result_from_an_agent_status_or_the_checks(tmp_path):
+def test_record_result_from_a_summary(tmp_path):
     t = load_task(task_dir(tmp_path, instruction="find the mug"))
     run_dir = t["dir"] / "runs" / "r1"
     run_dir.mkdir(parents=True)
-    (run_dir / "episode.json").write_text(json.dumps({"outcome": "success", "task_status": "completed", "outcome_source": "human",
-                                                     "decisions": 4, "steps": 6, "model": "m", "env": "sim",
-                                                     "usage": {"tokens": {"prompt_tokens": 100}}, "elapsed_s": 30.0, "ended": "t"}))
+    (run_dir / "summary.json").write_text(json.dumps({
+        "outcome": "success", "outcome_source": "human", "model_outcome": "success", "end_reason": "done",
+        "decisions": {"used": 4, "max": 12}, "model": "m", "env": "sim", "mode": "gantry",
+        "usage": {"tokens": {"prompt_tokens": 100}}, "duration_s": 30.0, "ended": "t",
+        "health": {"joint_check": "pass", "violations": 0, "overruns": 3, "fell": False}}))
     row = record_result(t, run_dir)
     assert row["outcome"] == "success" and row["decisions"] == 4 and row["tokens"] == {"prompt_tokens": 100}
-    chain = t["dir"] / "runs" / "r2"
-    chain.mkdir()
-    row = record_result(t, chain, ok=False, env_name="sim")                    # a tools run: the checks decide
-    assert row["outcome"] == "failed" and row["outcome_source"] == "checks"
-    lines = (t["dir"] / "results.jsonl").read_text().splitlines()
-    assert [json.loads(l)["run"] for l in lines] == ["r1", "r2"]
+    assert row["end_reason"] == "done" and row["mode"] == "gantry" and row["overruns"] == 3 and row["fell"] is False
+    assert [json.loads(l)["run"] for l in (t["dir"] / "results.jsonl").read_text().splitlines()] == ["r1"]
     assert record_result(t, t["dir"] / "runs" / "missing") is None
+
+
+def test_code_snapshot_restores_the_working_tree_untouched(tmp_path, no_code_snapshot):
+    """A dirty tree becomes a commit kept by a ref; the branch, index and files stay as they were."""
+    import subprocess
+    code_snapshot = no_code_snapshot                     # the real one (conftest stubs it elsewhere)
+
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=tmp_path, capture_output=True, text=True, check=True).stdout.strip()
+    git("init", "-q")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / ".gitignore").write_text("runs/\n")
+    (tmp_path / "a.py").write_text("one\n")
+    git("add", "-A")
+    git("commit", "-qm", "first")
+    head = git("rev-parse", "HEAD")
+    clean = code_snapshot(tmp_path)
+    assert clean == {"head": head, "snapshot": head, "ref": None}       # clean: HEAD is the code
+    (tmp_path / "a.py").write_text("two\n")                          # a tracked edit
+    (tmp_path / "new.py").write_text("new\n")                        # a new file
+    (tmp_path / "runs").mkdir()
+    (tmp_path / "runs" / "x.json").write_text("{}")                   # ignored: never in the snapshot
+    status = git("status", "--porcelain")
+    snap = code_snapshot(tmp_path)
+    assert snap["head"] == head and snap["snapshot"] != head and snap["ref"] == f"refs/g1-runs/{snap['snapshot']}"
+    assert git("show", f"{snap['snapshot']}:a.py") == "two" and git("show", f"{snap['snapshot']}:new.py") == "new"
+    assert "runs/x.json" not in git("ls-tree", "-r", "--name-only", snap["snapshot"])
+    assert git("rev-parse", snap["ref"]) == snap["snapshot"] and git("rev-parse", f"{snap['snapshot']}^") == head
+    assert git("rev-parse", "HEAD") == head and git("status", "--porcelain") == status   # nothing else moved
+    assert code_snapshot(tmp_path / "runs" / "nope")["snapshot"] is None                 # no repo: recorded, not fatal

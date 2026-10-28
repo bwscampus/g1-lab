@@ -59,8 +59,8 @@ takeover -> settle -> snapshot -> think -> act -> settle -> snapshot -> ... -> h
 * **act**: the decision is parsed (whole JSON object, jsonschema against the tool's
   parameters, numbers clamped with a note), the tool is built, **dry-run through the joint
   monitor from the commanded pose** (a limit, speed or base violation comes back as
-  `motion_not_executed` and moves nothing), then played to its end. A record is closed every
-  3 s while it runs (`STEP_MAX`), so a long tool is one decision and several records.
+  `motion_not_executed` and moves nothing), then played to its end. A long tool is still one
+  query and one step file; what the joints did tick by tick is `trace.npz`.
 * **feedback**: `previous_result` on the next observation — per-joint residual, target vs
   commanded base displacement, the settle report — or the error (`invalid_selection`,
   `tool_rejected`, `motion_not_executed` with the violations). Errors cost a decision; there
@@ -155,15 +155,34 @@ deliberately no second-Ctrl-C escape.
 ## The record
 
 `tasks/<name>/runs/<ts>_<env>_<instruction>_<outcome>/` (`<env>` is `sim` or `robot`, from `--sim`),
-and nothing else: `episode.json` (the run's one meta file: instruction, env, model, verdict, state,
-error, usage totals), `step_NNNN.json` + `.png` (the frame losslessly), `events.jsonl` (append-only,
-every observation with the verbatim `input_json`, decision, timing, result, error, retry, terminal,
-verdict: the conversation is in it), `protocol.json` (the system prompt and schemas), `usage.jsonl`
-(one line per model call), `replies.jsonl` (everything the server sent back per call, reasoning
-included) and `trace.npz` (every tick, 50 Hz). The human verdict wins the outcome; a model conclusion
-without one is `unreviewed`. A tools run keeps `episode.json` (its checks decide) and `trace.npz`.
-Each run adds a line to the task's `results.jsonl`. A new file is a deliberate change: the tests
-assert the exact set.
+four kinds of file and nothing else (`g1/agent/episode.py`):
+
+* `summary.json`: which run and what happened, on one screen: task, instruction, env, mode, model,
+  times; outcome, its source, the model's own outcome, `end_reason` (done, give_up,
+  budget_exhausted, step_timeout, quota, model_overloaded, model_error, no_frame, interrupted,
+  max_time, error; a tools run: completed, checks_failed), error; decisions used of max, the tool
+  sequence, the model's closing words; usage totals; health (the joint check and violations, tick
+  overruns, SDK failures, on the twin whether it fell, its true pose and torque-limit time); an
+  interruption and its safe return; SDK calls made outside any step (bring-up).
+* `config.json`: how the run was set up: the task as loaded, env, mode, camera, the model settings,
+  the tools on offer (name, prompt, parameter schema), the system prompt and output schema, every
+  limit, versions, and the code: `{head, snapshot, ref}`. A dirty tree is saved as a commit on HEAD
+  kept by `refs/g1-runs/<sha>` (`task.code_snapshot`, a temporary index: nothing else moves), so
+  `git checkout <snapshot>` gives the code that ran. Never a `.env` value.
+* `step_NNNN.json` + `.png`: one per query to the model (a retry is its own step). The frame sent
+  (lossless; the model got it resized to JPEG, size and quality recorded), the query exactly as sent
+  without the system prompt (history turns included, images named by their step file), the response
+  (status, timing, usage, every chunk the server streamed, reasoning included, refusals such as 429;
+  the parsed decision or the error), the action (tool, arguments, dry-run verdict, start and end
+  time, joints and commands at both ends, the commanded base), its result in full after the settle,
+  and the SDK calls it made. `tick_start`/`tick_end` are rows of `trace.npz` (one per control tick;
+  `t_start`/`t_end` the same instants in run seconds), so a frame lines up with the measured joints.
+* `trace.npz`: every tick at 50 Hz, commanded and measured (on the twin, its true base pose too).
+
+The human verdict wins the outcome; a model conclusion without one is `unreviewed`. A tools run
+has `summary.json` (its checks decide), `config.json` and `trace.npz`. Each run adds a line to the
+task's `results.jsonl` (the summary's comparable fields). A new file is a deliberate change: the
+tests assert the exact set.
 
 ## Conventions
 

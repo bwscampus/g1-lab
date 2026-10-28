@@ -7,13 +7,12 @@
     feed back what happened (residuals, base error, the settle report) as
               ``previous_result`` in the next observation; a rejected
               selection is fed back the same way and costs a decision
-    record    every observation, decision, timing, result and error
+    record    one step file per query to the model: the frame, the query as sent,
+              the response, the action and its measured result (``episode.py``)
 
-A tool may be longer than one step: while it runs, a record is closed every
-``STEP_MAX`` seconds, capturing the frame and the joint angles at that moment
-and carrying the same decision with its chunk number. The motion is not
-interrupted — one model call covers the whole tool — so a 12 s ``sixseven``
-becomes four recorded steps and the camera is still read every 3 s.
+A step is one query, so a retry after an overload is a step of its own and a
+12 s ``sixseven`` is one step; what the joints did tick by tick is trace.npz,
+rows ``tick_start`` to ``tick_end`` (one row per control tick, ``t / dt``).
 
 States: takeover -> settle -> snapshot -> think -> act -> settle -> ... ->
 handback, plus ``wait`` for the backoff before a model retry (each retry
@@ -35,12 +34,12 @@ import numpy as np
 
 from g1.agent.decider import (AgentContext, AgentTurn, Decider, Decision, ProtocolError, VLMDecider, build_context,
                               observation)
-from g1.agent.episode import EpisodeWriter, StepRecord
+from g1.agent.episode import EpisodeWriter
 from g1.core import limits
 from g1.core.action import EPS, Action, Obs, Runnable
 from g1.core.images import sent_size
 from g1.core.config import CONTROL_DT, LOCO_FSM, UPPER_BODY, joint_index
-from g1.tools import STEP_MAX, Tool, menu, prefixed
+from g1.tools import Tool, menu, prefixed
 from g1.tools.control import Handback, Takeover, dry_run
 from g1.vlm import IMAGE_WIDTH, Overloaded, QuotaExceeded
 
@@ -96,7 +95,8 @@ class Agent(Runnable):
                                                    safety_notes=self.safety_notes)
         self.result: Optional[str] = None         # runtime status: completed | give_up | budget_exhausted | failed
         self.error: Optional[str] = None
-        self.steps: list[StepRecord] = []
+        self.end_reason: Optional[str] = None     # why it ended, from a fixed set (summary.json)
+        self.steps: list[dict] = []               # the step records, as written
         self._closed = False
         self._finalized = False
 
@@ -106,8 +106,12 @@ class Agent(Runnable):
         self._prev_q = obs.q.copy()
         self.result = None
         self.error = None
+        self.end_reason = None
         self.steps = []
-        self._step = 1                            # record counter (3 s chunks, rejections, terminals)
+        self._rec: Optional[dict] = None          # the step being recorded (the latest query)
+        self._calls: list[dict] = []
+        self._interrupt: Optional[dict] = None
+        self._t = 0.0
         self._env_step = 0                        # decision index: their env_step
         self._failures = 0
         self._attempt = 0
@@ -117,11 +121,7 @@ class Agent(Runnable):
         self._previous: Optional[dict] = None     # the next observation's previous_result
         self._pending: Optional[dict] = None      # a finished tool awaiting its settle report
         self._base_cmd = np.zeros(3)              # dead-reckoned (x, y, yaw) from commanded velocity
-        self._snap: Optional[dict] = None
         self._seq0: Optional[int] = None
-        self._chunk = 1
-        self._chunks = 1
-        self._chunk_t0 = 0.0
         self._sub: Optional[Tool] = None
         self._state = ""
         self._t0 = 0.0
@@ -130,17 +130,21 @@ class Agent(Runnable):
         self._wait_until = 0.0
         self._seated = False                      # a sit finished: nothing may walk or call onboard again
         self.decider.start(self.context)
-        if self.recorder is not None:
-            self.recorder.protocol(self.context.record())
         self._enter_sub("takeover", 0.0, Takeover())
 
     def on_interrupt(self, reason: str, detail: str = "") -> None:
+        """``reason``: ctrl_c | max_time | error (``cli._return_to_safety``)."""
         self.error = self.error or (detail or reason)
-        self._event("interrupted", {"trigger": reason, "step": self._env_step, "detail": detail})
-        self._event("return_home_started", {"trigger": reason})
+        self.end_reason = {"ctrl_c": "interrupted"}.get(reason, reason)
+        self._interrupt = {"trigger": reason, "detail": detail, "decision": self._env_step, "safe_return": None}
+        if self.recorder is not None:
+            self.recorder.update(interrupt=self._interrupt, end_reason=self.end_reason)
 
     def on_returned(self, outcome: str) -> None:
-        self._event("return_home", {"trigger": "interrupt", "status": outcome})
+        if self._interrupt is not None:
+            self._interrupt = {**self._interrupt, "safe_return": outcome}
+            if self.recorder is not None:
+                self.recorder.update(interrupt=self._interrupt)
 
     def close(self) -> None:
         """Stop the model, ask the human, settle the record. Also the Ctrl-C path."""
@@ -149,20 +153,17 @@ class Agent(Runnable):
         self._closed = True
         self.decider.stop()
         status = self.result or "interrupted"
-        self._event("execution_finished", {"status": status, "error": self.error})
         human = None
         if self.recorder is not None and self.verdict is not None:
             try:
                 human = self.verdict()
             except (EOFError, KeyboardInterrupt):
                 human = None
-            if human is None:
-                self._event("human_evaluation_skipped", {"reason": "no_terminal_or_cancelled"})
         if self.recorder is not None:
-            if self.recorder.meta.get("result") is None:
-                self.recorder.finish(status, steps=len(self.steps))
-            final = self.recorder.close(status, human=human, error=self.error)
-            calls = self.recorder.usage_calls
+            self._record_sdk()
+            final = self.recorder.close(status, human=human, error=self.error,
+                                        end_reason=self.end_reason or "interrupted")
+            calls = self._calls
             if calls:
                 secs = sorted(float(c.get("elapsed_s", 0.0)) for c in calls)
                 reasoning = [((c.get("usage") or {}).get("completion_tokens_details") or {}).get("reasoning_tokens") or 0
@@ -203,17 +204,21 @@ class Agent(Runnable):
         self._sdk_seen = 0
 
     def _record_sdk(self) -> None:
+        """New SDK calls go to the step they happened in (its action and settle); before the
+        first query and during the hand-back, to summary.json."""
         env = getattr(self, "_env", None)
         log = getattr(env, "sdk_log", None)
-        if not log:
+        if not log or self.recorder is None:
             return
-        for entry in log[self._sdk_seen:]:
-            self._event("sdk_call", {"step": self._env_step, **entry})
+        new = [dict(e) for e in log[self._sdk_seen:]]
         self._sdk_seen = len(log)
-
-    def _event(self, kind: str, payload: Optional[dict] = None) -> None:
-        if self.recorder is not None:
-            self.recorder.event(kind, payload)
+        if not new:
+            return
+        if self._rec is not None and self._state not in ("takeover", "handback"):
+            self._rec["sdk_calls"].extend(new)
+            self._write()
+        else:
+            self.recorder.update(sdk_outside_steps=self.recorder.summary["sdk_outside_steps"] + new)
 
     def _pose_deg(self, xyyaw) -> list[float]:
         x, y, yaw = xyyaw
@@ -227,70 +232,59 @@ class Agent(Runnable):
         self._settle_vel = math.inf
         return self._hold()
 
-    def _to_handback(self, t: float, result: str, error: Optional[str] = None) -> Action:
+    def _to_handback(self, t: float, result: str, error: Optional[str] = None,
+                     reason: Optional[str] = None) -> Action:
         self.result = result
         self.error = error
+        self.end_reason = reason or {"completed": "done"}.get(result, result)
+        if self._rec is not None and self._rec["t_end"] is None:
+            self._finish(t)                      # a step that ends the run (budget out after its action)
         self._say(f"result: {result}" + (f" ({error})" if error else ""))
         if self.recorder is not None:
-            self.recorder.finish(result, steps=len(self.steps), decisions=self._env_step)
-        self._event("return_home", {"step": self._env_step, "trigger": result})
+            self.recorder.update(end_reason=self.end_reason, error=error)
         self._enter_sub("handback", t, Handback())
         return self._hold()
 
-    def _fail(self, t: float, error: str) -> Action:
-        self._event("run_error", {"step": self._env_step, "error": error})
-        return self._to_handback(t, "failed", error)
+    def _fail(self, t: float, error: str, reason: str) -> Action:
+        """``reason``: no_frame | step_timeout | quota | model_overloaded | model_error."""
+        return self._to_handback(t, "failed", error, reason)
 
     # -- the record ---------------------------------------------------------------------
-    def _snapshot(self, t: float, obs: Obs, frame=None, think_wall=None) -> dict:
-        f = frame if frame is not None else obs.frame
-        return {"t": t, "wall": time.time(),
-                "clock": None if f is None else f.stamp + (obs.frame_age if f is obs.frame else 0.0),
-                "q": obs.q.copy(), "cmd": self._cmd.copy(),
-                "frame_seq": None if f is None else f.seq,
-                "frame_stamp": None if f is None else f.stamp,
-                "frame_age": None if f is None else obs.frame_age,
-                "image": None if f is None else f.image,
-                "base_cmd": [float(v) for v in self._base_cmd],
-                "base_env": None if obs.base_pose is None else list(obs.base_pose),
-                "think_wall": think_wall}
+    def _write(self, image=None) -> None:
+        if self.recorder is not None and self._rec is not None:
+            self.recorder.step(self._rec, image)
 
-    def _record(self, status: str, t: float, obs: Obs, decision: Optional[dict],
-                tool: Optional[Tool], duration: float) -> None:
-        snap = self._snap or {}
-        env_pose = obs.base_pose
-        rec = StepRecord(
-            step=self._step,
-            t={"run_start": snap.get("t"), "run_end": t, "wall_start": snap.get("wall"), "wall_end": time.time(),
-               "clock_start": snap.get("clock"), "clock_end": None if obs.frame is None else obs.frame.stamp + obs.frame_age,
-               "think_wall": snap.get("think_wall")},
-            q_start=[float(v) for v in snap.get("q", obs.q)], q_end=[float(v) for v in obs.q],
-            cmd_start=[float(v) for v in snap.get("cmd", self._cmd)], cmd_end=[float(v) for v in self._cmd],
-            frame={"seq": snap.get("frame_seq"), "stamp": snap.get("frame_stamp"), "age": snap.get("frame_age"),
-                   "image": None, "shape": None if snap.get("image") is None else list(snap["image"].shape)},
-            base_pose={"cmd_start": snap.get("base_cmd"), "cmd_end": [float(v) for v in self._base_cmd],
-                       "env_start": snap.get("base_env"), "env_end": None if env_pose is None else list(env_pose)},
-            decision=decision,
-            tool=None if tool is None else {"name": tool.name, "args": dict(tool.args),
-                                            "duration": tool.duration, "chunk": self._chunk,
-                                            "chunks": self._chunks, "needs_base": tool.needs_base},
-            outcome={"status": status, "duration": duration},
-        )
-        self.steps.append(rec)
+    def _open(self, t: float, obs: Obs, frame, sent: Optional[tuple]) -> None:
+        """A new step: one query, numbered as its request (step_NNNN is request NNNN)."""
+        self._rec = {
+            "step": self._request_id, "decision": self._env_step, "attempt": self._attempt,
+            "t_start": t, "t_end": None, "tick_start": self._tick(t), "tick_end": None,
+            "wall_start": time.time(), "wall_end": None,
+            "frame": None if frame is None else {
+                "image": f"step_{self._request_id:04d}.png", "seq": frame.seq, "stamp": frame.stamp,
+                "age_s": float(obs.frame_age), "shape": list(frame.image.shape),
+                "sent": {"width": sent[0], "height": sent[1], "jpeg_quality": limits.get("jpeg_quality")}},
+            "frame_error": None if frame is not None else (self._previous or {}).get("error"),
+            "query": None, "response": None, "action": None, "result": None, "sdk_calls": []}
+        self.steps.append(self._rec)
+        self._write(None if frame is None else frame.image)
+
+    def _finish(self, t: float, result: Optional[dict] = None) -> None:
+        """The step's end, with its result: what the host reports about it, in full."""
+        if result is not None:
+            self._rec["result"] = result
+        self._rec.update(t_end=t, tick_end=self._tick(t), wall_end=time.time())
+        self._write()
+
+    def _tick(self, t: float) -> int:
+        """Run time as a tick: the row of trace.npz written for it (one row per control tick)."""
+        return int(round(t / self.dt))
+
+    def _decision_used(self, tool_name: Optional[str]) -> None:
         if self.recorder is not None:
-            self.recorder.write_step(rec, snap.get("image"))
-
-    def _decision_json(self, d: Decision) -> dict:
-        return {**d.to_json(), "model": getattr(self.decider, "model", ""), "attempt": self._attempt,
-                "env_step": self._env_step}
-
-    def _close_chunk(self, status: str, t: float, obs: Obs) -> None:
-        self._record(status, t, obs, self._decision_json(self._decision), self._tool, t - self._chunk_t0)
-        self._step += 1
-        if status == "running":
-            self._chunk += 1
-            self._chunk_t0 = t
-            self._snap = self._snapshot(t, obs)     # the next chunk starts here
+            s = self.recorder.summary
+            self.recorder.update(decisions={**s["decisions"], "used": self._env_step + 1},
+                                 tools_used=s["tools_used"] + [tool_name or "(invalid)"])
 
     # -- the observation -----------------------------------------------------------------
     def _state_payload(self, obs: Obs) -> dict:
@@ -300,14 +294,10 @@ class Agent(Runnable):
                 "waist_yaw_deg": math.degrees(float(self._cmd[WAIST_YAW])),
                 "base_pose_cmd": self._pose_deg(self._base_cmd)}
 
-    def _record_state(self, obs: Obs) -> dict:
-        return {**self._state_payload(obs),
-                "base_pose_env": None if obs.base_pose is None else self._pose_deg(obs.base_pose)}
-
     def _observe(self, t: float, obs: Obs, frame) -> None:
         """Build the turn from this snapshot and ask the decider."""
         t0 = time.perf_counter()
-        images_meta, images = [], {}
+        images_meta, images, w, h = [], {}, 0, 0
         self._view = {"frame_size": None, "q": obs.q.copy(), "imu_quat": obs.imu_quat}   # as measured now
         if frame is not None:
             # the size the model sees: pixels it names (locate_point) are in this image
@@ -326,9 +316,7 @@ class Agent(Runnable):
                                frame_seq=None if frame is None else frame.seq,
                                frame_stamp=None if frame is None else frame.stamp)
         self._observe_prep = time.perf_counter() - t0
-        self._event("observation", {"step": self._env_step, "input_json": text, "state": self._record_state(obs),
-                                    "images": [{**m, "path": f"step_{self._step:04d}.png"} for m in images_meta],
-                                    **({"attempt": self._attempt} if self._attempt else {})})
+        self._open(t, obs, frame, None if frame is None else (int(w), int(h)))
         self._wall0 = time.monotonic()
         if not self.decider.request(self._turn):
             self._say("decider busy; will retry")
@@ -361,7 +349,7 @@ class Agent(Runnable):
                                   "remaining_delta": [a - b for a, b in zip(target, meas)]},
               "settle": settle}
         result = {"status": "completed", "duration_s": p["duration"], "execution_feedback": fb}
-        self._event("execution_result", {"step": p["env_step"], "name": p["name"], "result": result})
+        self._finish(self._t, result)
         # their compact model view: no motion_progress, no settle bookkeeping once settled, and only what
         # the robot can measure: the base as commanded, never the simulator's truth
         view = {k: v for k, v in fb.items()
@@ -378,12 +366,9 @@ class Agent(Runnable):
         """A selection that ran nothing: feedback for the next turn, one decision spent."""
         self._say(f"decision {self._env_step}: {error}")
         err = {"tool": name, "error": error, **details}
-        self._event("tool_error", {"step": self._env_step, **err})
         self._previous = err
-        self._record("rejected", t, obs, {"name": name, "arguments": arguments or {}, "raw": raw, "error": error,
-                                          "model": getattr(self.decider, "model", ""), "env_step": self._env_step},
-                     None, 0.0)
-        self._step += 1
+        self._finish(t, {"status": "rejected", **err})
+        self._decision_used(name)
         return self._spent(t, obs)
 
     def _spent(self, t: float, obs: Obs) -> Action:
@@ -392,14 +377,13 @@ class Agent(Runnable):
         self._attempt = 0
         self._deadline = None
         if self._env_step >= self.max_decisions:
-            self._event("budget_exhausted", {"decisions_used": self._env_step, "max_decisions": self.max_decisions})
             return self._to_handback(t, "budget_exhausted")
         return self._to_settle(t, obs)
 
     # -- the loop ----------------------------------------------------------------------
     def step(self, t: float, obs: Obs) -> Optional[Action]:
-        if self.recorder is not None:
-            self._record_sdk()
+        self._t = t
+        self._record_sdk()
         st = self._state
         if st in ("takeover", "handback"):
             a = self._sub.step(t - self._t0, obs)
@@ -431,7 +415,6 @@ class Agent(Runnable):
             f = obs.frame
             if f is not None and f.seq != self._seq0 and obs.frame_age <= self.frame_max_age:
                 self._failures = 0
-                self._snap = self._snapshot(t, obs, frame=f)
                 self._observe(t, obs, f)
                 self._enter("think", t)
             elif t - self._t0 > self.frame_timeout:
@@ -440,13 +423,9 @@ class Agent(Runnable):
                 self._say(f"no fresh camera frame ({self._failures}/{self.max_failures})")
                 err = {"tool": "observe", "error": f"frame_unavailable: no fresh frame within {self.frame_timeout}s",
                        "recovering": True}
-                self._event("state_observation_error", {"step": self._env_step, **err})
                 if self._failures >= self.max_failures:
-                    self._record("no_frame", t, obs, None, None, t - self._t0)
-                    self._step += 1
-                    return self._fail(t, "no_frame")
+                    return self._fail(t, "no_frame", "no_frame")
                 self._previous = err
-                self._snap = self._snapshot(t, obs, frame=None)
                 self._observe(t, obs, None)
                 self._enter("think", t)
             return self._hold()
@@ -454,15 +433,15 @@ class Agent(Runnable):
         if st == "think":
             d = self.decider.latest()
             if d is not None and d.request_id == self._request_id:
-                self._snap["think_wall"] = time.monotonic() - self._wall0
-                self._timing("completed")
+                self._response("completed")
                 return self._decide(t, obs, d)
             if not self.decider.pending:
-                self._timing("failed")
+                self._response("failed")
                 return self._model_error(t, obs, self.decider.last_error)
             if time.monotonic() - self._wall0 > self.step_timeout:
-                self._timing("timeout")
-                return self._fail(t, f"model timeout after {self.step_timeout}s")
+                self._response("timeout")
+                self._finish(t, {"status": "timeout"})
+                return self._fail(t, f"model timeout after {self.step_timeout}s", "step_timeout")
             return self._hold()
 
         if st == "wait":
@@ -474,68 +453,74 @@ class Agent(Runnable):
         if st == "act":
             a = self._sub.step(t - self._t0, obs)
             if a is not None:
-                if t - self._chunk_t0 >= STEP_MAX - EPS:
-                    # close this chunk and start the next; the motion itself is unbroken
-                    self._close_chunk("running", t, obs)
                 return self._emit(a)
-            self._close_chunk("completed", t, obs)
             self._seated = self._seated or self._tool.command in LOCO_FSM
-            self._event("tool_timing", {"step": self._env_step, "name": self._tool.name,
-                                        "execute_s": t - self._act_t0, "status": "completed"})
+            self._rec["action"].update(t_end=t, tick_end=self._tick(t), duration_s=t - self._act_t0,
+                                       q_end=[float(v) for v in obs.q], cmd_end=[float(v) for v in self._cmd],
+                                       base_cmd_end=[float(v) for v in self._base_cmd])
+            self._write()
+            self._decision_used(self._tool.name)
             self._pending = {"name": self._tool.name, "env_step": self._env_step, "duration": t - self._act_t0,
                              "base_cmd_start": self._act_base_cmd, "base_env_start": self._act_base_env}
             return self._spent(t, obs)
 
         raise RuntimeError(f"unknown state {st!r}")
 
-    def _timing(self, status: str) -> None:
-        self._event("decision_timing", {"step": self._env_step, "observation_prepare_s": self._observe_prep,
-                                        "agent_decide_s": time.monotonic() - self._wall0, "status": status,
-                                        **({"attempt": self._attempt} if self._attempt else {})})
+    def _response(self, status: str) -> None:
+        """The query as sent and everything that came back for it, into the step."""
         call = self.decider.last_call
         # on a timeout the request is still out and last_call is the one before it
-        if self.recorder is not None and call is not None and call.get("request_id") == self._request_id:
-            self.recorder.usage(call)
+        call = dict(call) if call is not None and call.get("request_id") == self._request_id else None
+        self._rec["query"] = self.decider.queries.pop(self._request_id, None)
+        self._rec["response"] = {"status": status, "observation_prepare_s": self._observe_prep,
+                                 "decide_s": time.monotonic() - self._wall0,
+                                 **({k: v for k, v in call.items() if k != "request_id"} if call else {})}
+        if call is not None:
+            self._calls.append(call)
+            if self.recorder is not None:
+                self.recorder.model_call(call)
+        self._write()
 
     def _model_error(self, t: float, obs: Obs, e: Optional[BaseException]) -> Action:
+        self._rec["response"]["error"] = f"{type(e).__name__}: {e}" if e is not None else "no reply"
         if isinstance(e, ProtocolError):
+            self._rec["response"]["text"] = e.raw
             return self._reject(t, obs, None, f"invalid_selection: {e}", raw=e.raw)
         if isinstance(e, Overloaded):
             if self._deadline is None:
                 self._deadline = time.monotonic() + self.recovery_timeout
             if self._attempt >= len(self.retry_delays) or time.monotonic() >= self._deadline:
                 reason = "retry_limit" if self._attempt >= len(self.retry_delays) else "recovery_deadline"
-                self._event("model_retry_exhausted", {"step": self._env_step, "retries": self._attempt,
-                                                      "reason": reason, "error": str(e)})
-                return self._fail(t, f"model overloaded: {reason}")
+                self._finish(t, {"status": "retry_exhausted", "retries": self._attempt, "reason": reason})
+                return self._fail(t, f"model overloaded: {reason}", "model_overloaded")
             delay = self.retry_delays[self._attempt] + random.uniform(0, limits.get("retry_jitter_s"))
             self._attempt += 1
-            self._event("model_retry", {"step": self._env_step, "retry": self._attempt,
-                                        "max_retries": len(self.retry_delays), "delay_s": delay,
-                                        "recovery_timeout_s": self.recovery_timeout, "error": str(e)})
+            self._finish(t, {"status": "retry", "retry": self._attempt, "max_retries": len(self.retry_delays),
+                             "delay_s": delay, "recovery_timeout_s": self.recovery_timeout})
             self._say(f"model overloaded; retry {self._attempt} in {delay:.1f}s (no action is replayed)")
             self._wait_until = time.monotonic() + delay
             self._enter("wait", t)
             return self._hold()
         if isinstance(e, QuotaExceeded):
-            return self._fail(t, f"model quota exhausted: {e}")
-        return self._fail(t, f"model error: {e}")
+            self._finish(t)
+            return self._fail(t, f"model quota exhausted: {e}", "quota")
+        self._finish(t)
+        return self._fail(t, f"model error: {e}", "model_error")
 
     def _decide(self, t: float, obs: Obs, d: Decision) -> Action:
-        self._event("model_decision", {"step": self._env_step, "decision": d.wire if d.wire is not None
-                                       else {"name": d.name, "arguments": d.arguments},
-                                       "latency_s": d.latency, "notes": d.notes})
+        self._rec["response"]["decision"] = {"name": d.name, "arguments": d.arguments, "notes": list(d.notes)}
+        self._rec["response"]["text"] = d.raw
         args = {k: v for k, v in d.arguments.items() if k != "note"}
         self._say(f"decision {self._env_step}: {d.name}({args}) — {d.note}")
         try:
             tool = self.tools[d.name](**d.arguments)
         except (KeyError, ValueError) as e:
             return self._reject(t, obs, d.name, f"tool_rejected: {e}", raw=d.raw, arguments=d.arguments)
-        self._chunk, self._chunks = 1, 1
         if tool.kind == "terminal":
-            self._event("terminal", {"step": self._env_step, "name": d.name, "arguments": d.arguments})
-            self._record("done" if d.name == "done" else d.name, t, obs, self._decision_json(d), tool, 0.0)
-            self._step += 1
+            self._finish(t, {"status": d.name})
+            self._decision_used(d.name)
+            if self.recorder is not None:
+                self.recorder.update(closing={k: v for k, v in d.arguments.items() if k != "note"})
             self._env_step += 1
             return self._to_handback(t, "give_up" if d.name == "give_up" else "completed")
         if tool.kind == "query":
@@ -543,10 +528,9 @@ class Agent(Runnable):
                 verdict = tool.query(self._cmd, self.joints, view=self._view)
             except ValueError as e:
                 return self._reject(t, obs, d.name, f"tool_rejected: {e}", raw=d.raw, arguments=d.arguments)
-            self._event("execution_result", {"step": self._env_step, "name": d.name, "result": verdict})
             self._previous = {"tool": d.name, "result": verdict}
-            self._record("checked", t, obs, self._decision_json(d), tool, 0.0)
-            self._step += 1
+            self._finish(t, verdict)
+            self._decision_used(d.name)
             return self._spent(t, obs)
         if tool.needs_base and not self.can_walk:
             return self._reject(t, obs, d.name, "tool_rejected: the base cannot be driven in this run",
@@ -564,8 +548,13 @@ class Agent(Runnable):
                                 violations=verdict["violations"], n_violations=verdict["n_violations"],
                                 requested_motion={k: v for k, v in d.arguments.items() if k != "note"})
         self._decision, self._tool = d, tool
-        self._chunks = max(1, math.ceil(tool.duration / STEP_MAX - 1e-9))
-        self._chunk_t0 = t
+        self._rec["action"] = {"tool": tool.name, "args": dict(tool.args), "dry_run": verdict,
+                               "planned_s": tool.duration, "needs_base": tool.needs_base,
+                               "t_start": t, "t_end": None, "tick_start": self._tick(t), "tick_end": None,
+                               "duration_s": None,
+                               "q_start": [float(v) for v in obs.q], "cmd_start": [float(v) for v in self._cmd],
+                               "base_cmd_start": [float(v) for v in self._base_cmd]}
+        self._write()
         self._act_t0 = t
         self._act_base_cmd = self._base_cmd.copy()
         self._act_base_env = None if obs.base_pose is None else tuple(obs.base_pose)
@@ -611,19 +600,20 @@ def ask_verdict() -> Optional[str]:
             return "failed"
 
 
-def build_agent(task: dict, *, env_name: str, can_walk: bool, has_loco: bool, runs: Path | str) -> Agent:
-    """The agent for a task with an instruction: the vision model ($VLM_MODEL), the menu
-    this env allows, the scene's and the task's safety notes, recorded under ``runs``. It asks
-    nothing at the end: ``g1 run`` asks, on the robot only (save it? then the verdict)."""
+def build_agent(task: dict, *, env_name: str, can_walk: bool, has_loco: bool, runs: Path | str,
+                mode: Optional[str] = None, config: Optional[dict] = None) -> Agent:
+    """The agent for a task with an instruction: the vision model (limit vlm_model), the menu
+    this env allows, the scene's and the task's safety notes, recorded under ``runs``; ``config``
+    is the run's setup (``task.run_config``), completed here with the model, tools and prompt.
+    It asks nothing at the end: ``g1 run`` asks, on the robot only (save it? then the verdict)."""
     decider = VLMDecider.from_env()
     tools = menu(can_walk, has_loco)
     notes = list(task["safety_notes"])          # rules only: the room's layout is never told
-    recorder = EpisodeWriter(runs, env=env_name, instruction=task["instruction"], model=decider.model,
-                             tools=[t.name for t in tools], allow_base=can_walk,
-                             extra={"task": task["name"], "max_decisions": task["max_decisions"],
-                                    "reasoning_effort": getattr(getattr(decider, "client", None), "reasoning_effort", None),
-                                    "step_timeout": limits.get("step_timeout_s"), "safety_notes": notes})
-    print(f"recording to {recorder.dir}")
-    return Agent(task["instruction"], decider, tools, recorder=recorder, max_decisions=task["max_decisions"],
-                 step_timeout=limits.get("step_timeout_s"), can_walk=can_walk, has_loco=has_loco,
-                 safety_notes=notes, verdict=None)
+    agent = Agent(task["instruction"], decider, tools, max_decisions=task["max_decisions"],
+                  step_timeout=limits.get("step_timeout_s"), can_walk=can_walk, has_loco=has_loco,
+                  safety_notes=notes, verdict=None)
+    config = {**(config or {}), "model": decider.settings(), **agent.context.record()}
+    agent.recorder = EpisodeWriter(runs, env=env_name, instruction=task["instruction"], model=decider.model,
+                                   config=config, task=task["name"], mode=mode, max_decisions=task["max_decisions"])
+    print(f"recording to {agent.recorder.dir}")
+    return agent

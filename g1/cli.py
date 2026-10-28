@@ -189,18 +189,23 @@ def run_settings(task: Optional[dict] = None, *, sim: bool = False, mode: Option
     return s
 
 
-def build_program(task: dict, env, runs: Path, env_name: str) -> Runnable:
-    """The task's agent (an instruction) or its chain (tools); ``env_name`` labels its records."""
+def build_program(task: dict, env, runs: Path, env_name: str, mode: Optional[str] = None,
+                  config: Optional[dict] = None) -> Runnable:
+    """The task's agent (an instruction) or its chain (tools); ``env_name`` labels its records,
+    ``config`` is the run's setup for config.json."""
     if task["tools"]:
         return parse_chain(task["tools"], pause=limits.get("chain_pause_s"))
     from g1.agent.agent import build_agent
-    return build_agent(task, env_name=env_name, can_walk=env.can_walk, has_loco=env.has_loco, runs=runs)
+    return build_agent(task, env_name=env_name, can_walk=env.can_walk, has_loco=env.has_loco, runs=runs,
+                       mode=mode, config=config)
 
 
 def run_task(task: dict, *, sim: bool, mode: Optional[str], view: bool = False, env: Optional[Env] = None) -> int:
     """One run of a task, recorded. ``env`` (tests) is an in-process twin used instead of
     starting one over DDS."""
-    from g1.agent.task import label_run, record_result, run_dir, write_status
+    from datetime import datetime
+    from g1.agent.task import (code_snapshot, label_run, record_result, run_config, run_dir, update_summary,
+                               write_config, write_status)
     from g1.envs import RobotEnv
     if not sim and mode is None:
         raise SystemExit("the robot needs --mode gantry (hanging: Damp, stand, run, Damp; no walking) or "
@@ -214,8 +219,10 @@ def run_task(task: dict, *, sim: bool, mode: Optional[str], view: bool = False, 
     runs = task["dir"] / "runs"
     runs.mkdir(parents=True, exist_ok=True)
     before = {p.name for p in runs.iterdir()}
+    started = datetime.now().isoformat(timespec="seconds")
+    config = run_config(task, env_name=env_name, mode=mode, settings=settings, code=code_snapshot())
     try:
-        program = build_program(task, env, runs, env_name)
+        program = build_program(task, env, runs, env_name, mode, config)
     except (KeyError, ValueError, RuntimeError) as e:
         raise SystemExit(f"{task['dir'] / 'task.json'}: {e}") from None
     segments = getattr(program, "segments", None)
@@ -223,6 +230,8 @@ def run_task(task: dict, *, sim: bool, mode: Optional[str], view: bool = False, 
         raise SystemExit(f"{task['name']} drives the base, and --mode gantry never walks (use --mode standing)")
     recorder = getattr(program, "recorder", None)
     folder = Path(recorder.dir) if recorder is not None else run_dir(task, env_name)
+    if recorder is None:
+        write_config(folder, config)
     settings.trace = str(folder / "trace.npz")
     print(f"== {task['name']} ({'instruction' if task['instruction'] else 'tools'}) @ "
           f"{'the twin' if sim else 'the robot'}, mode {mode} ==")
@@ -239,7 +248,11 @@ def run_task(task: dict, *, sim: bool, mode: Optional[str], view: bool = False, 
         new = [p for p in runs.iterdir() if p.name not in before and p.is_dir()]
         folder = max(new, key=lambda p: p.stat().st_mtime) if new else folder
     else:
-        write_status(folder, ok, env_name)
+        stopped = getattr(program, "interrupted", None)
+        write_status(folder, ok, task=task, env_name=env_name, mode=mode, started=started,
+                     end_reason={"ctrl_c": "interrupted"}.get(stopped, stopped) if stopped
+                     else "completed" if ok else "checks_failed")
+    update_summary(folder, health=env.health or None)
     if not sim:                                  # the robot: keep it? then the human's verdict
         from g1.agent import agent as prompts
         if not prompts.ask_save():

@@ -24,7 +24,8 @@ the file, so an old `.env` never silently overrides it.
 
 Thinking time is most of a decision's wall time. Left to the provider, DeepSeek-V4.1-Flash
 spent 3 to 52 s per decision and once ran into the 60 s `step_timeout_s`; the agent prints the
-median and longest think at the end of every run, and `usage.jsonl` records the effort sent.
+median and longest think at the end of every run, and each step file's `response` records the
+effort sent.
 
 Put the token in `.env` in the repo root (`cp .env.example .env`; git-ignored; exported
 variables win) or export it. A task with an `instruction` uses them; try one on the twin

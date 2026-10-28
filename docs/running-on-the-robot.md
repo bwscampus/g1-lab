@@ -126,8 +126,8 @@ refuses`, and `link ok; FSM 1 (damp) — not a standing state`.
 A run checks every SDK call it makes: a failed transition during bring-up stops the run
 **before** arm_sdk is touched, with the code named and the same hint; a robot reporting
 damp/zero-torque is refused by `--mode standing`; at the end the recorded FSM is restored
-only when it was a standing state. Every call is written to the run's `events.jsonl` as an
-`sdk_call` line (client, name, args, code, elapsed), so a stuck run shows the last thing
+only when it was a standing state. Every call is recorded (client, name, args, code, elapsed):
+in the step file it happened in, or, at bring-up, in `summary.json`, so a stuck run shows the last thing
 the robot answered. `G1_VERBOSE=1` prints all of it live: each call with its code as it
 happens, the bring-up step by step, and once a second
 

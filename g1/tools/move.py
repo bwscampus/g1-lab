@@ -35,8 +35,7 @@ class Move(Tool):
     prompt = ("Move the base by dx_m forward (up to {limit:move_dx_max_m} m either way; negative walks backward), "
               "dy_m left (up to {limit:move_dy_max_m} m either way; a sidestep) and dyaw_deg (up to "
               "{limit:move_dyaw_max_deg} degrees either way, positive turns LEFT), in the current frame. The host "
-              "translates at {limit:walk_speed} m/s then turns at {limit:turn_rate} rad/s, observing every "
-              "{limit:record_step_s} s but not re-deciding. Only when the note states the floor is clear for the "
+              "translates at {limit:walk_speed} m/s then turns at {limit:turn_rate} rad/s without re-deciding. Only when the note states the floor is clear for the "
               "whole displacement. To face a visible target, turn by its bearing (the image spans about "
               f"{HEAD_CAMERA_FOV_H:.0f} degrees horizontally). To search, turn LEFT in steps of 45-60 degrees and observe between turns; after a full "
               "circle without seeing the goal, move 0.5 m into clear space and search again. To pass an obstacle, "
@@ -72,7 +71,7 @@ class WalkForward(Tool):
     visible = False
     needs_base = True
     prompt = ("Walk straight ahead by distance_m metres ({limit:walk_forward_min_m} to {limit:move_dx_max_m}) at {limit:walk_speed} m/s, "
-              "observed every {limit:record_step_s} s but not re-decided.")
+              "not re-decided on the way.")
     params = {"distance_m": num(limit("walk_forward_min_m"), limit("move_dx_max_m"), None, "metres to walk")}
 
     def segments(self) -> tuple[Segment, ...]:

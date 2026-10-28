@@ -19,13 +19,11 @@ import pkgutil
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
-from g1.core import limits
 from g1.core.action import Segment
 from g1.core.config import JOINT_HI, JOINT_LO, JOINT_NAMES, STAND_Q, UPPER_BODY, joint_index
 from g1.tools.base import (NOTE, Limit, Tool, flag, format_text, integer, limit, num, resolve, text,
                            validate_args)
 
-STEP_MAX = limits.get("record_step_s")      # how often a running tool is observed and recorded
 ARM_JOINTS = [JOINT_NAMES[j] for j in UPPER_BODY]      # the 17 joints arm_sdk may command, by name
 SELECTION_DESCRIPTION = (
     "One tool selection for a Unitree G1 humanoid with {n_joints} joints. The host plans the tool, checks it "
@@ -293,7 +291,7 @@ def parse_chain(spec: str, pause: float = 1.0) -> Chain:
     return Chain(*(parse_tool(item) for item in items), pause=pause)
 
 
-__all__ = ["TOOLS", "Tool", "Chain", "Limit", "NOTE", "STEP_MAX", "ARM_JOINTS", "SELECTION_DESCRIPTION",
+__all__ = ["TOOLS", "Tool", "Chain", "Limit", "NOTE", "ARM_JOINTS", "SELECTION_DESCRIPTION",
            "limit", "num", "integer", "text", "flag", "resolve", "format_text", "validate_args",
            "menu", "parameters", "prompt_catalog", "function_schemas", "output_schema", "joint_table",
            "parse_tool", "parse_chain", "prefixed", "split_outside",

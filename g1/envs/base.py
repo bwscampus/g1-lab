@@ -110,6 +110,8 @@ class Env:
     def step(self, action: Action) -> np.ndarray:
         raise NotImplementedError
 
+    health: dict = {}                       # what report() found, for summary.json
+
     def report(self) -> bool:
         """Print a summary; return False if the run should count as failed."""
         return True

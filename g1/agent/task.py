@@ -3,8 +3,9 @@
     tasks/<name>/
         task.json       an instruction (the model decides) or a tools chain (no model),
                         the scene, safety notes, the budget
-        runs/           every run of this task (git-ignored), each with its trace.npz
-        results.jsonl   one line per run: directory, outcome, decisions, tokens, model
+        runs/           every run of this task (git-ignored): summary.json, config.json,
+                        step files, trace.npz (g1/agent/episode.py)
+        results.jsonl   one line per run: outcome, end reason, decisions, tokens, health
 
     {"instruction": "find the mug and stop in front of it", "scene": "room", "objects": ["mug@1.5,1.2"]}
     {"tools": "tpose,look:30"}
@@ -92,55 +93,121 @@ def run_dir(task: dict, env_name: str) -> Path:
     return d
 
 
-def write_status(run: Path, ok: bool, env_name: str) -> None:
-    """A tools run's episode.json: its checks are the outcome (the agent's recorder writes its own)."""
-    path = run / "episode.json"
-    if not path.exists():
-        path.write_text(json.dumps({"outcome": "success" if ok else "failed", "outcome_source": "checks",
-                                    "env": env_name, "ended": datetime.now().isoformat(timespec="seconds")}),
-                        encoding="utf-8")
+def code_snapshot(root: Path = ROOT) -> dict:
+    """The code this run is made of, restorable: ``git checkout <snapshot>``. A clean tree is
+    HEAD; otherwise the working tree (tracked edits and new files, never git-ignored ones:
+    runs, assets, .env) becomes a commit on HEAD kept by ``refs/g1-runs/<sha>``, built on a
+    temporary index so the branch, the real index and the files are untouched. The refs stay
+    local unless pushed (``git push origin 'refs/g1-runs/*'``)."""
+    import os
+    import subprocess
+    import tempfile
+
+    def git(*args: str, env: Optional[dict] = None) -> str:
+        return subprocess.run(["git", *args], cwd=root, env=env, capture_output=True, text=True,
+                              check=True, timeout=30).stdout.strip()
+    try:
+        head = git("rev-parse", "HEAD")
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {**os.environ, "GIT_INDEX_FILE": str(Path(tmp) / "index")}
+            git("read-tree", "HEAD", env=env)
+            git("add", "-A", env=env)
+            tree = git("write-tree", env=env)
+        if tree == git("rev-parse", "HEAD^{tree}"):
+            return {"head": head, "snapshot": head, "ref": None}
+        sha = git("commit-tree", tree, "-p", head, "-m", "g1 run: the working tree this run used")
+        ref = f"refs/g1-runs/{sha}"
+        git("update-ref", ref, sha)
+        return {"head": head, "snapshot": sha, "ref": ref}
+    except (OSError, subprocess.SubprocessError) as e:
+        detail = getattr(e, "stderr", "") or str(e)
+        return {"head": None, "snapshot": None, "ref": None, "error": detail.strip()[:300]}
+
+
+def versions() -> dict:
+    import platform
+    from importlib import metadata
+    out = {"python": platform.python_version()}
+    for name in ("numpy", "mujoco", "onnxruntime", "unitree_sdk2py", "jsonschema", "av"):
+        try:
+            out[name] = metadata.version(name)
+        except metadata.PackageNotFoundError:
+            out[name] = None
+    return out
+
+
+def run_config(task: dict, *, env_name: str, mode: str, settings: Any, code: dict) -> dict:
+    """config.json: how this run was set up. The task as loaded, the env and mode, the camera
+    settings, every limit, the code snapshot, the versions. Never a .env value (secrets, the
+    robot's address, the interface). The agent adds the model, the tools and the prompt."""
+    t = {k: (list(v) if isinstance(v, tuple) else v) for k, v in task.items() if k != "dir"}
+    t["dir"] = str(task["dir"].relative_to(ROOT)) if task["dir"].is_relative_to(ROOT) else str(task["dir"])
+    return {"task": t, "env": env_name, "mode": mode,
+            "camera": {"use": getattr(settings, "camera", None), "source": getattr(settings, "camera_source", None),
+                       "view": getattr(settings, "view", False)},
+            "limits": {name: spec["value"] for name, spec in limits.LIMITS.items()},
+            "code": code, "versions": versions()}
+
+
+def write_config(run: Path, config: dict) -> None:
+    from g1.agent.episode import save_json
+    save_json(run / "config.json", config)
+
+
+def write_status(run: Path, ok: bool, *, task: dict, env_name: str, mode: Optional[str], started: str,
+                 end_reason: str) -> None:
+    """A tools run's summary.json: its checks are the outcome (the agent's recorder writes its own)."""
+    from g1.agent.episode import new_summary, save_json
+    path = run / "summary.json"
+    if path.exists():
+        return
+    s = new_summary(run.name, task=task["name"], instruction=task["tools"], env=env_name, mode=mode, model=None)
+    ended = datetime.now()
+    s.update(started=started, ended=ended.isoformat(timespec="seconds"),
+             duration_s=round((ended - datetime.fromisoformat(started)).total_seconds(), 3),
+             outcome="success" if ok else "failed", outcome_source="checks", end_reason=end_reason,
+             decisions=None, usage=None)
+    save_json(path, s)
+
+
+def update_summary(folder: Path, **values) -> None:
+    from g1.agent.episode import save_json
+    path = folder / "summary.json"
+    if path.exists():
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data.update(values)
+        save_json(path, data)
 
 
 OUTCOMES = ("success", "failed", "unreviewed", "give_up", "interrupted")
 
 
 def label_run(run: Path, outcome: str) -> Path:
-    """The human verdict on a finished run: written into episode.json (and events.jsonl
-    when the agent recorded it) and the directory renamed ``<name>_<outcome>``."""
-    task_status = "completed" if outcome == "success" else "failed"
-    verdict = {"outcome": outcome, "human_outcome": outcome, "outcome_source": "human", "task_status": task_status}
-    path = run / "episode.json"
-    if path.exists():
-        data = json.loads(path.read_text(encoding="utf-8"))
-        data.update(verdict)
-        path.write_text(json.dumps(data, indent=1), encoding="utf-8")
-    events = run / "events.jsonl"
-    if events.exists():
-        with events.open("a", encoding="utf-8") as f:
-            f.write(json.dumps({"at_s": datetime.now().timestamp(), "event": "human_evaluation",
-                                "outcome": outcome, "source": "terminal"}) + "\n")
+    """The human verdict on a finished run: written into summary.json and the directory
+    renamed ``<name>_<outcome>``."""
     stem, _, last = run.name.rpartition("_")
     base = stem if last in OUTCOMES else run.name
     dest = run.with_name(f"{base}_{outcome}")
     run.rename(dest)
+    update_summary(dest, run=dest.name, outcome=outcome, outcome_source="human")
     return dest
 
 
-def record_result(task: dict, run: Path, *, ok: Optional[bool] = None, env_name: str = "") -> Optional[dict]:
-    """Append what a finished run amounts to, from its episode.json (``ok``: a tools run's
-    checks, written first if it has none)."""
-    status_path = run / "episode.json"
-    if ok is not None:
-        write_status(run, ok, env_name)
+def record_result(task: dict, run: Path) -> Optional[dict]:
+    """Append what a finished run amounts to, from its summary.json: one row per run, the
+    fields to compare runs on."""
     try:
-        status = json.loads(status_path.read_text(encoding="utf-8"))
+        s = json.loads((run / "summary.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    row = {"run": run.name, "outcome": status.get("outcome"), "task_status": status.get("task_status"),
-           "outcome_source": status.get("outcome_source"), "decisions": status.get("decisions"),
-           "steps": status.get("steps"), "model": status.get("model"), "env": status.get("env"),
-           "tokens": (status.get("usage") or {}).get("tokens"), "elapsed_s": status.get("elapsed_s"),
-           "ended": status.get("ended")}
+    health = s.get("health") or {}
+    row = {"run": run.name, "env": s.get("env"), "mode": s.get("mode"), "model": s.get("model"),
+           "outcome": s.get("outcome"), "outcome_source": s.get("outcome_source"),
+           "model_outcome": s.get("model_outcome"), "end_reason": s.get("end_reason"),
+           "decisions": (s.get("decisions") or {}).get("used"), "tokens": (s.get("usage") or {}).get("tokens"),
+           "duration_s": s.get("duration_s"), "ended": s.get("ended"),
+           "joint_check": health.get("joint_check"), "violations": health.get("violations"),
+           "overruns": health.get("overruns"), "fell": health.get("fell")}
     with (task["dir"] / "results.jsonl").open("a", encoding="utf-8") as f:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
     return row

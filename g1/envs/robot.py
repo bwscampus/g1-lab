@@ -631,16 +631,28 @@ class RobotEnv(Env):
         sim = getattr(self.args, "sim", False)
         monitor = getattr(self, "monitor", None)
         ok = True
+        health: dict = {"joint_check": None, "violations": None, "violation_kinds": [], "overruns": 0,
+                        "sdk_calls": len(self.sdk_log), "sdk_failed_codes": [], "fell": None, "twin": None}
         if monitor is not None and monitor.ticks:
             ok = monitor.report("sim" if sim else "robot")
+            st = monitor.stats()
+            health.update(joint_check=st["joint_check"], violations=st["violations"],
+                          violation_kinds=st["violation_kinds"])
         if sim:
             ok = self._twin_verdict() and ok
+            twin = getattr(self, "_twin_report", None)
+            if twin is not None:
+                health["fell"] = twin.get("fallen_at") is not None
+                health["twin"] = {k: twin.get(k) for k in ("fallen_at", "pelvis_z", "fsm", "base_pose", "torque_limit_s")}
         base = getattr(self, "base", None)
         if base is not None:
             print(base.summary())
         if getattr(self, "audio_calls", 0):
             print(f"audio: {self.audio_calls} call(s)")
         failed = [e for e in self.sdk_log if e["code"] != 0]
+        health["sdk_failed_codes"] = sorted({e["code"] for e in failed})
+        health["overruns"] = getattr(self, "overruns", 0)
+        self.health = health
         if self.sdk_log:
             print(f"sdk: {len(self.sdk_log)} call(s), {len(failed)} failed"
                   + (f" (codes {sorted({e['code'] for e in failed})})" if failed else ""))
@@ -664,6 +676,7 @@ class RobotEnv(Env):
         if code != 0 or not isinstance(report, dict):
             print(f"twin: no summary ({sdk.explain(code) if code != -1 else report})")
             return True
+        self._twin_report = report
         print(f"twin: {report['summary']}")
         if report.get("fallen_at") is not None:
             print(f"FAIL: the robot fell at t = {report['fallen_at']:.2f} s (twin time)")

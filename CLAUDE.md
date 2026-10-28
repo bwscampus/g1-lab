@@ -74,7 +74,7 @@ g1/twin/           assets (g1 twin fetch), model (unitree_mujoco G1 + head camer
 g1/camera.py       Frame, Camera (+subscribe), DirCamera, WebRTCCamera, ShmCamera (the twin's), Viewer (--view)
 g1/vlm.py          VLMClient (Hugging Face), load_dotenv
 g1/agent/          agent (Agent, build_agent), decider (AgentContext/AgentTurn/Decision, observation(), instructions(),
-                   VLMDecider), episode (EpisodeWriter, StepRecord, load_episode), task (find, load_task, record_result)
+                   VLMDecider), episode (EpisodeWriter, load_episode), task (find, load_task, run_config, code_snapshot, record_result)
 tasks/             tpose/ (a tools chain), find_the_mug/, point_at_the_laptop/, find_and_point_at_the_laptop/, sit_in_the_chair/ (instructions); runs and results.jsonl inside are git-ignored
 docs/              architecture, writing-a-tool, writing-a-task, running-on-the-robot, vision-model
 tests/             mirrors g1/ (core, tools, envs, agent, twin) + test_camera, test_cli, test_vlm; doubles.py (RedBallDecider,
@@ -159,8 +159,7 @@ root via `pythonpath`. `limits.ROOT` is the repo root (configs/, tasks/, assets/
 ## The decision step (`g1/agent/agent.py`)
 
 takeover → settle (0.03 rad, 0.05 rad/s, 10 ticks, ≥ 0.5 s, 3 s timeout) → snapshot (a fresh frame) →
-think (background `Decider.request`; the loop holds) → act (the whole tool; a record every `STEP_MAX`
-= 3 s) → settle → feedback (`previous_result`: residuals, commanded base displacement, settle report | the
+think (background `Decider.request`; the loop holds) → act (the whole tool, one step file) → settle → feedback (`previous_result`: residuals, commanded base displacement, settle report | the
 error) → … `done`/`give_up` end it; `check` answers via `dry_run`, `locate_point` with a pixel's direction;
 turns older than `history_full_turns` are sent as one host-written line each; overload retried with backoff re-observing;
 quota or `step_timeout` fails the run; `max_decisions` ends as `budget_exhausted`; `close()` renames the
@@ -168,7 +167,9 @@ run directory (`_success`/`_failed`/`_unreviewed`/`_interrupted`). The agent ask
 `cli.run_task` asks "Save this run?" (no: the folder is deleted) and then the verdict (`task.label_run`);
 `--sim` runs ask nothing.
 Records: `tasks/<name>/runs/<ts>_<env>_<instruction>_<outcome>/` (`<env>` = `sim`|`robot`, from `--sim`) with exactly
-`episode.json` (the one meta file), `step_NNNN.json/.png`, `events.jsonl`, `protocol.json`, `usage.jsonl`, `replies.jsonl`,
-`trace.npz` (a tools run: `episode.json`, `trace.npz`). Saving anything new is a deliberate change; the tests assert the set.
+`summary.json` (which run, what happened), `config.json` (the setup: task, tools, prompt, limits, model, code snapshot),
+`step_NNNN.json/.png` (one per model query: frame, query and response as sent/received, action, result) and `trace.npz`
+(a tools run: no steps). Each fact is stored once; a new file needs an argument; the tests assert the set. Every run's
+code is restorable: `config.json` `code.snapshot` (a commit kept by `refs/g1-runs/<sha>` when the tree was dirty).
 The observation JSON and the system prompt are in `g1/agent/decider.py`; `Decision.parse` validates a
 whole JSON object against the tool's schema and clamps numbers with a note.

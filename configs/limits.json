@@ -11,7 +11,6 @@
     "view_jpeg_quality":          {"value": 80,     "unit": "0-100",  "source": "guess",      "note": "--view: JPEG quality of the browser stream"},
     "view_fps":                   {"value": 30.0,   "unit": "Hz",     "source": "repo",       "note": "--view: most frames a second sent to the browser"},
     "png_compress_level":         {"value": 3,      "unit": "0-9",    "source": "repo",       "note": "zlib level of the step PNGs in a run record (3: about 40-80 ms at 720p, on the writer thread)"},
-    "record_step_s":              {"value": 3.0,   "unit": "s",     "source": "user",       "note": "a step record (frame + joints) is closed this often while a tool runs"},
 
     "base_vx_max":                {"value": 0.3,   "unit": "m/s",   "source": "robot",      "note": "hard ceiling on forward base speed; Unitree's high-level examples cap at 0.3"},
     "base_vy_max":                {"value": 0.2,   "unit": "m/s",   "source": "guess",      "note": "hard ceiling on sideways base speed; never tested on the robot"},

@@ -61,8 +61,9 @@ class AgentContext:
     menu: tuple[type[Tool], ...]
 
     def record(self) -> dict:
-        return {"base_instructions": self.instructions, "tools": self.tools,
-                "output_schema": self.output_schema, "menu": [s.name for s in self.menu]}
+        """For config.json: the system prompt, the output schema and the tools on offer."""
+        return {"menu": [s.name for s in self.menu], "tools": self.tools,
+                "system_prompt": self.instructions, "output_schema": self.output_schema}
 
 
 @dataclass
@@ -238,7 +239,9 @@ def build_context(context_menu: Sequence[type[Tool]], *, can_walk: bool, max_dec
 class Decider(Worker[AgentTurn, Decision]):
     """``start(context)`` once per run, then ``request(turn)`` per decision; the
     result lands in ``latest()`` a few ticks later. ``last_call`` describes the
-    most recent model call (status, elapsed, usage) for the usage ledger."""
+    most recent model call (status, elapsed, usage, what the server sent back);
+    ``queries[request_id]`` is the query as sent, without the system prompt
+    (config.json has it) and with each image as the step file that holds it."""
 
     model: str = "decider"
     provider: str = "test"
@@ -247,6 +250,7 @@ class Decider(Worker[AgentTurn, Decision]):
         super().__init__(threaded=threaded, min_interval=min_interval, name="decider")
         self.context: Optional[AgentContext] = None
         self.last_call: Optional[dict] = None
+        self.queries: dict[int, list[dict]] = {}
         self.n_calls = 0
 
     def start(self, context: AgentContext) -> None:
@@ -262,8 +266,9 @@ class Decider(Worker[AgentTurn, Decision]):
             raise RuntimeError("decider.start(context) was not called")
         self.n_calls += 1
         t0 = time.monotonic()
-        call = {"call": self.n_calls, "at_s": time.time(), "provider": self.provider, "model": self.model,
-                "step": turn.step, "request_id": turn.request_id, "status": "completed", "usage": None}
+        self.queries[turn.request_id] = [{"role": "user", "content": turn.observation}]
+        call = {"call": self.n_calls, "at_s": time.time(), "request_id": turn.request_id,
+                "status": "completed", "usage": None}
         try:
             return self.decide(turn)
         except BaseException as e:
@@ -277,6 +282,10 @@ class Decider(Worker[AgentTurn, Decision]):
 
     def _call_details(self) -> dict:
         return {}
+
+    def settings(self) -> dict:
+        """For config.json: how this run asks the model."""
+        return {"model": self.model}
 
 
 class VLMDecider(Decider):
@@ -296,6 +305,7 @@ class VLMDecider(Decider):
         self.history_full_turns = max(1, int(history_full_turns))
         self.fresh_turns = fresh_turns
         self._turns: list[dict] = []          # {"user": msg, "assistant": msg | None, "image_at": int | None}
+        self._image_step: dict[int, int] = {}   # id(image block) -> the request (= step file) it came from
 
     @classmethod
     def from_env(cls, model: Optional[str] = None, *,
@@ -315,6 +325,7 @@ class VLMDecider(Decider):
     def start(self, context: AgentContext) -> None:
         super().start(context)
         self._turns = []
+        self._image_step = {}
 
     # -- the conversation --------------------------------------------------
     def _user_message(self, turn: AgentTurn) -> tuple[dict, Optional[int]]:
@@ -324,7 +335,9 @@ class VLMDecider(Decider):
         for name, image in turn.images.items():
             blocks.append({"type": "text", "text": f"Camera image: {name}"})
             image_at = len(blocks)
-            blocks.append(image_part(image, self.max_width))
+            part = image_part(image, self.max_width)
+            self._image_step[id(part)] = turn.request_id
+            blocks.append(part)
         return {"role": "user", "content": blocks}, image_at
 
     def _prune(self, incoming: int = 0) -> None:
@@ -385,14 +398,21 @@ class VLMDecider(Decider):
             out.append(self._user_message(turn)[0])
         return out
 
-    def transcript(self) -> list[dict]:
-        """The conversation as sent, images replaced by their labels."""
+    def as_recorded(self, msgs: list[dict]) -> list[dict]:
+        """Messages as sent, each image replaced by the step file holding it (lossless there;
+        the model got it resized to ``max_width`` as JPEG)."""
         def strip(msg):
             if isinstance(msg["content"], str):
                 return msg
-            blocks = [b if b["type"] == "text" else {"type": "image"} for b in msg["content"]]
+            blocks = [b if b["type"] == "text" else
+                      {"type": "image", "image": f"step_{self._image_step.get(id(b), 0):04d}.png"}
+                      for b in msg["content"]]
             return {"role": msg["role"], "content": blocks}
-        return [strip(m) for m in self.messages()]
+        return [strip(m) for m in msgs]
+
+    def transcript(self) -> list[dict]:
+        """The conversation so far, as recorded."""
+        return self.as_recorded(self.messages())
 
     def decide(self, turn: AgentTurn) -> Decision:
         assert self.context is not None
@@ -401,6 +421,7 @@ class VLMDecider(Decider):
             self._prune(incoming=1 if image_at is not None else 0)
         msgs = self.messages()
         msgs.append(user)
+        self.queries[turn.request_id] = self.as_recorded(msgs[1:])     # the system prompt is in config.json
         text = self.client.complete(msgs, schema=self.context.output_schema)
         entry = {"user": user, "assistant": {"role": "assistant", "content": text}, "image_at": image_at}
         if not self.fresh_turns:
@@ -411,3 +432,12 @@ class VLMDecider(Decider):
         return {"usage": self.client.last_usage, "response_mode": self.client.response_mode,
                 "reasoning_effort": self.client.reasoning_effort,
                 "request_elapsed_s": round(self.client.last_elapsed, 6), "chunks": list(self.client.last_chunks)}
+
+    def settings(self) -> dict:
+        """For config.json: how this run asks the model."""
+        c = self.client
+        return {"model": c.model, "provider": c.provider, "stream": c.stream,     # never .env values (base_url)
+                "reasoning_effort": c.reasoning_effort, "max_tokens": c.max_tokens,
+                "temperature": limits.get("vlm_temperature"), "image_max_width_px": self.max_width,
+                "jpeg_quality": limits.get("jpeg_quality"), "history_full_turns": self.history_full_turns,
+                "live_image_window": self.live_image_window}

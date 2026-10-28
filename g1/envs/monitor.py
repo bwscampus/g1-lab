@@ -179,6 +179,12 @@ class JointMonitor:
         out |= {j for j in range(NUM_JOINTS) if moved[j]}
         return sorted(out)
 
+    def stats(self) -> dict:
+        """The numbers behind ``report`` (summary.json health)."""
+        return {"ticks": self.ticks, "duration_s": round(self.t, 3), "violations": len(self.violations),
+                "violation_kinds": sorted({v.kind for v in self.violations}),
+                "joint_check": "pass" if not self.violations else "fail" if self.strict else "warn"}
+
     def report(self, label: str = "run") -> bool:
         rows = self.rows()
         print(f"\n{label}: {self.ticks} ticks, {self.t:.2f} s, {len(self.commanded)} joints commanded")
