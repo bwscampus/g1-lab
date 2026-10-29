@@ -370,6 +370,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             from g1 import vlm
             print(f"model: {vlm.DEFAULT_MODEL} on {vlm.PROVIDER}, reasoning_effort {vlm.REASONING_EFFORT}, "
                   f"max_tokens {vlm.MAX_TOKENS}, temperature {vlm.TEMPERATURE:g} (from {vlm.MODEL_PATH})")
+            print("agent: " + ", ".join(f"{k} {v:g}" for k, v in vlm.AGENT_SETTINGS.items()))
         return code
     if command == "twin":
         from g1.twin.main import main as twin_main

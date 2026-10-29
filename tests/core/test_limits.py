@@ -18,7 +18,7 @@ def test_the_file_defines_exactly_the_names_the_code_reads():
     assert set(data["limits"]) == set(limits.NAMES) and len(limits.NAMES) == len(set(limits.NAMES))
     for name, e in data["limits"].items():
         assert e["source"] in limits.SOURCES and e["unit"] and e["note"], name
-    assert limits.get("max_decisions") == data["limits"]["max_decisions"]["value"]
+    assert limits.get("max_time_s") == data["limits"]["max_time_s"]["value"]
 
 
 def test_code_reads_its_numbers_from_the_file():
@@ -32,15 +32,17 @@ def test_code_reads_its_numbers_from_the_file():
         limits.get(n) for n in ("walk_speed", "side_speed", "turn_rate"))
     assert (cli.TO_STAND, cli.RAMP, cli.RELEASED) == tuple(
         limits.get(n) for n in ("return_to_stand_s", "return_ramp_s", "return_released_s"))
-    assert vlm.IMAGE_WIDTH == limits.get("image_width_px")
-    assert len(agent.RETRY_DELAYS) == limits.get("retry_max") and max(agent.RETRY_DELAYS) == limits.get("retry_delay_cap_s")
-    assert agent.RECOVERY_TIMEOUT == limits.get("recovery_timeout_s")
+    a = vlm.AGENT_SETTINGS                          # the agent loop's settings: configs/model.json
+    assert vlm.IMAGE_WIDTH == a["image_width_px"]
+    assert len(agent.RETRY_DELAYS) == a["retry_max"] and max(agent.RETRY_DELAYS) == a["retry_delay_cap_s"]
+    assert agent.RECOVERY_TIMEOUT == a["recovery_timeout_s"]
     m = JointMonitor()
     assert (m.margin, m.max_vel, m.max_violations) == tuple(
         limits.get(n) for n in ("joint_margin_rad", "command_vel_max", "max_violations"))
     a = agent.Agent("g", None.__class__ and __import__("tests.doubles", fromlist=["RedBallDecider"]).RedBallDecider(), menu(True))
-    assert (a.max_decisions, a.settle_tol, a.settle_vel_tol, a.settle_samples, a.frame_timeout) == tuple(
-        limits.get(n) for n in ("max_decisions", "settle_pos_tol_rad", "settle_vel_tol", "settle_samples", "frame_timeout_s"))
+    assert a.max_decisions == vlm.AGENT_SETTINGS["max_decisions"]
+    assert (a.settle_tol, a.settle_vel_tol, a.settle_samples, a.frame_timeout) == tuple(
+        limits.get(n) for n in ("settle_pos_tol_rad", "settle_vel_tol", "settle_samples", "frame_timeout_s"))
 
 
 def test_the_tools_and_the_prompt_quote_the_limits():
@@ -94,8 +96,8 @@ def test_a_bad_limits_file_is_refused_with_the_name(tmp_path):
         with pytest.raises(ValueError, match=match):
             limits.load(p)
 
-    broken(lambda d: d["limits"].pop("max_decisions"), "missing .*max_decisions")
-    broken(lambda d: d["limits"].update(max_decisons=d["limits"]["max_decisions"]), "unknown .*max_decisons")
+    broken(lambda d: d["limits"].pop("max_time_s"), "missing .*max_time_s")
+    broken(lambda d: d["limits"].update(max_tme_s=d["limits"]["max_time_s"]), "unknown .*max_tme_s")
     broken(lambda d: d["limits"]["walk_speed"].update(value="fast"), "walk_speed.value must be a number")
     broken(lambda d: d["limits"]["walk_speed"].update(value=-1), "must not be negative")
     broken(lambda d: d["limits"]["walk_speed"].update(value=0.5), "walk_speed .* must not exceed base_vx_max")

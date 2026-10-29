@@ -44,14 +44,14 @@ from g1.tools.arms import R_ARM, raises_arm
 
 LOADED_BY_POINT = frozenset(R_ARM) | {joint_index("waist_pitch"), joint_index("waist_roll")}
 from g1.tools.control import Handback, Takeover, dry_run
-from g1.vlm import IMAGE_WIDTH, Overloaded, QuotaExceeded
+from g1.vlm import AGENT_SETTINGS, IMAGE_WIDTH, Overloaded, QuotaExceeded
 
 WAIST_YAW = joint_index("waist_yaw")
 
 # their MODEL_RETRY_DELAYS_S / MODEL_RECOVERY_TIMEOUT_S; the numbers are in configs/limits.json
-RETRY_DELAYS = tuple(min(limits.get("retry_delay_base_s") * (2 ** k), limits.get("retry_delay_cap_s"))
-                     for k in range(int(limits.get("retry_max"))))
-RECOVERY_TIMEOUT = limits.get("recovery_timeout_s")
+RETRY_DELAYS = tuple(min(AGENT_SETTINGS["retry_delay_base_s"] * (2 ** k), AGENT_SETTINGS["retry_delay_cap_s"])
+                     for k in range(AGENT_SETTINGS["retry_max"]))
+RECOVERY_TIMEOUT = AGENT_SETTINGS["recovery_timeout_s"]
 
 
 class Agent(Runnable):
@@ -60,8 +60,8 @@ class Agent(Runnable):
 
     def __init__(self, instruction: str, decider: Decider, tools: Sequence[type[Tool]], *,
                  recorder: Optional[EpisodeWriter] = None,
-                 max_decisions: int = limits.get("max_decisions"),
-                 step_timeout: float = limits.get("step_timeout_s"),
+                 max_decisions: int = AGENT_SETTINGS["max_decisions"],
+                 step_timeout: float = AGENT_SETTINGS["step_timeout_s"],
                  settle_min: float = limits.get("settle_min_s"),
                  settle_tol: float = limits.get("settle_pos_tol_rad"),
                  settle_vel_tol: float = limits.get("settle_vel_tol"),
@@ -276,7 +276,7 @@ class Agent(Runnable):
             "frame": None if frame is None else {
                 "image": f"step_{self._request_id:04d}.png", "seq": frame.seq, "stamp": frame.stamp,
                 "age_s": float(obs.frame_age), "shape": list(frame.image.shape),
-                "sent": {"width": sent[0], "height": sent[1], "jpeg_quality": limits.get("jpeg_quality")}},
+                "sent": {"width": sent[0], "height": sent[1], "jpeg_quality": AGENT_SETTINGS["jpeg_quality"]}},
             "frame_error": None if frame is not None else (self._previous or {}).get("error"),
             "query": None, "response": None, "action": None, "result": None, "sdk_calls": []}
         self.steps.append(self._rec)
@@ -513,7 +513,7 @@ class Agent(Runnable):
                 reason = "retry_limit" if self._attempt >= len(self.retry_delays) else "recovery_deadline"
                 self._finish(t, {"status": "retry_exhausted", "retries": self._attempt, "reason": reason})
                 return self._fail(t, f"model overloaded: {reason}", "model_overloaded")
-            delay = self.retry_delays[self._attempt] + random.uniform(0, limits.get("retry_jitter_s"))
+            delay = self.retry_delays[self._attempt] + random.uniform(0, AGENT_SETTINGS["retry_jitter_s"])
             self._attempt += 1
             self._finish(t, {"status": "retry", "retry": self._attempt, "max_retries": len(self.retry_delays),
                              "delay_s": delay, "recovery_timeout_s": self.recovery_timeout})
@@ -636,7 +636,7 @@ def build_agent(task: dict, *, env_name: str, can_walk: bool, has_loco: bool, ru
     tools = menu(can_walk, has_loco)
     notes = list(task["safety_notes"])          # rules only: the room's layout is never told
     agent = Agent(task["instruction"], decider, tools, max_decisions=task["max_decisions"],
-                  step_timeout=limits.get("step_timeout_s"), can_walk=can_walk, has_loco=has_loco,
+                  step_timeout=AGENT_SETTINGS["step_timeout_s"], can_walk=can_walk, has_loco=has_loco,
                   safety_notes=notes, verdict=None)
     config = {**(config or {}), "model": decider.settings(), **agent.context.record()}
     agent.recorder = EpisodeWriter(runs, env=env_name, instruction=task["instruction"], model=decider.model,

@@ -20,6 +20,7 @@ from typing import Any, Optional
 from jsonschema import Draft202012Validator, ValidationError
 
 from g1.core import limits
+from g1.vlm import AGENT_SETTINGS
 
 ROOT = limits.ROOT
 SCHEMA = {
@@ -37,7 +38,8 @@ SCHEMA = {
                                  "(default the origin facing +x); the robot starts wherever it stands"},
         "safety_notes": {"type": "array", "items": {"type": "string", "minLength": 1}, "default": [],
                          "description": "persistent physical facts the camera cannot see, added to the prompt"},
-        "max_decisions": {"type": "integer", "minimum": 1, "default": int(limits.get("max_decisions"))},
+        "max_decisions": {"type": "integer", "minimum": 1, "default": AGENT_SETTINGS["max_decisions"],
+                          "description": "this task's decision budget (default: agent.max_decisions in configs/model.json)"},
         "max_time_s": {"type": "number", "minimum": 1, "default": limits.get("max_time_s")},
         "camera_size": {"type": "string", "pattern": "^[0-9]+x[0-9]+$", "default": None,
                         "description": "the sim head camera, HxW (default: twin_camera_height_px x twin_camera_width_px in "
@@ -156,7 +158,14 @@ def run_config(task: dict, *, env_name: str, mode: str, settings: Any, code: dic
             "camera": {"use": getattr(settings, "camera", None), "source": getattr(settings, "camera_source", None),
                        "view": getattr(settings, "view", False)},
             "limits": {name: spec["value"] for name, spec in limits.LIMITS.items()},
+            "model_config": model_config(),
             "code": code, "versions": versions()}
+
+
+def model_config() -> dict:
+    """configs/model.json as this run used it, without its notes."""
+    from g1 import vlm
+    return {k: v for k, v in vlm.MODEL.items() if k != "notes"}
 
 
 def write_config(run: Path, config: dict) -> None:

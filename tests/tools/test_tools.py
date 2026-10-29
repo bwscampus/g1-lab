@@ -464,3 +464,17 @@ def test_audio_allow_list():
     Silent.check_definition()
     with pytest.raises(ValueError, match="needs_loco"):
         NoLoco.check_definition()          # a LocoClient gesture still must say so
+
+
+def test_the_point_prompt_corrects_for_the_shoulder_below_and_right_of_the_camera():
+    import re
+    from g1.tools.arms import PARALLAX_AT_M, shoulder_parallax
+    left, up = shoulder_parallax(0.8)
+    assert 7 < left < 10 and 12 < up < 15                     # near: large; it shrinks with distance
+    assert shoulder_parallax(3.0)[0] < shoulder_parallax(1.5)[0] < left
+    prompt = TOOLS["point"].prompt
+    for d in PARALLAX_AT_M:
+        l, u = shoulder_parallax(d)
+        assert f"{d:g} m away: {l:.0f} left and {u:.0f} up" in prompt
+    assert "PLUS the left correction" in prompt and "MINUS the up correction" in prompt
+    assert not re.search(r"aim higher than", prompt)          # the old vague hint, now a number

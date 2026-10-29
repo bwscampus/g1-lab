@@ -6,7 +6,8 @@ import math
 
 from g1.core import limits
 from g1.core.action import Segment
-from g1.core.config import HEAD_CAMERA_FOV_H, HEAD_CAMERA_PITCH, JOINT_HI, JOINT_LO, joint_index
+from g1.core.config import (HEAD_CAMERA_FOV_H, HEAD_CAMERA_PITCH, JOINT_HI, JOINT_LO, R_SHOULDER_FROM_CAMERA,
+                             joint_index)
 from g1.core.poses import ARMS_UP, SIXSEVEN, STAND
 from g1.tools.base import Tool, integer, limit, num
 
@@ -80,6 +81,28 @@ class ArmPath(Tool):
                      for i, wp in enumerate(self.waypoints))
 
 
+def shoulder_parallax(distance_m: float) -> tuple[float, float]:
+    """(left_deg, up_deg): how much further left and higher a target the camera looks straight at
+    lies as seen from the right shoulder, ``distance_m`` away. The arm's line starts at the shoulder,
+    so after centring a target, point that much further left (look) and less down (down_deg)."""
+    _, dy, dz = R_SHOULDER_FROM_CAMERA
+    return math.degrees(math.atan2(-dy, distance_m)), math.degrees(math.atan2(-dz, distance_m))
+
+
+PARALLAX_AT_M = (0.8, 1.5, 3.0)     # the distances the point prompt quotes (examples, not settings)
+
+
+def _parallax_text() -> str:
+    _, dy, dz = R_SHOULDER_FROM_CAMERA
+    rows = ", ".join(f"{d:g} m away: {left:.0f} left and {up:.0f} up" for d in PARALLAX_AT_M
+                     for left, up in [shoulder_parallax(d)])
+    return (f"The arm's line starts at the right shoulder, {-dy * 100:.0f} cm right of and {-dz * 100:.0f} cm below "
+            "the camera, so a near target the camera has centred lies, from the shoulder, further LEFT and HIGHER: "
+            "point with the waist at look_yaw_deg PLUS the left correction (positive is left), and down_deg = "
+            f"below_horizontal_deg MINUS the up correction. Corrections in degrees: {rows} (judge the distance from "
+            "how big the target looks; far targets need almost none). ")
+
+
 def raises_arm(tool: Tool):
     """Whether a tool leaves the right arm raised (``point``: True), lowered (any other tool
     that moves it: False), or as it was (None). The agent and a chain lower a raised arm
@@ -115,8 +138,8 @@ class Point(Tool):
               "(look) until the target is in the middle of the image (locate_point gives the look_yaw_deg that "
               "centres it, and its below_horizontal_deg); then aim down_deg by where it sits: the "
               f"image's centre row is about {math.degrees(HEAD_CAMERA_PITCH):.0f} degrees below horizontal, a target "
-              "far across the floor about 15-25, one near the feet about 50-60, a raised one about 1 m "
-              "away (on furniture) about 10-20 (aim higher than its place in the image suggests). Only the right arm moves. Point with "
+              "far across the floor about 15-25, one near the feet about 50-60. " + _parallax_text() +
+              "Only the right arm moves. Point with "
               "the waist at most 90 degrees round; for a target further round, turn the feet first (move) where "
               "walking is allowed.")
     params = {"down_deg": num(0.0, limit("point_down_deg_max"), limit("point_down_deg_default"),

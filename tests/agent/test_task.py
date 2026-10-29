@@ -5,6 +5,7 @@ import pytest
 
 from g1.agent.task import find, load_task, record_result
 from g1.core import limits
+from g1.vlm import AGENT_SETTINGS
 
 ROOT = limits.ROOT
 
@@ -20,7 +21,7 @@ def test_load_task_defaults_and_validates(tmp_path):
     d = task_dir(tmp_path, instruction="find the mug")
     t = load_task(d)
     assert t["instruction"] == "find the mug" and t["tools"] is None and t["scene"] == "none" and t["safety_notes"] == []
-    assert t["max_decisions"] == limits.get("max_decisions") and t["dir"] == d and t["name"] == "find_the_mug"
+    assert t["max_decisions"] == AGENT_SETTINGS["max_decisions"] and t["dir"] == d and t["name"] == "find_the_mug"
     t = load_task(task_dir(tmp_path, "b", tools="tpose,look:30", scene="room", objects=["mug@1.5,1.2"], camera_size="720x1280"))
     assert t["tools"] == "tpose,look:30" and t["instruction"] is None and t["camera_size"] == (720, 1280)
     for bad, match in [({}, "exactly one of instruction or tools"), ({"instruction": "x", "tools": "tpose"}, "exactly one"),

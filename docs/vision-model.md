@@ -23,13 +23,16 @@ reasoning_effort    sent as reasoning_effort (none|minimal|low|medium|high, or d
                     out); dropped if the server rejects it
 max_tokens          the reply budget, reasoning included
 temperature         sampling temperature
+agent               the agent loop: max_decisions (the default budget; a task's task.json may set its own),
+                    step_timeout_s, request_timeout_s, retries, image_width_px, jpeg_quality,
+                    live_image_window, history_full_turns
 notes               why each value is what it is
 ```
 
 A typo or a missing key there fails at import, naming it. Setting `VLM_MODEL`, `VLM_MAX_TOKENS` or
 `VLM_REASONING_EFFORT` in `.env` is refused with a pointer to the file, so an old `.env` never
-silently overrides it. The request's timeout, the image size and the conversation window stay
-limits (`request_timeout_s`, `image_width_px`, `jpeg_quality`, `live_image_window`, `history_full_turns`).
+silently overrides it. Everything in model.json may be tuned and compared with `g1 bench`;
+`configs/limits.json` holds the robot's and the run's hard limits.
 
 Thinking time is most of a decision's wall time. Left to the provider, DeepSeek-V4.1-Flash
 spent 3 to 52 s per decision and once ran into the 60 s `step_timeout_s`; the agent prints the
@@ -65,7 +68,7 @@ when a provider rejects it. The conversation is the model's memory: the system p
 then the newest `history_full_turns` (8) turns in full — observation and the model's own reply
 verbatim — and before them one host-written line per older turn (the tool, its note, the
 result), as GPT-Policy's Claude adapter summarises. Only the last `live_image_window` (8)
-observations keep their image. Both are in `configs/limits.json`.
+observations keep their image. Both are in `configs/model.json` (`agent`).
 
 The reply must be one whole JSON object, `{"name": ..., "arguments": {...}}`, naming a tool
 from the menu and satisfying its parameter schema (jsonschema Draft 2020-12; numbers out of
@@ -77,6 +80,6 @@ range are clamped and the model is told). Anything else is `invalid_selection` i
 Roughly 0.5–1.5k tokens per image plus the text; a 30-decision run is on the order of
 30–60k tokens, more with a reasoning model (its thinking counts against `max_tokens`; the
 budget in `configs/model.json` is a ceiling, not a cost). A reasoning model also takes
-longer per decision (10–30 s measured) — raise `step_timeout_s` in `configs/limits.json` if
+longer per decision (10–30 s measured) — raise `agent.step_timeout_s` in `configs/model.json` if
 it times out. Each run's tokens are in its line of the task's `results.jsonl`. `--sim` runs in
 real time, so the timings mean what they would on the robot.

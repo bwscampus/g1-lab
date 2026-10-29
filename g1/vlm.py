@@ -4,7 +4,10 @@ input, stdlib urllib, streamed SSE and structured output with a step-down.
 Shared by the decider (choose a tool) and the demo keyframe selector.
 
 Which model is asked, and how, is configs/model.json: ``provider``, a model id
-per provider (``models``), ``reasoning_effort``, ``max_tokens``, ``temperature``.
+per provider (``models``), ``reasoning_effort``, ``max_tokens``, ``temperature``,
+and the agent loop's settings (``agent``: the decision budget, timeouts, retries,
+image size, history windows). These may be tuned; configs/limits.json holds the
+robot's and the run's hard limits.
 The environment holds only what is private to this machine:
 
     HF_TOKEN            the Hugging Face key (a fine-grained token with "Make calls to Inference Providers")
@@ -39,7 +42,11 @@ PROVIDERS = {
 }
 EFFORTS = ("none", "minimal", "low", "medium", "high", "default")
 MODEL_PATH = limits.ROOT / "configs" / "model.json"
-KEYS = ("version", "provider", "models", "reasoning_effort", "max_tokens", "temperature", "notes")
+KEYS = ("version", "provider", "models", "reasoning_effort", "max_tokens", "temperature", "agent", "notes")
+# the agent loop's settings (g1/agent/): whole numbers are counts, the rest seconds or sizes; all > 0 but jitter
+AGENT = {"max_decisions": int, "step_timeout_s": float, "request_timeout_s": float, "retry_max": int,
+         "retry_delay_base_s": float, "retry_delay_cap_s": float, "retry_jitter_s": float, "recovery_timeout_s": float,
+         "image_width_px": int, "jpeg_quality": int, "live_image_window": int, "history_full_turns": int}
 
 
 def load_model(path: Path | str | None = None) -> dict:
@@ -68,6 +75,20 @@ def load_model(path: Path | str | None = None) -> dict:
     t = m["temperature"]
     if isinstance(t, bool) or not isinstance(t, (int, float)) or t < 0:
         raise ValueError(f"model file {p}: temperature must be a number >= 0")
+    a = m["agent"]
+    if not isinstance(a, dict) or sorted(a) != sorted(AGENT):
+        have = sorted(a) if isinstance(a, dict) else a
+        raise ValueError(f"model file {p}: agent needs exactly {list(AGENT)}, has {have}")
+    for name, kind in AGENT.items():
+        v = a[name]
+        ok = not isinstance(v, bool) and (isinstance(v, int) if kind is int else isinstance(v, (int, float)))
+        if not ok or v < 0 or (v == 0 and name != "retry_jitter_s"):
+            raise ValueError(f"model file {p}: agent.{name} must be a positive {'whole ' if kind is int else ''}number, "
+                             f"got {v!r}")
+    if a["retry_delay_base_s"] > a["retry_delay_cap_s"]:
+        raise ValueError(f"model file {p}: agent.retry_delay_base_s must not exceed agent.retry_delay_cap_s")
+    if a["jpeg_quality"] > 100:
+        raise ValueError(f"model file {p}: agent.jpeg_quality must be 1-100")
     return m
 
 
@@ -80,10 +101,11 @@ MAX_TOKENS = MODEL["max_tokens"]
 # Sent as ``reasoning_effort`` ("default": not sent). A server that rejects it gets the request without it.
 REASONING_EFFORT = MODEL["reasoning_effort"]
 TEMPERATURE = MODEL["temperature"]
+AGENT_SETTINGS = MODEL["agent"]           # the agent loop's budgets, timeouts, retries and image sizes
 # Settings that moved from .env to configs/model.json: refused if still set, so none is silently ignored.
 MOVED = {"VLM_MODEL": "models", "VLM_MAX_TOKENS": "max_tokens", "VLM_REASONING_EFFORT": "reasoning_effort"}
-IMAGE_WIDTH = int(limits.get("image_width_px"))
-JPEG_QUALITY = int(limits.get("jpeg_quality"))
+IMAGE_WIDTH = AGENT_SETTINGS["image_width_px"]
+JPEG_QUALITY = AGENT_SETTINGS["jpeg_quality"]
 
 
 DOTENV = Path(__file__).resolve().parents[1] / ".env"       # the repo root
@@ -236,7 +258,7 @@ class VLMClient:
     def __init__(self, model: str = DEFAULT_MODEL, token: Optional[str] = None, *,
                  base_url: str = HF_BASE_URL, provider: str = "huggingface", stream: bool = True,
                  json_mode: bool = True, json_schema: bool = True,
-                 timeout: float = limits.get("request_timeout_s"),
+                 timeout: float = AGENT_SETTINGS["request_timeout_s"],
                  on_text: Optional[Callable[[str], None]] = None,
                  transport: Optional[Callable[[str, dict, dict, float], Iterator[str]]] = None) -> None:
         self.model = model

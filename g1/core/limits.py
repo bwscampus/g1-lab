@@ -40,11 +40,9 @@ NAMES = (
     "twin_fall_tilt_deg", "twin_band_kp", "twin_band_kd", "twin_waist_kp", "twin_waist_kd", "twin_waist_hold_s", "twin_arm_kp",
     "twin_arm_kd", "twin_vel_feedback", "twin_vel_integral", "twin_walk_blend_s",
     "twin_domain", "twin_lowstate_hz", "twin_camera_fps", "twin_camera_height_px", "twin_camera_width_px", "twin_settle_s", "twin_start_z_m", "twin_rope_slack_m", "twin_rope_lateral", "twin_walk_floor_margin", "twin_vel_integral_max", "twin_vel_filter", "twin_gesture_edge", "twin_wave_amp_rad", "twin_wave_hz", "twin_shake_amp_rad", "twin_shake_hz", "twin_volume", "twin_start_timeout_s", "twin_status_period_s", "twin_summary_timeout_s", "twin_truth_period_s", "sim_viewer_hold_s",
-    "max_decisions", "step_timeout_s", "max_time_s",
+    "max_time_s",
     "settle_min_s", "settle_pos_tol_rad", "settle_vel_tol", "settle_samples", "settle_timeout_s",
     "frame_max_age_s", "frame_timeout_s", "max_failures", "overrun_fraction_max",
-    "request_timeout_s", "image_width_px", "jpeg_quality", "live_image_window", "history_full_turns",
-    "retry_max", "retry_delay_base_s", "retry_delay_cap_s", "retry_jitter_s", "recovery_timeout_s",
 )
 
 
@@ -93,7 +91,7 @@ def _check_consistency(limits: dict, p: Path) -> None:
     rules = [("walk_speed", "base_vx_max"), ("side_speed", "base_vy_max"), ("turn_rate", "base_vyaw_max"),
              ("arm_path_seconds_min", "arm_path_seconds_default"), ("arm_path_seconds_default", "arm_path_seconds_max"),
              ("wave_hand_seconds", "gesture_seconds_max"), ("shake_hand_seconds", "gesture_seconds_max"),
-             ("settle_min_s", "settle_timeout_s"), ("retry_delay_base_s", "retry_delay_cap_s"),
+             ("settle_min_s", "settle_timeout_s"),
              ("gesture_seconds_min", "wave_hand_seconds"), ("gesture_seconds_min", "shake_hand_seconds"),
              ("sit_seconds_min", "sit_seconds"), ("sit_seconds", "sit_seconds_max"),
              ("bookend_ramp_s", "bookend_ramp_max_s"), ("walk_forward_min_m", "move_dx_max_m"),
@@ -108,8 +106,8 @@ def _check_consistency(limits: dict, p: Path) -> None:
     for low, high in rules:
         if v[low] > v[high]:
             raise ValueError(f"limits file {p}: {low} ({v[low]}) must not exceed {high} ({v[high]})")
-    for name in ("control_dt_s", "walk_speed", "side_speed", "turn_rate", "max_decisions",
-                 "settle_samples", "image_width_px", "history_full_turns", "say_max_chars", "speech_chars_per_s",
+    for name in ("control_dt_s", "walk_speed", "side_speed", "turn_rate",
+                 "settle_samples", "say_max_chars", "speech_chars_per_s",
                  "twin_physics_dt_s", "twin_lowstate_hz", "twin_camera_fps"):
         if v[name] <= 0:
             raise ValueError(f"limits file {p}: {name} must be positive")

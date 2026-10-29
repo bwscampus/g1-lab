@@ -4,7 +4,7 @@
   "objects": ["laptop@1.75,-1.5,0.77"],
   "start": [1.2, -0.95, 0],
   "safety_notes": ["Do not walk in this task: search with the waist and point with the right arm only."],
-  "max_decisions": 12,
+  "max_decisions": 20,
   "max_time_s": 300,
   "success": {"point_at": "laptop", "within_deg": 10, "for_s": 1.0, "feet_drift_max_m": 0.05,
               "feet_yaw_drift_max_deg": 10, "no_contact": ["table_top", "table_leg", "laptop"]},

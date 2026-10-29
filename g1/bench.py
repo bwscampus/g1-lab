@@ -169,7 +169,7 @@ def run_suite(suite: dict, run=None) -> dict:
 def _model() -> dict:
     from g1 import vlm
     return {"provider": vlm.PROVIDER, "model": vlm.DEFAULT_MODEL, "reasoning_effort": vlm.REASONING_EFFORT,
-            "max_tokens": vlm.MAX_TOKENS, "temperature": vlm.TEMPERATURE}
+            "max_tokens": vlm.MAX_TOKENS, "temperature": vlm.TEMPERATURE, "agent": dict(vlm.AGENT_SETTINGS)}
 
 
 def main(argv: list[str]) -> int:

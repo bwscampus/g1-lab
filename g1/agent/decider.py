@@ -37,7 +37,7 @@ from g1.core import limits
 from g1.core.config import HEAD_CAMERA_FOV_H, HEAD_CAMERA_PITCH, NUM_JOINTS
 from g1.core.worker import Worker
 from g1.tools import Tool, function_schemas, joint_table, menu, output_schema, parameters, prompt_catalog, validate_args
-from g1.vlm import IMAGE_WIDTH, TEMPERATURE, VLMClient, image_part
+from g1.vlm import AGENT_SETTINGS, IMAGE_WIDTH, TEMPERATURE, VLMClient, image_part
 
 
 
@@ -293,9 +293,9 @@ class VLMDecider(Decider):
     the conversation."""
 
     def __init__(self, client: VLMClient, *, max_width: int = IMAGE_WIDTH,
-                 live_image_window: Optional[int] = limits.get("live_image_window"),
+                 live_image_window: Optional[int] = AGENT_SETTINGS["live_image_window"],
                  fresh_turns: bool = False, min_interval: float = 0.0,
-                 history_full_turns: int = limits.get("history_full_turns")) -> None:
+                 history_full_turns: int = AGENT_SETTINGS["history_full_turns"]) -> None:
         super().__init__(min_interval=min_interval)
         if live_image_window is not None and live_image_window < 1:
             raise ValueError("live_image_window must be >= 1 or None")
@@ -309,7 +309,7 @@ class VLMDecider(Decider):
 
     @classmethod
     def from_env(cls, model: Optional[str] = None, *,
-                 live_image_window: Optional[int] = limits.get("live_image_window"),
+                 live_image_window: Optional[int] = AGENT_SETTINGS["live_image_window"],
                  fresh_turns: bool = False, **client_kw) -> "VLMDecider":
         return cls(VLMClient.from_env(model, **client_kw), live_image_window=live_image_window,
                    fresh_turns=fresh_turns)
@@ -439,5 +439,5 @@ class VLMDecider(Decider):
         return {"model": c.model, "provider": c.provider, "stream": c.stream,     # never .env values (base_url)
                 "reasoning_effort": c.reasoning_effort, "max_tokens": c.max_tokens,
                 "temperature": TEMPERATURE, "image_max_width_px": self.max_width,
-                "jpeg_quality": limits.get("jpeg_quality"), "history_full_turns": self.history_full_turns,
+                "jpeg_quality": AGENT_SETTINGS["jpeg_quality"], "history_full_turns": self.history_full_turns,
                 "live_image_window": self.live_image_window}

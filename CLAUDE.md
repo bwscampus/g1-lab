@@ -48,8 +48,10 @@ g1 limits [SOURCE]                   # every limit and default in configs/limits
 
 TASK = a folder under tasks/ (tpose, find_the_mug) or a path. .env: UNITREE_IFACE, UNITREE_ROBOT_IP,
 UNITREE_AES_128_KEY, UNITREE_DOMAIN, HF_TOKEN, VLM_BASE_URL, OPENROUTER_API_KEY; G1_VERBOSE=1 prints every SDK call.
-Which model is asked is `configs/model.json` (`provider`, `models`, `reasoning_effort`, `max_tokens`, `temperature`),
-not a limit: limits.json holds only the robot's and the run's limits. VLM_MODEL etc. in .env are refused.
+Which model is asked, and how, is `configs/model.json` (`provider`, `models`, `reasoning_effort`, `max_tokens`,
+`temperature`, and `agent`: the decision budget, timeouts, retries, image size, history windows). It may be tuned
+(benchmark with `g1 bench`); `configs/limits.json` holds the robot's and the run's hard limits, not to be changed
+to make a task pass. VLM_MODEL etc. in .env are refused.
 
 pytest                               # all tests, on the in-process twin (~2 min)
 pytest -m dds                        # also: g1 run --sim end to end over DDS (needs unitree_sdk2py)
