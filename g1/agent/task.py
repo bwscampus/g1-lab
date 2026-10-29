@@ -42,6 +42,16 @@ SCHEMA = {
         "camera_size": {"type": "string", "pattern": "^[0-9]+x[0-9]+$", "default": None,
                         "description": "the sim head camera, HxW (default: twin_camera_height_px x twin_camera_width_px in "
                                        "configs/limits.json; the robot streams 720x1280)"},
+        "success": {"type": ["object", "null"], "default": None, "additionalProperties": False,
+                    "description": "sim only: what counts as done, scored by the twin from its truth (g1/twin/core.py "
+                                   "Evaluator); a run of the task with --sim is labelled from it. The model never sees it",
+                    "properties": {"point_at": {"type": "string", "minLength": 1},
+                                   "within_deg": {"type": "number", "exclusiveMinimum": 0},
+                                   "for_s": {"type": "number", "minimum": 0},
+                                   "feet_drift_max_m": {"type": "number", "minimum": 0},
+                                   "feet_yaw_drift_max_deg": {"type": "number", "minimum": 0},
+                                   "no_contact": {"type": "array", "items": {"type": "string", "minLength": 1}}},
+                    "dependentRequired": {"point_at": ["within_deg", "for_s"]}},
         "notes": {"type": "string", "default": "", "description": "for people; the model never sees it"},
     },
 }
@@ -182,15 +192,42 @@ def update_summary(folder: Path, **values) -> None:
 OUTCOMES = ("success", "failed", "unreviewed", "give_up", "interrupted")
 
 
-def label_run(run: Path, outcome: str) -> Path:
-    """The human verdict on a finished run: written into summary.json and the directory
-    renamed ``<name>_<outcome>``."""
+def label_run(run: Path, outcome: str, source: str = "human") -> Path:
+    """The verdict on a finished run (a human's, or the twin's from the task's ``success``):
+    written into summary.json and the directory renamed ``<name>_<outcome>``."""
     stem, _, last = run.name.rpartition("_")
     base = stem if last in OUTCOMES else run.name
     dest = run.with_name(f"{base}_{outcome}")
     run.rename(dest)
-    update_summary(dest, run=dest.name, outcome=outcome, outcome_source="human")
+    update_summary(dest, run=dest.name, outcome=outcome, outcome_source=source)
     return dest
+
+
+def run_metrics(run: Path, s: dict) -> dict:
+    """What a run amounts to, task and execution apart: the twin's verdict and measurements,
+    a false "done", and the infrastructure (provider failures, late ticks) that is not the task's."""
+    health = s.get("health") or {}
+    evaluation = (health.get("twin") or {}).get("evaluation") or {}
+    measured = evaluation.get("measured") or {}
+    unsettled = 0
+    for step in sorted(run.glob("step_*.json")):
+        try:
+            result = json.loads(step.read_text(encoding="utf-8")).get("result") or {}
+        except (OSError, json.JSONDecodeError):
+            continue
+        settle = (result.get("execution_feedback") or {}).get("settle") or {}
+        unsettled += settle.get("settled") is False
+    return {"twin_passed": evaluation.get("passed"), "twin_failed": evaluation.get("failed"),
+            "false_done": s.get("false_done"),
+            "pointing_within_s": measured.get("pointing_within_s"),
+            "pointing_error_min_deg": measured.get("pointing_error_min_deg"),
+            "feet_drift_max_m": measured.get("feet_drift_max_m"),
+            "feet_yaw_drift_max_deg": measured.get("feet_yaw_drift_max_deg"),
+            "contacts": sorted(measured.get("contacts") or {}), "unsettled": unsettled,
+            "model_calls": (s.get("usage") or {}).get("calls"),
+            "failed_calls": (s.get("usage") or {}).get("failed_calls"),
+            "timing": health.get("timing"), "overrun_fraction": health.get("overrun_fraction"),
+            "max_tick_gap_s": health.get("max_tick_gap_s"), "load_avg": health.get("load_avg")}
 
 
 def record_result(task: dict, run: Path) -> Optional[dict]:
@@ -207,7 +244,7 @@ def record_result(task: dict, run: Path) -> Optional[dict]:
            "decisions": (s.get("decisions") or {}).get("used"), "tokens": (s.get("usage") or {}).get("tokens"),
            "duration_s": s.get("duration_s"), "ended": s.get("ended"),
            "joint_check": health.get("joint_check"), "violations": health.get("violations"),
-           "overruns": health.get("overruns"), "fell": health.get("fell")}
+           "overruns": health.get("overruns"), "fell": health.get("fell"), **run_metrics(run, s)}
     with (task["dir"] / "results.jsonl").open("a", encoding="utf-8") as f:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
     return row

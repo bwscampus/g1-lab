@@ -1,0 +1,5 @@
+{
+  "tasks": ["point_at_the_laptop"],
+  "repeat": 10,
+  "notes": "Phase 1: the stationary benchmark. Search with the waist and point, no walking; the twin scores each run (point_at_the_laptop's success: the arm within 10 degrees of the laptop for 1 s, the feet within 5 cm and 10 degrees, never touching the table or the laptop). Run it before and after a change to the prompt, the tools or the model and compare the tables."
+}

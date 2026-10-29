@@ -37,6 +37,7 @@ g1 run find_the_marker --mode standing        # on the robot
 | `safety_notes` | rules for the robot's behaviour in this task ("do not walk", "never touch furniture"), added to the system prompt. Never claims about the world (where a chair or wall is): the model knows only what the robot can sense, and such a claim is false wherever the room differs. The same holds for `instruction`: a goal, never where its target is ("find a free-standing chair", not "the chair 1.5 m ahead"). World facts for people go in `notes`; `tests/agent/test_what_the_model_knows.py` fails a task whose text says where something is. |
 | `max_decisions`, `max_time_s` | the budget; a rejected reply costs a decision too. `max_time_s` also stops a tools chain (with the safe return). |
 | `camera_size` | the twin's head camera, `"HxW"` (default `480x640`; the robot streams `720x1280`). |
+| `success` | the twin only: what counts as done, scored from the simulator's truth every tick, and the `--sim` run labelled from it (`outcome_source: twin`). `point_at` (an object, e.g. `laptop`) with `within_deg` and `for_s`: the right arm's ray (shoulder to wrist) within that angle of the object's centre for that long without a break; `feet_drift_max_m`, `feet_yaw_drift_max_deg`: how far the feet may move and turn (walking or sliding; not the pelvis, which twists over planted feet); `no_contact`: geom or body names (or prefixes: `table_top`, `table_leg`, `laptop`) the robot must never touch. A fall always fails. Never sent to the model. |
 | `notes` | for people. |
 
 ## What a run produces
@@ -48,10 +49,27 @@ health), `config.json` (the task, settings, limits and a restorable code snapsho
 `step_NNNN.json` + `.png` per query to the model: the frame, the query and response as sent and
 received, the action and its result. See `docs/architecture.md`, "The record".
 
-A run on the twin (`--sim`) asks nothing: it is kept, its outcome the run's checks for a tools
-chain and `unreviewed` for an instruction. A run on the robot asks `Save this run? [y / n]`
+A run on the twin (`--sim`) asks nothing: it is kept, and its outcome is the twin's verdict when the
+task has `success`; otherwise the run's checks for a tools chain and `unreviewed` for an instruction.
+`summary.json` keeps the model's own conclusion (`model_outcome`) and `false_done` (it said done, the
+twin disagreed). To measure a task, run it repeatedly: `g1 bench SUITE` (below). A run on the robot asks `Save this run? [y / n]`
 first; no deletes it (no folder, no `results.jsonl` line), yes asks
 `Task result [s success / f failed]` and the run is labelled with your answer.
+
+## Measuring a task: `g1 bench`
+
+A suite is `suites/<name>/suite.json`: `{"tasks": ["point_at_the_laptop"], "repeat": 10}`.
+`g1 bench <name>` runs every task `repeat` times on the twin, headless, in one process (the same
+code, model and limits for every run), and prints one table, also saved as
+`suites/<name>/runs/<ts>/report.json` with every run's row:
+
+* the task: success as the twin judged it, false `done`s, decisions, time, the best pointing error,
+  how far the feet moved;
+* the execution: falls, forbidden contacts, unsettled results, joint violations;
+* the infrastructure: failed model calls, runs with degraded timing, runs it spoiled (the model's
+  provider gave up, quota, no frame, a loaded machine). Those are not counted in the success rate.
+
+Give a task `success` before benchmarking it; without it its runs stay `unreviewed`.
 
 ## Writing a good task
 

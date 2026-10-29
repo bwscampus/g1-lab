@@ -145,8 +145,10 @@ def task_dir(tmp_path, name="t", **spec):
     return d
 
 
-def test_g1_has_five_commands_and_run_three_flags(capsys):
+def test_g1_has_six_commands_and_run_three_flags(capsys):
     assert main([]) == 0 and "g1 run TASK --sim" in capsys.readouterr().out
+    from g1.cli import COMMANDS
+    assert sorted(COMMANDS) == ["bench", "limits", "run", "status", "trace", "twin"]
     with pytest.raises(SystemExit):
         main(["fly"])
     assert "unknown command" in capsys.readouterr().err

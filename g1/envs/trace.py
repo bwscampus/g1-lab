@@ -2,8 +2,8 @@
 
 Every ``g1 run`` writes each control tick to ``trace.npz`` in its run directory:
 what was commanded (q, the arm_sdk weight, kp, kd, the base velocity) and what
-LowState measured (q, dq, tau_est, the IMU), plus, on the in-process twin, its
-true base pose. ``g1 trace compare`` lines two runs up tick by tick (the same
+LowState measured (q, dq, tau_est, the IMU), plus, on the twin, its true base pose
+(in-process: each tick; --sim: from the twin's Summary, ``fill_base_true``). ``g1 trace compare`` lines two runs up tick by tick (the same
 chain gives the same ticks) and reports, per commanded joint, how each tracked
 its command and how far the two runs differ.
 
@@ -58,6 +58,23 @@ class Trace:
         np.savez_compressed(self.path, env=self.env, **{k: np.asarray(v) for k, v in self.rows.items()})
         print(f"trace: {len(self.rows['t'])} ticks -> {self.path}")
         return self.path
+
+
+def fill_base_true(path: Path, truth: list) -> None:
+    """A --sim run's trace: the twin's true base pose ([monotonic s, x, y, yaw] rows, from its
+    Summary) interpolated onto the ticks, which the host stamps on the same clock. Ticks outside
+    the twin's samples stay NaN."""
+    tr = load(path)
+    rows = np.asarray(truth, dtype=float)
+    if rows.ndim != 2 or rows.shape[1] != 4 or len(rows) < 2 or np.isfinite(tr["base_true"]).any():
+        return
+    t = tr["t"]
+    yaw = np.unwrap(rows[:, 3])
+    base = np.stack([np.interp(t, rows[:, 0], rows[:, 1]), np.interp(t, rows[:, 0], rows[:, 2]),
+                     np.remainder(np.interp(t, rows[:, 0], yaw) + np.pi, 2 * np.pi) - np.pi], axis=1)
+    base[(t < rows[0, 0]) | (t > rows[-1, 0])] = np.nan
+    tr["base_true"] = base
+    np.savez_compressed(path, **tr)
 
 
 def load(path) -> dict:

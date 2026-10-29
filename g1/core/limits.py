@@ -39,10 +39,10 @@ NAMES = (
     "twin_physics_dt_s", "twin_fsm_delay_s", "twin_lock_stand_s", "twin_mask_arms_out_rad", "twin_sit_s", "twin_seated_fall_z_m", "twin_sit_kp", "twin_sit_kd", "twin_damp_kd", "twin_fall_z_m",
     "twin_fall_tilt_deg", "twin_band_kp", "twin_band_kd", "twin_waist_kp", "twin_waist_kd", "twin_waist_hold_s", "twin_arm_kp",
     "twin_arm_kd", "twin_vel_feedback", "twin_vel_integral", "twin_walk_blend_s",
-    "twin_domain", "twin_lowstate_hz", "twin_camera_fps", "twin_camera_height_px", "twin_camera_width_px", "twin_settle_s", "twin_start_z_m", "twin_rope_slack_m", "twin_rope_lateral", "twin_walk_floor_margin", "twin_vel_integral_max", "twin_vel_filter", "twin_gesture_edge", "twin_wave_amp_rad", "twin_wave_hz", "twin_shake_amp_rad", "twin_shake_hz", "twin_volume", "twin_start_timeout_s", "twin_status_period_s", "twin_summary_timeout_s", "sim_viewer_hold_s",
+    "twin_domain", "twin_lowstate_hz", "twin_camera_fps", "twin_camera_height_px", "twin_camera_width_px", "twin_settle_s", "twin_start_z_m", "twin_rope_slack_m", "twin_rope_lateral", "twin_walk_floor_margin", "twin_vel_integral_max", "twin_vel_filter", "twin_gesture_edge", "twin_wave_amp_rad", "twin_wave_hz", "twin_shake_amp_rad", "twin_shake_hz", "twin_volume", "twin_start_timeout_s", "twin_status_period_s", "twin_summary_timeout_s", "twin_truth_period_s", "sim_viewer_hold_s",
     "max_decisions", "step_timeout_s", "max_time_s",
     "settle_min_s", "settle_pos_tol_rad", "settle_vel_tol", "settle_samples", "settle_timeout_s",
-    "frame_max_age_s", "frame_timeout_s", "max_failures",
+    "frame_max_age_s", "frame_timeout_s", "max_failures", "overrun_fraction_max",
     "request_timeout_s", "image_width_px", "jpeg_quality", "live_image_window", "history_full_turns",
     "retry_max", "retry_delay_base_s", "retry_delay_cap_s", "retry_jitter_s", "recovery_timeout_s",
 )

@@ -3,6 +3,7 @@
     g1 run TASK --mode standing|gantry     # the robot (UNITREE_IFACE, UNITREE_ROBOT_IP from .env)
     g1 run TASK --mode standing --view     # ... and its head camera live in a browser
     g1 run TASK --sim [--mode gantry]      # the twin, in the MuJoCo window: the same robot code, over DDS
+    g1 bench SUITE                         # a suite of tasks on the twin, headless, repeated, one table
     g1 status                              # is the robot reachable, and what state is it in
     g1 twin fetch | status                 # the twin's model, walker and room assets
     g1 trace compare RUN_A RUN_B | show RUN   # how far the twin is from the robot on the same task
@@ -175,7 +176,7 @@ def run_settings(task: Optional[dict] = None, *, sim: bool = False, mode: Option
         camera_source="auto", camera="auto", trace=None,
         verbose=os.environ.get("G1_VERBOSE", "") not in ("", "0"),
         scene=task.get("scene") or "none", sim_objects=[parse_object(o) for o in task.get("objects") or []],
-        camera_size=task.get("camera_size"), sim_start=task.get("start"),
+        camera_size=task.get("camera_size"), sim_start=task.get("start"), success=task.get("success"),
         # the in-process twin (tests): headless, its own pacing and checks
         headless=True, realtime=None, hold_end=limits.get("sim_viewer_hold_s"), camera_dir=None,
         camera_fps=limits.get("twin_camera_fps"),
@@ -204,6 +205,13 @@ def build_program(task: dict, env, runs: Path, env_name: str, mode: Optional[str
 def run_task(task: dict, *, sim: bool, mode: Optional[str], view: bool = False, env: Optional[Env] = None) -> int:
     """One run of a task, recorded. ``env`` (tests) is an in-process twin used instead of
     starting one over DDS."""
+    return run_once(task, sim=sim, mode=mode, view=view, env=env)[0]
+
+
+def run_once(task: dict, *, sim: bool, mode: Optional[str], view: bool = False, env: Optional[Env] = None,
+             headless: bool = False) -> tuple[int, Optional[Path]]:
+    """``run_task``, also returning the run's folder (None if it was not kept). ``headless``:
+    the twin without its window (g1 bench)."""
     from datetime import datetime
     from g1.agent.task import (code_snapshot, label_run, record_result, run_config, run_dir, update_summary,
                                write_config, write_status)
@@ -239,7 +247,7 @@ def run_task(task: dict, *, sim: bool, mode: Optional[str], view: bool = False, 
     if sim and not in_process:
         from g1.twin.main import TwinProcess
         # the MuJoCo window always; G1_TWIN_HEADLESS=1 is for tests only
-        window = os.environ.get("G1_TWIN_HEADLESS", "") in ("", "0")
+        window = not headless and os.environ.get("G1_TWIN_HEADLESS", "") in ("", "0")
         with TwinProcess(task, mode=mode, viewer=window, camera=program.uses_camera) as twin:
             settings.iface, settings.domain = twin.iface, twin.domain
             ok = run(program, env, max_time=task["max_time_s"])
@@ -253,13 +261,19 @@ def run_task(task: dict, *, sim: bool, mode: Optional[str], view: bool = False, 
         write_status(folder, ok, task=task, env_name=env_name, mode=mode, started=started,
                      end_reason={"ctrl_c": "interrupted"}.get(stopped, stopped) if stopped
                      else "completed" if ok else "checks_failed")
+    truth = getattr(env, "twin_truth", None)
+    if sim and truth and (folder / "trace.npz").exists():
+        from g1.envs.trace import fill_base_true
+        fill_base_true(folder / "trace.npz", truth)
     update_summary(folder, health=env.health or None)
+    if sim and task.get("success"):
+        folder = twin_verdict(folder, env.health)
     if not sim:                                  # the robot: keep it? then the human's verdict
         from g1.agent import agent as prompts
         if not prompts.ask_save():
             shutil.rmtree(folder, ignore_errors=True)
             print("run not saved")
-            return 0 if ok else 1
+            return (0 if ok else 1), None
         human = prompts.ask_verdict()
         if human is not None:
             folder = label_run(folder, human)
@@ -267,7 +281,30 @@ def run_task(task: dict, *, sim: bool, mode: Optional[str], view: bool = False, 
     if row is not None:
         shown = folder.relative_to(ROOT) if folder.is_relative_to(ROOT) else folder
         print(f"result: {row['outcome']} ({row['outcome_source']}) -> {shown}")
-    return 0 if ok else 1
+    return (0 if ok else 1), folder
+
+
+def twin_verdict(folder: Path, health: dict) -> Path:
+    """A sim run of a task with ``success``: labelled from the twin's evaluation, not the model's
+    word. A run the runtime already failed or that was interrupted keeps its outcome; ``false_done``
+    is the model saying done when the twin says it was not."""
+    import json
+    from g1.agent.task import label_run, update_summary
+    evaluation = ((health or {}).get("twin") or {}).get("evaluation")
+    try:
+        summary = json.loads((folder / "summary.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return folder
+    if evaluation is None:
+        print("twin: no evaluation (the success criteria were not scored)")
+        return folder
+    passed = bool(evaluation["passed"])
+    update_summary(folder, false_done=summary.get("model_outcome") == "success" and not passed)
+    if summary.get("outcome") in ("failed", "interrupted"):
+        return folder
+    print(f"twin verdict: {'success' if passed else 'failed'}"
+          + ("" if passed else f" ({', '.join(evaluation['failed'])})"))
+    return label_run(folder, "success" if passed else "failed", source="twin")
 
 
 def run_main(argv: list[str]) -> int:
@@ -297,6 +334,7 @@ def run_main(argv: list[str]) -> int:
 
 COMMANDS = {
     "run": "run a task on the robot, or on the twin with --sim",
+    "bench": "run a suite of tasks on the twin, headless, repeated, scored by the twin; one table (suites/)",
     "status": "is the robot reachable and what state is it in (read-only)",
     "twin": "fetch the twin's model, walker and room assets (fetch | status)",
     "trace": "compare two runs of a task, e.g. the twin's and the robot's (compare | show)",
@@ -320,6 +358,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     command, rest = argv[0], argv[1:]
     if command == "run":
         return run_main(rest)
+    if command == "bench":
+        from g1.bench import main as bench_main
+        return bench_main(rest)
     if command == "status":
         from g1.envs.robot import status_main
         return status_main(rest)

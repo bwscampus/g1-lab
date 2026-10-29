@@ -79,6 +79,20 @@ def test_the_prompt_tells_no_world_facts(name):
     assert not leaks(ctx.instructions + task["instruction"], ROOM_NUMBERS), name
 
 
+@pytest.mark.parametrize("name", [n for n in instruction_tasks() if load_task(find(n))["success"]])
+def test_the_success_criteria_never_reach_the_model(name, tmp_path, monkeypatch):
+    # the twin scores them from its truth; the prompt holds the instruction and rules only
+    from g1.agent import agent as agent_module
+    task = load_task(find(name))
+    monkeypatch.setattr(agent_module.VLMDecider, "from_env", classmethod(lambda cls, *a, **k: Sequence([])))
+    agent = agent_module.build_agent(task, env_name="sim", can_walk=True, has_loco=True, runs=tmp_path)
+    agent.recorder.close("interrupted")       # its writer thread would keep pytest alive
+    text = agent.context.instructions + json.dumps(agent.context.record())
+    for key, value in task["success"].items():
+        assert key not in text, (name, key)
+    assert "success criteria" not in text.lower()
+
+
 @pytest.mark.skipif(bool(scene.missing()), reason="room assets not fetched (g1 twin fetch)")
 def test_the_observations_carry_only_what_the_robot_measures():
     task = load_task(find("point_at_the_laptop"))          # the twin starts beside the table, a laptop in the room

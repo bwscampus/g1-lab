@@ -496,6 +496,8 @@ class RobotEnv(Env):
         self.overruns = 0
         self.ticks = 0
         self._wall = self.link.now()
+        self._tick_at = None              # when the last tick ended, for the longest gap between two
+        self.max_tick_gap = 0.0
         self._health_at = self.link.now()
         return q0
 
@@ -548,6 +550,10 @@ class RobotEnv(Env):
             self.link.sleep(lag)
         elif lag < -CONTROL_DT:
             self.overruns += 1          # the program step took longer than a tick
+        now, last = self.link.now(), getattr(self, "_tick_at", None)
+        if last is not None:
+            self.max_tick_gap = max(getattr(self, "max_tick_gap", 0.0), now - last)
+        self._tick_at = now
         q = np.array([m.q for m in self.arm.state.motor_state[:NUM_JOINTS]])
         if self.monitor is not None:
             self._observe(q, action)
@@ -632,6 +638,7 @@ class RobotEnv(Env):
         monitor = getattr(self, "monitor", None)
         ok = True
         health: dict = {"joint_check": None, "violations": None, "violation_kinds": [], "overruns": 0,
+                        "overrun_fraction": None, "max_tick_gap_s": None, "timing": None, "load_avg": None,
                         "sdk_calls": len(self.sdk_log), "sdk_failed_codes": [], "fell": None, "twin": None}
         if monitor is not None and monitor.ticks:
             ok = monitor.report("sim" if sim else "robot")
@@ -643,7 +650,9 @@ class RobotEnv(Env):
             twin = getattr(self, "_twin_report", None)
             if twin is not None:
                 health["fell"] = twin.get("fallen_at") is not None
-                health["twin"] = {k: twin.get(k) for k in ("fallen_at", "pelvis_z", "fsm", "base_pose", "torque_limit_s")}
+                health["twin"] = {k: twin.get(k) for k in ("fallen_at", "pelvis_z", "fsm", "base_pose", "torque_limit_s",
+                                                           "evaluation")}
+                self.twin_truth = twin.get("truth")     # for trace.npz's base_true; never in the summary
         base = getattr(self, "base", None)
         if base is not None:
             print(base.summary())
@@ -651,7 +660,16 @@ class RobotEnv(Env):
             print(f"audio: {self.audio_calls} call(s)")
         failed = [e for e in self.sdk_log if e["code"] != 0]
         health["sdk_failed_codes"] = sorted({e["code"] for e in failed})
-        health["overruns"] = getattr(self, "overruns", 0)
+        overruns, ticks = getattr(self, "overruns", 0), getattr(self, "ticks", 0)
+        health["overruns"] = overruns
+        if ticks:
+            fraction = overruns / ticks
+            health.update(overrun_fraction=round(fraction, 4), max_tick_gap_s=round(getattr(self, "max_tick_gap", 0.0), 4),
+                          timing="degraded" if fraction > limits.get("overrun_fraction_max") else "ok")
+        try:
+            health["load_avg"] = [round(v, 2) for v in os.getloadavg()]   # a busy machine is the usual cause
+        except (AttributeError, OSError):
+            pass
         self.health = health
         if self.sdk_log:
             print(f"sdk: {len(self.sdk_log)} call(s), {len(failed)} failed"

@@ -10,7 +10,7 @@
 | **observation** | the one JSON object a turn sends: instruction, images, measured state, extra, `previous_result`. |
 | **decision** | the model's reply: `{"name": tool, "arguments": {...}}`, validated against the tool's schema. |
 | **execution result** | what the host reports after a tool: residuals, the commanded base displacement, a settle report — or why nothing ran. |
-| **verdict** | the human's success/failed label after the run. `done` is the model's conclusion, not the label. |
+| **verdict** | the success/failed label after the run: a human's on the robot, the twin's on `--sim` when the task has `success` criteria (`outcome_source` says which). `done` is the model's conclusion, not the label; `false_done` marks a `done` the twin did not confirm. |
 
 Retired words: skill, policy, primitive, routine, goal. Nothing in the repo is called a policy.
 
@@ -177,9 +177,19 @@ four kinds of file and nothing else (`g1/agent/episode.py`):
   time, joints and commands at both ends, the commanded base), its result in full after the settle,
   and the SDK calls it made. `tick_start`/`tick_end` are rows of `trace.npz` (one per control tick;
   `t_start`/`t_end` the same instants in run seconds), so a frame lines up with the measured joints.
-* `trace.npz`: every tick at 50 Hz, commanded and measured (on the twin, its true base pose too).
+* `trace.npz`: every tick at 50 Hz, commanded and measured (on the twin, its true base pose too: each
+  tick in-process; with `--sim`, the twin's samples from its Summary interpolated onto the ticks, which
+  both processes stamp on the monotonic clock).
 
-The human verdict wins the outcome; a model conclusion without one is `unreviewed`. A tools run
+`summary.json`'s `health` also says whether the run's timing can be trusted: `overrun_fraction` (ticks
+more than one tick late), `max_tick_gap_s`, `load_avg`, and `timing: degraded` above the limit
+`overrun_fraction_max`. A loaded machine makes the arms lag their commands, so a degraded run says
+little about the task.
+
+The verdict wins the outcome. On `--sim` a task with `success` criteria is scored by the twin from its
+truth (`g1/twin/core.py` `Evaluator`: the arm's ray to a target, how far the feet moved, forbidden
+contacts, a fall) and labelled from it (`outcome_source: twin`); the model never sees the criteria. On
+the robot it is the human's. A model conclusion with neither is `unreviewed`. A tools run
 has `summary.json` (its checks decide), `config.json` and `trace.npz`. Each run adds a line to the
 task's `results.jsonl` (the summary's comparable fields). A new file is a deliberate change: the
 tests assert the exact set.

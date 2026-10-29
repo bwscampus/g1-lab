@@ -146,6 +146,7 @@
     "twin_volume":                {"value": 50,     "unit": "0-100",  "source": "guess",      "note": "twin: the speaker volume GetVolume reports at start"},
     "twin_start_timeout_s":       {"value": 60.0,   "unit": "s",      "source": "repo",       "note": "--sim: longest wait for the twin process to load the model and walker and start serving"},
     "twin_status_period_s":       {"value": 10.0,   "unit": "s",      "source": "repo",       "note": "--sim with G1_VERBOSE=1: the twin's status line (pose, rates, real-time factor) every this many sim seconds"},
+    "twin_truth_period_s":        {"value": 0.1,    "unit": "s",      "source": "guess",      "note": "--sim: how often the twin keeps its true base pose for the run's trace.npz (base_true, interpolated onto the host's ticks); sent whole in the Summary at the end, so not every tick"},
     "twin_summary_timeout_s":     {"value": 5.0,    "unit": "s",      "source": "repo",       "note": "--sim: request timeout of the twin's Summary (did it fall, where the base really went) at the end of a run"},
     "sim_viewer_hold_s":          {"value": 2.0,    "unit": "s",      "source": "repo",       "note": "in-process twin (tests) with a viewer: the window stays open this long after the run"},
 
@@ -160,6 +161,7 @@
     "frame_max_age_s":            {"value": 0.5,   "unit": "s",     "source": "guess",      "note": "oldest camera frame a decision may be made on"},
     "frame_timeout_s":            {"value": 2.0,   "unit": "s",     "source": "guess",      "note": "longest wait for a fresh frame before deciding without one"},
     "max_failures":               {"value": 3,     "unit": "count", "source": "guess",      "note": "consecutive missing frames that end the run"},
+    "overrun_fraction_max":       {"value": 0.01,  "unit": "1",     "source": "guess",      "note": "a run with more of its ticks late than this (a tick more than one control_dt behind) is marked timing: degraded; on 2026-10-28 a loaded machine gave 952 of about 3000, an idle one gives none. g1 bench counts it as an infrastructure failure, not the task's"},
 
     "request_timeout_s":          {"value": 30.0,  "unit": "s",     "source": "guess",      "note": "longest one HTTP request to the model may take"},
     "image_width_px":             {"value": 640,   "unit": "px",    "source": "guess",      "note": "frames are downscaled to this width before they are sent"},

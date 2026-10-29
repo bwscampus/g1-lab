@@ -36,7 +36,9 @@ pip install -e ".[sim,dev]"          # unitree_sdk2py (needed for --sim too) / u
 g1 twin fetch                        # once: the twin's model (unitree_mujoco), walker (NVIDIA GR00T) and room into assets/
 
 g1 run TASK --sim [--mode gantry]    # the twin in the MuJoCo window (always; mjpython): starts it (TwinProcess),
-                                     # runs RobotEnv over DDS on lo0, stops it. Headless only in tests: G1_TWIN_HEADLESS=1
+                                     # runs RobotEnv over DDS on lo0, stops it. Headless only in tests (G1_TWIN_HEADLESS=1) and g1 bench
+g1 bench SUITE                       # suites/<name>/suite.json: its tasks on the twin, headless, repeat times,
+                                     # scored by the twin (each task's success), one table + report.json
 g1 run TASK --mode standing|gantry [--view]   # the robot; --mode is required. standing may walk, gantry never does;
                                      # --view: its head camera at http://127.0.0.1:8765 (live only)
 g1 status                            # read-only: link ok / robot refuses / no link (UNITREE_IFACE)
@@ -57,7 +59,9 @@ pytest tests/tools/test_tools.py::test_every_tool_pair_is_continuous
 ## Layout
 
 ```
-g1/cli.py          run | status | twin | trace; run_settings() (every setting an env reads), run_task(), run(), safe_return
+g1/cli.py          run | bench | status | twin | trace; run_settings() (every setting an env reads), run_task()/run_once(),
+                   twin_verdict(), run(), safe_return
+g1/bench.py        g1 bench: load_suite, run_suite, totals (task | execution | infrastructure), table
 g1/core/           config (joint table, STAND_Q, UPPER_BODY, LOCO_METHODS, BASE_VEL_MAX), limits (configs/limits.json),
                    action (Action, Obs, Segment, Runnable, ease, EPS), poses, images (Pillow, RGB), worker
 g1/tools/          __init__: discovery (TOOLS), menu(), the three renderings, parse_tool/parse_chain, Chain
@@ -76,6 +80,7 @@ g1/camera.py       Frame, Camera (+subscribe), DirCamera, WebRTCCamera, ShmCamer
 g1/vlm.py          VLMClient (Hugging Face or OpenRouter), load_dotenv
 g1/agent/          agent (Agent, build_agent), decider (AgentContext/AgentTurn/Decision, observation(), instructions(),
                    VLMDecider), episode (EpisodeWriter, load_episode), task (find, load_task, run_config, code_snapshot, record_result)
+suites/            stationary/ (point_at_the_laptop x 10); runs/ inside are git-ignored
 tasks/             tpose/ (a tools chain), find_the_mug/, point_at_the_laptop/, find_and_point_at_the_laptop/, sit_in_the_chair/ (instructions); runs and results.jsonl inside are git-ignored
 docs/              architecture, writing-a-tool, writing-a-task, running-on-the-robot, vision-model
 tests/             mirrors g1/ (core, tools, envs, agent, twin) + test_camera, test_cli, test_vlm; doubles.py (RedBallDecider,
@@ -152,6 +157,10 @@ root via `pythonpath`. `limits.ROOT` is the repo root (configs/, tasks/, assets/
   `Summary` (its `twin` service) fails the run on a fall.
 - Joint indexing is DDS order (= the twin model's motor order); index 29 is the arm_sdk weight slot.
 
+- **The twin judges sim runs.** A task's `success` (task.json) is scored by `g1/twin/core.py:Evaluator` from
+  the simulator's truth every tick (the arm's ray to a target, the feet's drift, forbidden contacts, a fall),
+  sent back in the twin's Summary, and labels the `--sim` run (`cli.twin_verdict`, `outcome_source: twin`,
+  `false_done`). Feet, not pelvis: the pelvis twists over planted feet. Never sent to the model.
 - **The model knows only what the robot knows**: its tools, the camera, the task's objective and rules,
   its own joints (measured), IMU and commands, and its own earlier turns. Never the room's layout (no
   furniture, wall or object positions or sizes) and never the twin's truth (true base pose, contacts), in sim

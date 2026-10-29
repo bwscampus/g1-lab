@@ -13,6 +13,7 @@ itself is ``python -m g1.twin.main serve ...``, not a user command.
 from __future__ import annotations
 
 import argparse
+import json
 import signal
 import sys
 import time
@@ -43,6 +44,8 @@ def _parser() -> argparse.ArgumentParser:
                    help=f"head camera size (default {HEAD_CAMERA_SIZE[0]}x{HEAD_CAMERA_SIZE[1]}; the robot streams 720x1280)")
     p.add_argument("--camera-fps", type=float, default=limits.get("twin_camera_fps"))
     p.add_argument("--no-camera", action="store_true", help="do not render the head camera")
+    p.add_argument("--success", type=json.loads, default=None, metavar="JSON",
+                   help="the task's success criteria, scored on the twin (task.json success)")
     p.add_argument("--seconds", type=float, default=None, help="stop after this long (default: until Ctrl-C)")
     return p
 
@@ -60,7 +63,8 @@ def run(args: argparse.Namespace) -> int:
         raise SystemExit("g1 twin refuses DDS domain 0: that is the robot's")
     fsm = args.fsm if args.fsm is not None else (FSM_DAMP if args.gantry else FSM_MAIN)
     twin = Twin(scene=args.scene, objects=args.sim_objects, obstacle=args.sim_obstacle,
-                camera_size=args.camera_size, fsm=fsm, band=args.gantry, voice="twin", start=args.start)
+                camera_size=args.camera_size, fsm=fsm, band=args.gantry, voice="twin", start=args.start,
+                success=args.success)
     viewer = None
     if not args.headless:
         if sys.platform == "darwin" and not getattr(mujoco.viewer, "_MJPYTHON", None):
@@ -144,6 +148,8 @@ class TwinProcess:
             self.cmd += ["--start", ",".join(f"{v:g}" for v in task["start"])]
         if task.get("camera_size"):
             self.cmd += ["--camera-size", "x".join(str(v) for v in task["camera_size"])]
+        if task.get("success"):
+            self.cmd += ["--success", json.dumps(task["success"])]
         if mode == "gantry":
             self.cmd.append("--gantry")
         if not viewer:
