@@ -66,7 +66,7 @@ g1/core/           config (joint table, STAND_Q, UPPER_BODY, LOCO_METHODS, BASE_
                    action (Action, Obs, Segment, Runnable, ease, EPS), poses, images (Pillow, RGB), worker
 g1/tools/          __init__: discovery (TOOLS), menu(), the three renderings, parse_tool/parse_chain, Chain
                    base: the Tool contract + the segment player + validate_args + num/integer/text/flag/limit
-                   move (move, walk_forward, turn) · arms (arm_path, look, point, tpose, sixseven) · gestures (wave_hand,
+                   move (move, walk_forward, turn) · arms (arm_path, look, point, lower_arm, tpose, sixseven) · gestures (wave_hand,
                    shake_hand) · posture (sit: SetFsmId(3)) · speech (say: AudioClient.TtsMaker) · control (hold, check + dry_run, done,
                    give_up, takeover, handback)
 g1/envs/           base (Env, EnvAbort, shield_sigint, verbose, sdk_log), monitor (JointMonitor), scene (the room),
@@ -117,7 +117,10 @@ root via `pythonpath`. `limits.ROOT` is the repo root (configs/, tasks/, assets/
   `handback`: 1→0 holding the last pose); walking tools use `{}` (base only); only `arm_path` and the arm
   presets move the arms, and a tool that needs a starting pose makes it its own first segment. No
   countdown; the bring-up says "entering control mode (FSM 200)" and skips the transition when already
-  there. The Ctrl-C safe return is the one deliberate exception (it ends at STAND).
+  there. The Ctrl-C safe return is one deliberate exception (it ends at STAND); the other is `point`:
+  it leaves the right arm up so the next image shows the aim, `lower_arm` lowers it, walking and gestures are
+  refused while it is up, and a run (agent or chain) that ends with it up lowers it before the hand-back.
+  While it is up the settle checks only the speed of the arm and the waist's pitch and roll (they sag under it).
 - **Every movement is dry-run before it executes** (`g1/tools/control.py:dry_run` through a
   `JointMonitor` from the commanded pose); a violation is `motion_not_executed`, spends a decision,
   moves nothing. **Errors are feedback**: no re-ask loop.

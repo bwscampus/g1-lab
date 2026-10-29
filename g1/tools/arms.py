@@ -80,16 +80,38 @@ class ArmPath(Tool):
                      for i, wp in enumerate(self.waypoints))
 
 
+def raises_arm(tool: Tool):
+    """Whether a tool leaves the right arm raised (``point``: True), lowered (any other tool
+    that moves it: False), or as it was (None). The agent and a chain lower a raised arm
+    before they hand the arms back."""
+    if isinstance(tool, Point):
+        return True
+    if any(j in seg.goal for seg in tool.segments() if isinstance(seg.goal, dict) for j in R_ARM):
+        return False
+    return None
+
+
+def arm_down(seconds: float) -> Segment:
+    """The right arm back to the stand pose."""
+    return Segment({j: STAND[j] for j in R_ARM}, seconds, label="arm down")
+
+
 class Point(Tool):
     """The right arm straight out along the torso's heading, tipped down by
-    ``down_deg``, held, then lowered to the stand pose. The waist is left where
-    it is, so the arm points where the camera looks."""
+    ``down_deg``, and left there: the next image shows where it points, so the
+    model can correct the aim (look, or point again) and then lower it
+    (``lower_arm``). The waist is left where it is, so the arm points where the
+    camera looks. A raised arm is lowered before the arms are handed back,
+    whatever ends the run."""
 
     name = "point"
     order = 25
     prompt = ("Point at something with the right arm: raise it straight out over rise_s seconds along the direction "
               "the torso (and the camera) faces, tipped down_deg below horizontal (0 to {limit:point_down_deg_max}), "
-              "hold it hold_s seconds, then lower it. It points straight ahead of the torso, so first turn the waist "
+              "hold it still hold_s seconds, and KEEP IT UP: the next image shows where it points. Check it there: if "
+              "it misses, correct it (look turns the waist and the raised arm with it; point again re-aims); "
+              "when it points at the target, lower it with lower_arm (before walking: a raised arm cannot walk; "
+              "it is lowered for you when the run ends). It points straight ahead of the torso, so first turn the waist "
               "(look) until the target is in the middle of the image (locate_point gives the look_yaw_deg that "
               "centres it, and its below_horizontal_deg); then aim down_deg by where it sits: the "
               f"image's centre row is about {math.degrees(HEAD_CAMERA_PITCH):.0f} degrees below horizontal, a target "
@@ -102,17 +124,29 @@ class Point(Tool):
               "rise_s": num(limit("point_rise_s_min"), limit("point_rise_s_max"), limit("point_rise_s_default"),
                             "seconds to raise and to lower the arm"),
               "hold_s": num(limit("point_hold_s_min"), limit("point_hold_s_max"), limit("point_hold_s_default"),
-                            "seconds to hold the point")}
+                            "seconds to hold still before the next image")}
 
     def segments(self) -> tuple[Segment, ...]:
         # a straight arm sags under gravity at arm_sdk's gains, most when level: aim that much higher
         lift = limits.get("point_sag_deg") * math.cos(math.radians(self.down_deg))
         aim = dict(zip(R_ARM, (-math.radians(90.0 - self.down_deg + lift), POINT_ROLL, 0.0, ELBOW_STRAIGHT,
                                0.0, 0.0, 0.0)))
-        down = {j: STAND[j] for j in R_ARM}
         return (Segment(aim, self.rise_s, label=f"pointing {self.down_deg:.0f} deg down"),
-                Segment(aim, self.hold_s, label="holding the point"),
-                Segment(down, self.rise_s, label="arm down"))
+                Segment(aim, self.hold_s, label="holding the point"))
+
+
+class LowerArm(Tool):
+    """The right arm back down to the stand pose, after a point."""
+
+    name = "lower_arm"
+    order = 26
+    prompt = ("Lower the right arm to the stand pose over seconds. Use it after point, once the image shows the "
+              "arm pointing at the target (or to stop pointing before walking).")
+    params = {"seconds": num(limit("point_rise_s_min"), limit("point_rise_s_max"), limit("point_rise_s_default"),
+                             "seconds to lower the arm")}
+
+    def segments(self) -> tuple[Segment, ...]:
+        return (arm_down(self.seconds),)
 
 
 class Look(Tool):

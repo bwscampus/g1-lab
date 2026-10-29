@@ -40,6 +40,9 @@ from g1.core.action import EPS, Action, Obs, Runnable
 from g1.core.images import sent_size
 from g1.core.config import CONTROL_DT, LOCO_FSM, UPPER_BODY, joint_index
 from g1.tools import Tool, menu, prefixed
+from g1.tools.arms import R_ARM, raises_arm
+
+LOADED_BY_POINT = frozenset(R_ARM) | {joint_index("waist_pitch"), joint_index("waist_roll")}
 from g1.tools.control import Handback, Takeover, dry_run
 from g1.vlm import IMAGE_WIDTH, Overloaded, QuotaExceeded
 
@@ -129,6 +132,7 @@ class Agent(Runnable):
         self._wall0 = 0.0
         self._wait_until = 0.0
         self._seated = False                      # a sit finished: nothing may walk or call onboard again
+        self._arm_up = False                      # the right arm is left pointing (point; lower_arm ends it)
         self.decider.start(self.context)
         self._enter_sub("takeover", 0.0, Takeover())
 
@@ -232,6 +236,15 @@ class Agent(Runnable):
         self._settle_vel = math.inf
         return self._hold()
 
+    def _handback(self) -> Tool:
+        """Hand the arms back; a right arm left pointing is lowered first, whatever ended the run."""
+        if not self._arm_up:
+            return Handback()
+        from g1.tools.arms import LowerArm
+        self._say("lowering the right arm before the hand-back")
+        return Tool.of([*LowerArm().segments(), *Handback().segments()], joints=self.joints, name="handback",
+                       allows_start=True)
+
     def _to_handback(self, t: float, result: str, error: Optional[str] = None,
                      reason: Optional[str] = None) -> Action:
         self.result = result
@@ -242,7 +255,7 @@ class Agent(Runnable):
         self._say(f"result: {result}" + (f" ({error})" if error else ""))
         if self.recorder is not None:
             self.recorder.update(end_reason=self.end_reason, error=error)
-        self._enter_sub("handback", t, Handback())
+        self._enter_sub("handback", t, self._handback())
         return self._hold()
 
     def _fail(self, t: float, error: str, reason: str) -> Action:
@@ -326,7 +339,10 @@ class Agent(Runnable):
         return {"settled": self._settled >= self.settle_samples, "observed_s": self._settle_elapsed,
                 "consecutive_samples": self._settled, "required_samples": self.settle_samples,
                 "max_position_error_rad": self._settle_err, "max_velocity_rad_s": self._settle_vel,
-                "position_tolerance_rad": self.settle_tol, "velocity_tolerance_rad_s": self.settle_vel_tol}
+                "position_tolerance_rad": self.settle_tol, "velocity_tolerance_rad_s": self.settle_vel_tol,
+                **({"position_excludes": "the raised right arm and the waist's pitch and roll (they sag under "
+                                         "the arm's weight; only their speed is checked)"}
+                   if self._arm_up else {})}
 
     def _feedback(self, obs: Obs) -> None:
         """The finished tool's execution result: full in the record, compact for the model."""
@@ -394,7 +410,11 @@ class Agent(Runnable):
             return self._to_settle(t, obs)
 
         if st == "settle":
-            err = float(np.max(np.abs(obs.q[self.joints] - self._cmd[self.joints])))
+            # a pointing arm is commanded above its aim by the sag it will have (point_sag_deg), and its
+            # weight bends the waist forward (9 deg on the twin at arm_sdk's gains): while it is up those
+            # joints never meet their commands, so only their speed counts
+            held = [j for j in self.joints if not (self._arm_up and j in LOADED_BY_POINT)]
+            err = float(np.max(np.abs(obs.q[held] - self._cmd[held])))
             if obs.qd is not None:
                 vel = float(np.max(np.abs(obs.qd[self.joints])))
             else:
@@ -538,6 +558,9 @@ class Agent(Runnable):
         if tool.needs_loco and not self.has_loco:
             return self._reject(t, obs, d.name, "tool_rejected: no onboard controller for gestures in this env",
                                 raw=d.raw, arguments=d.arguments)
+        if self._arm_up and (tool.needs_base or tool.needs_loco):
+            return self._reject(t, obs, d.name, "tool_rejected: the right arm is raised (point); lower it with "
+                                "lower_arm before walking or a gesture", raw=d.raw, arguments=d.arguments)
         if self._seated and (tool.needs_base or tool.needs_loco):
             return self._reject(t, obs, d.name, "tool_rejected: the robot is seated; it cannot walk, gesture or "
                                 "sit again (end with done)", raw=d.raw, arguments=d.arguments)
@@ -548,6 +571,9 @@ class Agent(Runnable):
                                 violations=verdict["violations"], n_violations=verdict["n_violations"],
                                 requested_motion={k: v for k, v in d.arguments.items() if k != "note"})
         self._decision, self._tool = d, tool
+        raised = raises_arm(tool)
+        if raised is not None:
+            self._arm_up = raised
         self._rec["action"] = {"tool": tool.name, "args": dict(tool.args), "dry_run": verdict,
                                "planned_s": tool.duration, "needs_base": tool.needs_base,
                                "t_start": t, "t_end": None, "tick_start": self._tick(t), "tick_end": None,

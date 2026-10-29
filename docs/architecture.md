@@ -78,6 +78,9 @@ Offered to the model (`menu(allow_base, has_loco)` hides what an env cannot do; 
 ```
 move(dx_m, dy_m, dyaw_deg)      one base displacement -> LocoClient.Move (translate, then turn)   ≙ move_to
 arm_path(waypoints)             joint-space waypoints over waist + arms -> arm_sdk               ≙ move_eef_chunk
+look(yaw_deg, seconds)          turn the waist (the camera and a raised arm turn with it)
+point(down_deg, rise_s, hold_s) the right arm straight out where the torso faces, left UP: the next image shows it
+lower_arm(seconds)              the right arm back down (a run that ends pointing lowers it before the hand-back)
 hold(seconds)                   stand still
 check(tool, arguments)          dry-run without moving                                          ≙ check_path
 wave_hand / shake_hand          the onboard controller's own gestures (the twin plays stand-ins) ≙ set_gripper

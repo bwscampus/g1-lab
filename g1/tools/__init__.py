@@ -266,6 +266,10 @@ class Chain(Tool):
             if i > 0 and pause > 0:
                 parts.append(Hold(seconds=pause))
             parts.append(t)
+        from g1.tools.arms import LowerArm, raises_arm
+        raised = [r for r in map(raises_arm, tools) if r is not None]
+        if raised and raised[-1]:                 # a chain ending with the arm pointing lowers it first
+            parts.append(LowerArm())
         parts.append(Handback())
         segs: list[Segment] = []
         joints: set[int] = set()

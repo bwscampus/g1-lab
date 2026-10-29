@@ -684,13 +684,17 @@ class RobotEnv(Env):
 
     def _twin_verdict(self) -> bool:
         """What only the twin knows: did it fall, where did the base really go."""
-        try:
-            client = self.link.twin_client()
-            client.SetTimeout(limits.get("twin_summary_timeout_s"))
-            client.Init()
-            code, report = client.Summary()
-        except Exception as e:
-            code, report = -1, f"{type(e).__name__}: {e}"
+        for attempt in range(2):         # a loaded machine can miss one reply; the verdict is worth a second ask
+            try:
+                client = self.link.twin_client()
+                client.SetTimeout(limits.get("twin_summary_timeout_s"))
+                client.Init()
+                code, report = client.Summary()
+            except Exception as e:
+                code, report = -1, f"{type(e).__name__}: {e}"
+            if code == 0 or not sdk.is_transport(code):
+                break
+            print(f"twin: no summary yet ({sdk.explain(code)}), asking again")
         if code != 0 or not isinstance(report, dict):
             print(f"twin: no summary ({sdk.explain(code) if code != -1 else report})")
             return True

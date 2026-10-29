@@ -117,15 +117,25 @@ def test_move_ends_exactly_where_asked():
     assert validate_args(TOOLS["move"], {"dx_m": 9})[0]["dx_m"] == 3.0
 
 
-def test_point_moves_only_the_right_arm_and_lowers_it():
+def test_point_moves_only_the_right_arm_and_keeps_it_up_until_lower_arm():
     from g1.core.poses import STAND
-    from g1.tools.arms import R_ARM
+    from g1.tools.arms import R_ARM, raises_arm
     p = TOOLS["point"](down_deg=0.0)
     segs = p.segments()
     assert all(set(s.goal) == set(R_ARM) for s in segs)
     assert segs[0].goal[R_ARM[0]] < -1.57 and segs[0].goal[R_ARM[3]] == pytest.approx(1.57)   # level, aimed above the sag
     assert TOOLS["point"](down_deg=60.0).segments()[0].goal[R_ARM[0]] > segs[0].goal[R_ARM[0]]   # steeper aims lower
-    assert segs[-1].goal == {j: STAND[j] for j in R_ARM}
+    assert segs[-1].goal == segs[0].goal                         # it ends pointing: the next image shows the arm
+    lower = TOOLS["lower_arm"]()
+    assert lower.segments()[-1].goal == {j: STAND[j] for j in R_ARM}
+    assert (raises_arm(p), raises_arm(lower), raises_arm(TOOLS["look"](yaw_deg=10)), raises_arm(TOOLS["tpose"]())) == \
+        (True, False, None, False)
+    # a chain that ends pointing lowers the arm before it hands back
+    from g1.tools import parse_chain
+    chain = parse_chain("point:20")
+    labels = [seg.label for seg in chain.segments()]
+    assert labels.index("lower_arm: arm down") < labels.index("handback: releasing control")
+    assert [s.label for s in parse_chain("point:20,lower_arm:1").segments()].count("lower_arm: arm down") == 1
     actions = play(bookended(TOOLS["look"](yaw_deg=30), p))
     assert actions[-1].q[WAIST_YAW] == pytest.approx(math.radians(30), abs=1e-6)              # the waist stays
 
@@ -184,9 +194,9 @@ def test_gestures_emit_one_onboard_call_and_the_twin_waves(capsys):
         DampGesture.check_definition()
     with pytest.raises(ValueError, match="needs_loco"):
         NoLoco.check_definition()
-    assert [t["function"]["name"] for t in function_schemas(menu(True))] == ["move", "arm_path", "look", "point", "hold", "check",
+    assert [t["function"]["name"] for t in function_schemas(menu(True))] == ["move", "arm_path", "look", "point", "lower_arm", "hold", "check",
                                                                            "locate_point", "say", "done", "give_up"]
-    assert [t["function"]["name"] for t in function_schemas(menu(True, True))][7:9] == ["wave_hand", "shake_hand"]
+    assert [t["function"]["name"] for t in function_schemas(menu(True, True))][8:10] == ["wave_hand", "shake_hand"]
 
 
 # --------------------------------------------------------------------------
@@ -212,11 +222,11 @@ def test_validate_args():
 
 
 def test_menu_and_parse():
-    assert [t.name for t in menu(False)] == ["arm_path", "look", "point", "hold", "check", "locate_point", "say", "done",
+    assert [t.name for t in menu(False)] == ["arm_path", "look", "point", "lower_arm", "hold", "check", "locate_point", "say", "done",
                                              "give_up"]
-    assert [t.name for t in menu(True)] == ["move", "arm_path", "look", "point", "hold", "check", "locate_point", "say",
+    assert [t.name for t in menu(True)] == ["move", "arm_path", "look", "point", "lower_arm", "hold", "check", "locate_point", "say",
                                             "done", "give_up"]
-    assert [t.name for t in menu(True, True)] == ["move", "arm_path", "look", "point", "hold", "check", "locate_point", "wave_hand",
+    assert [t.name for t in menu(True, True)] == ["move", "arm_path", "look", "point", "lower_arm", "hold", "check", "locate_point", "wave_hand",
                                                  "shake_hand", "sit", "say", "done", "give_up"]
     assert "sit" not in [t.name for t in menu(False, True)]                    # never on the gantry
     assert {n for n in TOOLS if not TOOLS[n].visible} == {"walk_forward", "turn", "tpose", "sixseven",
