@@ -81,3 +81,18 @@ def test_criteria_are_checked():
         Evaluator(Twin(), {"point_at": "laptop", "within_deg": 5, "for_s": 1, "acuracy": 1})
     with pytest.raises(ValueError, match="needs within_deg and for_s"):
         Evaluator(Twin(), {"point_at": "laptop"})
+
+
+@pytest.mark.parametrize("error_deg, passed", [(10.5, True), (11.0, True), (11.5, False)])
+def test_angles_pass_within_the_margin(error_deg, passed):
+    # a task's 10 deg accepts up to 10 + success_margin_deg (1 deg) for measurement error
+    from g1.core import limits
+    from g1.twin.core import Twin
+    assert limits.get("success_margin_deg") == 1.0
+    twin = Twin(scene="room", objects=[scene.parse_object(o) for o in LAPTOP["objects"]], start=LAPTOP["start"],
+                success={"point_at": "laptop", "within_deg": 10, "for_s": 1.0})
+    twin.evaluator.pointing_error_deg = lambda: error_deg
+    for _ in range(60):                                     # 1.2 s of control ticks
+        twin.evaluator.tick(0.02)
+    r = twin.evaluator.result()
+    assert r["passed"] is passed and r["margin_deg"] == 1.0

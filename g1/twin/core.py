@@ -42,7 +42,8 @@ BAND_KP = limits.get("twin_band_kp")
 BAND_KD = limits.get("twin_band_kd")
 ROPE_SLACK = limits.get("twin_rope_slack_m")   # below the standing torso: slack in any stance, so the feet carry it
 ROPE_LATERAL = limits.get("twin_rope_lateral")  # sideways stiffness and damping, as a fraction
-TRUTH_PERIOD = limits.get("twin_truth_period_s")   # the base truth kept for the host's trace
+TRUTH_PERIOD = limits.get("twin_truth_period_s")
+MARGIN_DEG = limits.get("success_margin_deg")      # an angle criterion passes this much beyond its number   # the base truth kept for the host's trace
 # the right arm's pointing ray: shoulder to wrist (the arm is straight when it points)
 ARM_RAY = ("right_shoulder_pitch_link", "right_wrist_yaw_link")
 FEET = ("left_ankle_roll_link", "right_ankle_roll_link")
@@ -73,6 +74,7 @@ class Evaluator:
         feet_yaw_drift_max_deg  ... and how far the line between them may turn
         no_contact              geoms (or bodies) by name or prefix the robot must never touch
 
+    The angle criteria pass up to success_margin_deg beyond their number (measurement error).
     A fall always fails. ``result()`` is the verdict and what was measured."""
 
     def __init__(self, twin: "Twin", criteria: dict) -> None:
@@ -138,7 +140,7 @@ class Evaluator:
         if self.target_geoms:
             err = self.pointing_error_deg()
             self.error_min = min(self.error_min, err)
-            self.within_s = self.within_s + dt if err <= c["within_deg"] else 0.0
+            self.within_s = self.within_s + dt if err <= c["within_deg"] + MARGIN_DEG else 0.0
             if self.within_s > self.within_best_s:
                 self.within_best_s, self.error_at_best = self.within_s, err
         (mid0, yaw0), (mid, yaw) = self.feet0, self._feet()
@@ -170,13 +172,13 @@ class Evaluator:
                 failed.append("point_at")
         if "feet_drift_max_m" in c and self.drift_max > c["feet_drift_max_m"]:
             failed.append("feet_drift_max_m")
-        if "feet_yaw_drift_max_deg" in c and self.yaw_drift_max > c["feet_yaw_drift_max_deg"]:
+        if "feet_yaw_drift_max_deg" in c and self.yaw_drift_max > c["feet_yaw_drift_max_deg"] + MARGIN_DEG:
             failed.append("feet_yaw_drift_max_deg")
         if self.contacts:
             failed.append("no_contact")
         if measured["fell"]:
             failed.append("fell")
-        return {"passed": not failed, "failed": failed, "criteria": c, "measured": measured}
+        return {"passed": not failed, "failed": failed, "criteria": c, "margin_deg": MARGIN_DEG, "measured": measured}
 
 
 class Twin:

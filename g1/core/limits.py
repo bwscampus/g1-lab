@@ -42,7 +42,7 @@ NAMES = (
     "twin_domain", "twin_lowstate_hz", "twin_camera_fps", "twin_camera_height_px", "twin_camera_width_px", "twin_settle_s", "twin_start_z_m", "twin_rope_slack_m", "twin_rope_lateral", "twin_walk_floor_margin", "twin_vel_integral_max", "twin_vel_filter", "twin_gesture_edge", "twin_wave_amp_rad", "twin_wave_hz", "twin_shake_amp_rad", "twin_shake_hz", "twin_volume", "twin_start_timeout_s", "twin_status_period_s", "twin_summary_timeout_s", "twin_truth_period_s", "sim_viewer_hold_s",
     "max_time_s",
     "settle_min_s", "settle_pos_tol_rad", "settle_vel_tol", "settle_samples", "settle_timeout_s",
-    "frame_max_age_s", "frame_timeout_s", "max_failures", "overrun_fraction_max", "bench_run_mb", "bench_parallel_max",
+    "frame_max_age_s", "frame_timeout_s", "max_failures", "overrun_fraction_max", "success_margin_deg", "bench_run_mb", "bench_parallel_max",
 )
 
 
