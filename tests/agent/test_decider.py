@@ -200,16 +200,34 @@ def test_hf_decider_bad_reply_is_a_protocol_error():
 
 def test_hf_client_steps_down_structured_output_and_classifies_errors():
     calls = []
-    replies = [RequestError(400, "response_format json_schema is not supported"), TURN,
+    replies = [RequestError(400, "response_format json_schema is not supported"),
+               RequestError(400, "response_format json_schema is not supported"), TURN,
                RequestError(400, "response_format not supported"), TURN, TURN]
     client = VLMClient("m/vl", "hf_x", transport=transport_of(replies, calls))
     assert client.complete([], schema={"type": "object"}) == TURN
-    assert [c.get("response_format", {}).get("type") for c in calls] == ["json_schema", "json_object"]
+    assert [c.get("response_format", {}).get("type") for c in calls] == ["json_schema", "json_schema", "json_object"]
+    assert [c["response_format"]["json_schema"]["strict"] for c in calls[:2]] == [True, False]   # strict, then not
     assert client.response_mode == "json_object" and not client.json_schema
     assert client.complete([], schema={"type": "object"}) == TURN
-    assert [c.get("response_format", {}).get("type") for c in calls[2:]] == ["json_object", None]
+    assert [c.get("response_format", {}).get("type") for c in calls[3:]] == ["json_object", None]
     assert client.response_mode == "none" and client.last_usage == {"prompt_tokens": 10, "completion_tokens": 3}
-    assert client.complete([]) == TURN and "response_format" not in calls[-1] and client.calls == 5
+    assert client.complete([]) == TURN and "response_format" not in calls[-1] and client.calls == 6
+
+
+def test_openai_refusals_step_down_to_a_schema_it_accepts():
+    # OpenAI through OpenRouter (2026-10-29): strict mode refuses minProperties; not strict, the same schema is fine
+    calls = []
+    strict = ("Invalid schema for response_format 'selection': In context=('properties', 'arguments'), "
+              "'minProperties' is not permitted.")
+    client = VLMClient("m/vl", "k", transport=transport_of([RequestError(400, strict), TURN, TURN], calls))
+    assert client.complete([], schema={"type": "object"}) == TURN
+    assert client.response_mode == "json_schema" and client.json_schema and not client.json_strict
+    assert client.complete([], schema={"type": "object"}) == TURN and calls[-1]["response_format"]["json_schema"]["strict"] is False
+    # and json_object, which it refuses unless the input says "json", steps down to no response format
+    calls.clear()
+    words = "Response input messages must contain the word 'json' in some form to use 'text.format' of type 'json_object'."
+    client = VLMClient("m/vl", "k", json_schema=False, transport=transport_of([RequestError(400, words), TURN], calls))
+    assert client.complete([]) == TURN and client.response_mode == "none"
     assert isinstance(classify(429, ""), Overloaded) and isinstance(classify(503, ""), Overloaded)
     assert isinstance(classify(500, "The model is overloaded"), Overloaded)
     assert isinstance(classify(402, ""), QuotaExceeded) and isinstance(classify(403, "monthly quota"), QuotaExceeded)

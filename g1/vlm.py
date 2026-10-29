@@ -245,9 +245,10 @@ class VLMClient:
     """One chat completion at a time against the provider's endpoint.
     ``transport`` is injectable for tests.
 
-    Structured output is asked for in three steps, each dropped for the rest
-    of the session on a 400 that names it: a ``json_schema`` response format
-    when the caller passes a schema, then ``json_object``, then nothing (the
+    Structured output is asked for in steps, each dropped for the rest
+    of the session on a 400 that names it: a strict ``json_schema`` response format
+    when the caller passes a schema, the same not strict (OpenAI's strict mode refuses
+    keywords such as minProperties), then ``json_object``, then nothing (the
     prompt alone); ``stream_options`` is dropped the same way for servers that
     reject it. ``response_mode`` says which one the last call used; the caller
     validates the reply itself either way. ``last_usage`` holds the provider's
@@ -268,6 +269,7 @@ class VLMClient:
         self.stream = stream
         self.json_mode = json_mode
         self.json_schema = json_schema
+        self.json_strict = True
         self.stream_options = True
         self.timeout = timeout
         self.on_text = on_text
@@ -299,7 +301,8 @@ class VLMClient:
             if schema is not None and self.json_schema:
                 self.response_mode = "json_schema"
                 attempt["response_format"] = {"type": "json_schema",
-                                              "json_schema": {"name": "selection", "schema": schema, "strict": True}}
+                                              "json_schema": {"name": "selection", "schema": schema,
+                                                              "strict": self.json_strict}}
             elif self.json_mode:
                 self.response_mode = "json_object"
                 attempt["response_format"] = {"type": "json_object"}
@@ -316,7 +319,11 @@ class VLMClient:
                 if e.status == 400 and self.reasoning_effort is not None and "reasoning_effort" in e.body:
                     self.reasoning_effort = None
                     continue
-                mentions = e.status == 400 and any(k in e.body for k in ("response_format", "json_schema", "schema"))
+                mentions = e.status == 400 and any(k in e.body for k in ("response_format", "json_schema", "schema",
+                                                                         "json_object"))
+                if mentions and self.response_mode == "json_schema" and self.json_strict:
+                    self.json_strict = False
+                    continue
                 if mentions and self.response_mode == "json_schema":
                     self.json_schema = False
                     continue
