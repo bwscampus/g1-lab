@@ -109,7 +109,7 @@ radians, merged onto the previous pose, so a segment may set only some joints) o
   A FAIL names the joint, the tick and the value; so does a fall. The MuJoCo window shows it.
 * Chained (`"tools": "bow:20,hold:1,bow:10"`), each tool starts from the previous tool's last
   *commanded* pose, so the seam is continuous and the velocity gate covers it.
-* Offered to the model, its prompt goes in the system prompt and its schema in the catalog;
+* Offered to the model, its prompt and schema go with every request as a function definition;
   before it executes, the agent dry-runs it through the monitor from the commanded pose (the
   model's `check` does the same on request) and a violation is fed back as
   `motion_not_executed` without moving. While it runs, a record (frame + joints) is closed

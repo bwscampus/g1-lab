@@ -224,7 +224,7 @@ def test_an_instruction_task_runs_the_agent(tmp_path, monkeypatch, capsys):
     config = json.loads((run_dir / "config.json").read_text())
     assert config["env"] == "sim" and config["task"]["safety_notes"] == ["a wall behind"]
     assert config["system_prompt"] == dec.context.instructions and config["menu"] == [t.name for t in dec.context.menu]
-    assert config["output_schema"] == dec.context.output_schema and "a wall behind" in config["system_prompt"]
+    assert config["tools"] == dec.context.tools and "output_schema" not in config and "a wall behind" in config["system_prompt"]
     import numpy as np
     trace = np.load(run_dir / "trace.npz")                          # a step's ticks are rows of the trace
     step = json.loads((run_dir / "step_0001.json").read_text())

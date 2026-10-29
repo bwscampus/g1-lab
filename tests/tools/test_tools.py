@@ -8,9 +8,8 @@ from g1.cli import run
 from g1.core import limits
 from g1.core.action import Obs, Segment
 from g1.core.config import BASE_VEL_MAX, STAND_Q
-from g1.tools import (TOOLS, Chain, Tool, function_schemas, limit, load_module, menu, num, output_schema,
-                      parameters, parse_chain, parse_tool, prefixed, prompt_catalog, unregister,
-                      validate_args)
+from g1.tools import (TOOLS, Chain, Tool, function_schemas, limit, load_module, menu, num, parameters,
+                      parse_chain, parse_tool, prefixed, unregister, validate_args)
 from g1.tools.arms import WAIST_YAW
 from g1.tools.control import Handback, Takeover
 from tests.doubles import sim_env
@@ -343,18 +342,14 @@ def test_limits_are_read_when_the_schema_is(tmp_path):
         limit("nope")
 
 
-def test_renderings():
+def test_the_model_is_offered_function_definitions():
     m = menu(True)
-    bullets = prompt_catalog(m)
-    assert bullets.startswith("- move: ") and bullets.count("\n") == len(m) - 1
     fns = function_schemas(m)
     assert [f["function"]["name"] for f in fns] == [t.name for t in m]
     assert fns[0]["function"]["parameters"]["properties"]["note"]["minLength"] == 1
     assert next(f for f in fns if f["function"]["name"] == "check")["function"]["parameters"]["properties"]["tool"]["enum"][0] == "move"
-    schema = output_schema(m)
-    assert "One tool selection for a Unitree G1 humanoid with 29 joints" in schema["description"]
-    loose = output_schema(m, strict=False)
-    assert "default" in next(a for a in loose["properties"]["arguments"]["anyOf"] if "seconds" in a["properties"])["properties"]["seconds"]
+    assert all(f["type"] == "function" and f["function"]["description"] for f in fns)
+    assert "default" in next(f for f in fns if f["function"]["name"] == "hold")["function"]["parameters"]["properties"]["seconds"]
 
 
 def test_definition_errors_name_the_problem(tmp_path):

@@ -1,6 +1,6 @@
 """The vision-language model client: Hugging Face Inference Providers or
 OpenRouter over their OpenAI-compatible chat-completions endpoint, with image
-input, stdlib urllib, streamed SSE and structured output with a step-down.
+input, stdlib urllib and streamed SSE; the model answers with one tool call.
 Shared by the decider (choose a tool) and the demo keyframe selector.
 
 Which model is asked, and how, is configs/model.json: ``provider``, a model id
@@ -27,6 +27,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from dataclasses import dataclass
 from typing import Callable, Iterator, Optional
 
 import numpy as np
@@ -184,6 +185,29 @@ class TruncatedReply(RequestError):
         self.text = text
 
 
+class NoToolCall(RequestError):
+    """The model answered without exactly one tool call (text only, or several calls). The agent
+    treats it as an invalid selection: it costs a decision and the model is told."""
+
+    def __init__(self, text: str, n: int, names: list) -> None:
+        what = "no tool call" if n == 0 else f"{n} tool calls ({', '.join(names)})"
+        super().__init__(200, f"{what}; call exactly one tool" + (f" (text: {text[:200]!r})" if text else ""))
+        self.text = text
+
+
+# what a host says when it takes no tool calls (OpenRouter: no endpoint left after "Tool Compatibility")
+TOOLS_REFUSED = ("tool_choice", "Tool Compatibility", "tools are not supported", "does not support tools",
+                 "tool calling", "function calling")
+
+
+class ToolsUnsupported(RequestError):
+    """The model or host takes no tool calls: retrying will not help, choose another."""
+
+    def __init__(self, status: int, body: str, provider: str = "", model: str = "") -> None:
+        super().__init__(status, f"{model} on {provider} takes no tool calls, which the agent needs: choose a model "
+                                 f"and host that support them in configs/model.json ({body[:300]})")
+
+
 def classify(status: int, body: str) -> RequestError:
     """The right error class for an HTTP failure, judged like their overload
     detection: by status and by what the body says."""
@@ -246,26 +270,32 @@ def _sse_post(url: str, headers: dict, body: dict, timeout: float) -> Iterator[s
             yield "\n".join(plain)
 
 
-class VLMClient:
-    """One chat completion at a time against the provider's endpoint.
-    ``transport`` is injectable for tests.
+@dataclass
+class ToolCall:
+    """The model's one tool call: its id (to answer it in the history), the tool's name and its
+    arguments as the model wrote them (a JSON string), and any text it sent alongside."""
+    id: str
+    name: str
+    arguments: str
+    text: str = ""
 
-    Structured output is asked for in steps, each dropped for the rest
-    of the session on a 400 that names it: a strict ``json_schema`` response format
-    when the caller passes a schema, the same not strict (OpenAI's strict mode refuses
-    keywords such as minProperties), then ``json_object``, then nothing (the
-    prompt alone); ``stream_options`` is dropped the same way for servers that
-    reject it. ``response_mode`` says which one the last call used; the caller
-    validates the reply itself either way. ``last_usage`` holds the provider's
-    token counts for the last call, ``last_elapsed`` its wall time, ``last_chunks``
-    everything the server sent back for it, as sent: each streamed payload, and the
-    status and body of any attempt it refused before a step-down."""
+
+class VLMClient:
+    """One chat completion at a time against the provider's endpoint, answered with exactly
+    one tool call (``tools``, ``tool_choice: required``, one call at a time): the model picks a
+    tool and fills in its arguments, the form models are trained for. Only models and hosts
+    that support tool calls are used (configs/model.json). ``transport`` is injectable for tests.
+
+    ``stream_options`` and ``reasoning_effort`` are dropped for the rest of the session on a
+    400 that names them. ``last_usage`` holds the provider's token counts for the last call,
+    ``last_elapsed`` its wall time, ``last_chunks`` everything the server sent back for it, as
+    sent: each streamed payload, and the status and body of any attempt it refused."""
+
+    response_mode = "tool_calls"
 
     def __init__(self, model: str = DEFAULT_MODEL, token: Optional[str] = None, *,
                  base_url: str = HF_BASE_URL, provider: str = "huggingface", routing: Optional[dict] = None,
-                 stream: bool = True,
-                 json_mode: bool = True, json_schema: bool = True,
-                 timeout: float = AGENT_SETTINGS["request_timeout_s"],
+                 stream: bool = True, timeout: float = AGENT_SETTINGS["request_timeout_s"],
                  on_text: Optional[Callable[[str], None]] = None,
                  transport: Optional[Callable[[str, dict, dict, float], Iterator[str]]] = None) -> None:
         self.model = model
@@ -274,14 +304,10 @@ class VLMClient:
         self.provider = provider
         self.routing = dict(routing) if routing else None
         self.stream = stream
-        self.json_mode = json_mode
-        self.json_schema = json_schema
-        self.json_strict = True
         self.stream_options = True
         self.timeout = timeout
         self.on_text = on_text
         self.transport = transport or _sse_post
-        self.response_mode = "none"
         self.last_usage: Optional[dict] = None
         self.last_elapsed = 0.0
         self.last_chunks: list = []
@@ -295,10 +321,14 @@ class VLMClient:
         kw.setdefault("routing", ROUTING if provider == "openrouter" else None)
         return cls(model, key, base_url=base_url, provider=provider, **kw)
 
-    def complete(self, messages: list[dict], *, max_tokens: Optional[int] = None,
-                 temperature: float = TEMPERATURE, schema: Optional[dict] = None) -> str:
+    def complete(self, messages: list[dict], *, tools: list[dict], max_tokens: Optional[int] = None,
+                 temperature: float = TEMPERATURE) -> ToolCall:
+        """The model's one tool call for ``messages``, choosing among ``tools`` (OpenAI function
+        definitions). ``NoToolCall`` if it answered without exactly one; ``ToolsUnsupported`` if
+        the host takes no tool calls."""
         body = {"model": self.model, "stream": self.stream, "temperature": temperature,
-                "max_tokens": max_tokens or self.max_tokens, "messages": messages}
+                "max_tokens": max_tokens or self.max_tokens, "messages": messages,
+                "tools": tools, "tool_choice": "required", "parallel_tool_calls": False}
         if self.routing:
             body["provider"] = self.routing
         self.last_chunks = []
@@ -308,39 +338,19 @@ class VLMClient:
                 attempt["stream_options"] = {"include_usage": True}
             if self.reasoning_effort is not None:
                 attempt["reasoning_effort"] = self.reasoning_effort
-            if schema is not None and self.json_schema:
-                self.response_mode = "json_schema"
-                attempt["response_format"] = {"type": "json_schema",
-                                              "json_schema": {"name": "selection", "schema": schema,
-                                                              "strict": self.json_strict}}
-            elif self.json_mode:
-                self.response_mode = "json_object"
-                attempt["response_format"] = {"type": "json_object"}
-            else:
-                self.response_mode = "none"
             try:
                 return self._send(attempt)
+            except NoToolCall:
+                raise
             except RequestError as e:
                 self.last_chunks.append({"http_status": e.status, "body": e.body})
-                # Structured output and stream_options are server-dependent: step down and retry.
+                if e.status in (400, 404) and any(k in e.body for k in TOOLS_REFUSED):
+                    raise ToolsUnsupported(e.status, e.body, self.provider, self.model) from None
                 if e.status == 400 and self.stream_options and "stream_options" in e.body:
                     self.stream_options = False
                     continue
                 if e.status == 400 and self.reasoning_effort is not None and "reasoning_effort" in e.body:
                     self.reasoning_effort = None
-                    continue
-                mentions = e.status == 400 and any(k in e.body for k in ("response_format", "json_schema", "schema",
-                                                                         "json_object"))
-                # OpenRouter, routed to hosts that take no response_format (Baseten): no endpoint is left
-                mentions = mentions or (e.status == 404 and "Filter by Parameters" in e.body)
-                if mentions and self.response_mode == "json_schema" and self.json_strict:
-                    self.json_strict = False
-                    continue
-                if mentions and self.response_mode == "json_schema":
-                    self.json_schema = False
-                    continue
-                if mentions and self.response_mode == "json_object":
-                    self.json_mode = False
                     continue
                 # Some providers refuse reasoning_effort without naming it ("invalid request error"):
                 # a 400 that names nothing above drops it once.
@@ -349,11 +359,12 @@ class VLMClient:
                     continue
                 raise
 
-    def _send(self, body: dict) -> str:
+    def _send(self, body: dict) -> ToolCall:
         headers = {"Content-Type": "application/json"}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         parts: list[str] = []
+        calls: dict[int, dict] = {}            # streamed tool-call fragments, joined by index
         finish = None
         self.last_usage = None
         self.calls += 1
@@ -377,16 +388,28 @@ class VLMClient:
                     continue
                 c = choices[0]
                 finish = c.get("finish_reason") or finish
-                delta = (c.get("delta") or {}).get("content") or (c.get("message") or {}).get("content") or ""
-                if delta:
-                    parts.append(delta)
+                message = c.get("delta") or c.get("message") or {}
+                text = message.get("content") or ""
+                if text:
+                    parts.append(text)
                     if self.on_text is not None:
-                        self.on_text(delta)
+                        self.on_text(text)
+                for k, tc in enumerate(message.get("tool_calls") or []):
+                    entry = calls.setdefault(tc.get("index", k), {"id": "", "name": "", "arguments": ""})
+                    entry["id"] = entry["id"] or tc.get("id") or ""
+                    fn = tc.get("function") or {}
+                    entry["name"] += fn.get("name") or ""
+                    args = fn.get("arguments")
+                    entry["arguments"] += args if isinstance(args, str) else (json.dumps(args) if args else "")
         finally:
             self.last_elapsed = time.monotonic() - t0
+        text = "".join(parts)
         if finish == "length":
             # A reasoning model thinks first and the thinking counts against max_tokens:
             # a small budget is spent before the answer starts, and the reply comes back empty.
             details = (self.last_usage or {}).get("completion_tokens_details") or {}
-            raise TruncatedReply(body.get("max_tokens"), details.get("reasoning_tokens"), "".join(parts))
-        return "".join(parts)
+            raise TruncatedReply(body.get("max_tokens"), details.get("reasoning_tokens"), text)
+        if len(calls) != 1:
+            raise NoToolCall(text, len(calls), [c["name"] for c in calls.values()])
+        call = next(iter(calls.values()))
+        return ToolCall(call["id"] or f"call_{self.calls}", call["name"], call["arguments"] or "{}", text)

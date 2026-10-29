@@ -21,8 +21,8 @@ models.huggingface  the Hugging Face model id; the suffix (":baseten") pins one 
 models.openrouter   the OpenRouter model id
 routing             OpenRouter only: its provider preferences, sent as the request's provider object, e.g.
                     {"order": ["baseten"], "allow_fallbacks": false}. Without it OpenRouter picks a host per
-                    request by price (often a 4-bit one) and may switch hosts within a run. A host that
-                    takes no response_format (Baseten there) is reached by stepping down to plain JSON
+                    request by price (often a 4-bit one) and may switch hosts within a run. Do not add
+                    require_parameters: it drops Baseten there (it does not list every parameter we send)
 reasoning_effort    sent as reasoning_effort (none|minimal|low|medium|high, or default to leave it
                     out); dropped if the server rejects it
 max_tokens          the reply budget, reasoning included
@@ -56,7 +56,9 @@ pose), in sim as on the robot; GPT-Policy gives its model no scene layout either
 
 The system prompt, once per run (`g1/agent/decider.py:instructions`): the robot and camera
 conventions, the joint table and sign conventions, the task's rules (`safety_notes`), the
-reply rules, and the tool catalog as bullets and as JSON. Then per decision one user message:
+and the reply rules. The tools themselves (name, prompt, parameter schema) go with every request
+as OpenAI function definitions (`tools`, from `g1/tools` `function_schemas`). Then per decision one
+user message:
 the observation JSON —
 
 ```
@@ -66,18 +68,20 @@ extra {env_step, decisions_left, can_walk, attempt}, previous_result
 ```
 
 — and the head image (JPEG at `image_width_px`; `images` gives the size as sent, which is the
-size `locate_point` pixels are in). Structured output is requested as
-`json_schema` (the output schema of the menu), stepped down to `json_object`, then none,
-when a provider rejects it. The conversation is the model's memory: the system prompt once,
-then the newest `history_full_turns` (8) turns in full — observation and the model's own reply
-verbatim — and before them one host-written line per older turn (the tool, its note, the
+size `locate_point` pixels are in). The model answers with **one tool call** (`tool_choice:
+"required"`, `parallel_tool_calls: false`): tool calling is the one reply format, so only models
+and hosts that support tool calls are used; one that refuses them fails the run with a hint to
+change `configs/model.json`. The conversation is the model's memory: the system prompt once,
+then the newest `history_full_turns` (8) turns in full — observation, the model's own tool call
+verbatim and the host's one-line answer to it (`tool` message; the result itself is the next
+observation's `previous_result`) — and before them one host-written line per older turn (the tool, its note, the
 result), as GPT-Policy's Claude adapter summarises. Only the last `live_image_window` (8)
 observations keep their image. Both are in `configs/model.json` (`agent`).
 
-The reply must be one whole JSON object, `{"name": ..., "arguments": {...}}`, naming a tool
-from the menu and satisfying its parameter schema (jsonschema Draft 2020-12; numbers out of
-range are clamped and the model is told). Anything else is `invalid_selection` in the next
-`previous_result`, and costs a decision.
+The tool call must name a tool from the menu and its arguments satisfy that tool's parameter
+schema (jsonschema Draft 2020-12; numbers out of
+range are clamped and the model is told). Anything else, including a reply with no tool call or
+several, is `invalid_selection` in the next `previous_result`, and costs a decision.
 
 ## Cost and pacing
 

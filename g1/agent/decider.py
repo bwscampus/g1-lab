@@ -36,8 +36,8 @@ from jsonschema import Draft202012Validator, ValidationError
 from g1.core import limits
 from g1.core.config import HEAD_CAMERA_FOV_H, HEAD_CAMERA_PITCH, NUM_JOINTS
 from g1.core.worker import Worker
-from g1.tools import Tool, function_schemas, joint_table, menu, output_schema, parameters, prompt_catalog, validate_args
-from g1.vlm import AGENT_SETTINGS, IMAGE_WIDTH, TEMPERATURE, VLMClient, image_part
+from g1.tools import Tool, function_schemas, joint_table, menu, parameters, validate_args
+from g1.vlm import AGENT_SETTINGS, IMAGE_WIDTH, TEMPERATURE, NoToolCall, VLMClient, image_part
 
 
 
@@ -56,14 +56,12 @@ class ProtocolError(ValueError):
 @dataclass(frozen=True)
 class AgentContext:
     instructions: str
-    tools: list[dict]
-    output_schema: dict
+    tools: list[dict]                   # OpenAI function definitions, attached to every request
     menu: tuple[type[Tool], ...]
 
     def record(self) -> dict:
-        """For config.json: the system prompt, the output schema and the tools on offer."""
-        return {"menu": [s.name for s in self.menu], "tools": self.tools,
-                "system_prompt": self.instructions, "output_schema": self.output_schema}
+        """For config.json: the system prompt and the tools on offer."""
+        return {"menu": [s.name for s in self.menu], "tools": self.tools, "system_prompt": self.instructions}
 
 
 @dataclass
@@ -86,6 +84,7 @@ class Decision:
     frame_stamp: Optional[float] = None
     raw: str = ""
     wire: Optional[dict] = None
+    call_id: Optional[str] = None                     # the tool call it came from (a model's)
     notes: list[str] = field(default_factory=list)   # range clamps applied by the host
     latency: float = 0.0
     seq: int = 0
@@ -127,6 +126,34 @@ class Decision:
             raise ProtocolError(f"invalid selection: {msg}", raw=text) from None
         return cls(name, arguments, turn.request_id, turn.step, turn.frame_seq, turn.frame_stamp,
                    raw=text, wire=wire, notes=notes)
+
+
+def selection(assistant: Optional[dict]) -> dict:
+    """``{"name", "arguments"}`` of an assistant message: its tool call (or, for a reply that
+    made none, the JSON object its text may hold; empty if neither)."""
+    if not assistant:
+        return {}
+    for tc in assistant.get("tool_calls") or []:
+        fn = tc.get("function") or {}
+        try:
+            args = json.loads(fn.get("arguments") or "{}")
+        except ValueError:
+            args = {}
+        return {"name": fn.get("name"), "arguments": args if isinstance(args, dict) else {}}
+    try:
+        reply = json.loads(assistant.get("content") or "")
+    except (TypeError, ValueError):
+        return {}
+    return reply if isinstance(reply, dict) else {}
+
+
+TOOL_ANSWER = "done; its result is previous_result in the next observation"
+
+
+def answers(assistant: dict) -> list[dict]:
+    """The tool messages that answer an assistant message's tool calls (each call must be answered
+    before the next user message); the result itself is in the next observation."""
+    return [{"role": "tool", "tool_call_id": tc["id"], "content": TOOL_ANSWER} for tc in assistant.get("tool_calls") or []]
 
 
 def parse_selection(text: str) -> dict:
@@ -207,10 +234,7 @@ Robot and camera conventions:
 - +yaw is LEFT (counter-clockwise). state.base_pose_cmd is the dead-reckoned [x forward, y left, yaw degrees] since the start, integrated from the commands sent (where the base actually is can differ; judge from the image). state.waist_yaw_deg is where the camera looks relative to the feet.
 - {walk}
 {joints}{notes}
-Return exactly one tool selection per turn: {{"name": "...", "arguments": {{...}}}}. No Markdown or text outside this object. The host runs the whole tool, waits for the joints to settle, then supplies a fresh observation whose previous_result reports what happened.
-
-Tools:
-{prompt_catalog(context_menu)}
+Call exactly one tool per turn (the tools and their arguments come with this request). The host runs the whole tool, waits for the joints to settle, then supplies a fresh observation whose previous_result reports what happened.
 
 Every movement tool requires a note: 1-2 short sentences stating the current visual evidence and the purpose of this action. Keep failure causes when relevant; do not repeat numbers, history, tool mechanics or these rules. Use only the selected tool's arguments, within their ranges.
 
@@ -218,10 +242,7 @@ Observe before committing: a target that is off-centre needs a turn before a wal
 
 Persistence: one failed tool, blocked path or unseen goal does not establish impossibility. Diagnose from the fresh image, the state and previous_result, then try a different viewpoint, direction or step size and verify the result. Call done only when the current image establishes the goal. Do not call give_up while reasonable safe strategies remain; when you do, list what was tried and the evidence preventing progress.
 
-Budget: {max_decisions} decisions for this run; extra.decisions_left counts down and a rejected selection costs one.
-
-Robot tool catalog:
-{json.dumps(function_schemas(context_menu), ensure_ascii=False)}"""
+Budget: {max_decisions} decisions for this run; extra.decisions_left counts down and a rejected selection costs one."""
     return text
 
 
@@ -229,7 +250,7 @@ def build_context(context_menu: Sequence[type[Tool]], *, can_walk: bool, max_dec
                   safety_notes: Sequence[str] = ()) -> AgentContext:
     m = tuple(context_menu)
     return AgentContext(instructions(m, can_walk=can_walk, max_decisions=max_decisions, safety_notes=safety_notes),
-                        function_schemas(m), output_schema(m), m)
+                        function_schemas(m), m)
 
 
 # --------------------------------------------------------------------------
@@ -366,10 +387,7 @@ class VLMDecider(Decider):
         lines = []
         for t, nxt in zip(older, older[1:] + [following]):
             step = observed(t).get("extra", {}).get("env_step", "?")
-            try:
-                reply = json.loads(t["assistant"]["content"]) if t["assistant"] else {}
-            except (TypeError, ValueError):
-                reply = {}
+            reply = selection(t["assistant"])
             args = {k: v for k, v in (reply.get("arguments") or {}).items() if k not in ("note", "summary", "hindsight")}
             note = (reply.get("arguments") or {}).get("note", "")
             prev = observed(nxt).get("previous_result") or {}
@@ -394,6 +412,7 @@ class VLMDecider(Decider):
                 out.append(user)
                 if t["assistant"] is not None:
                     out.append(t["assistant"])
+                    out.extend(answers(t["assistant"]))
         if turn is not None:
             out.append(self._user_message(turn)[0])
         return out
@@ -402,7 +421,7 @@ class VLMDecider(Decider):
         """Messages as sent, each image replaced by the step file holding it (lossless there;
         the model got it resized to ``max_width`` as JPEG)."""
         def strip(msg):
-            if isinstance(msg["content"], str):
+            if not isinstance(msg.get("content"), list):      # text, a tool call (None), a tool answer
                 return msg
             blocks = [b if b["type"] == "text" else
                       {"type": "image", "image": f"step_{self._image_step.get(id(b), 0):04d}.png"}
@@ -422,11 +441,26 @@ class VLMDecider(Decider):
         msgs = self.messages()
         msgs.append(user)
         self.queries[turn.request_id] = self.as_recorded(msgs[1:])     # the system prompt is in config.json
-        text = self.client.complete(msgs, schema=self.context.output_schema)
-        entry = {"user": user, "assistant": {"role": "assistant", "content": text}, "image_at": image_at}
+        try:
+            call = self.client.complete(msgs, tools=self.context.tools)
+        except NoToolCall as e:
+            # text instead of one tool call: kept in the history as said, and costs a decision
+            if not self.fresh_turns:
+                self._turns.append({"user": user, "assistant": {"role": "assistant", "content": e.text},
+                                    "image_at": image_at})
+            raise ProtocolError(f"invalid selection: {e.body}", raw=e.text) from None
+        assistant = {"role": "assistant", "content": call.text or None,
+                     "tool_calls": [{"id": call.id, "type": "function",
+                                     "function": {"name": call.name, "arguments": call.arguments}}]}
         if not self.fresh_turns:
-            self._turns.append(entry)
-        return Decision.parse(text, turn, self.context)
+            self._turns.append({"user": user, "assistant": assistant, "image_at": image_at})
+        try:
+            arguments = json.loads(call.arguments)
+        except ValueError:
+            arguments = call.arguments           # Decision.parse says what is wrong with it
+        decision = Decision.parse(json.dumps({"name": call.name, "arguments": arguments}), turn, self.context)
+        decision.call_id = call.id
+        return decision
 
     def _call_details(self) -> dict:
         return {"usage": self.client.last_usage, "response_mode": self.client.response_mode,

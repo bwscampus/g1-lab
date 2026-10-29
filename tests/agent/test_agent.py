@@ -168,9 +168,8 @@ def test_observation_and_feedback_follow_the_contract():
     assert o[2]["state"]["base_pose_cmd"][0] == pytest.approx(0.3 * math.cos(math.radians(30)), abs=1e-6)
     # the context the decider was started with
     ctx = dec.context
-    assert "never walk backward" in ctx.instructions and "Robot tool catalog:" in ctx.instructions
+    assert "never walk backward" in ctx.instructions and "Call exactly one tool per turn" in ctx.instructions
     assert [t["function"]["name"] for t in ctx.tools] == [s.name for s in menu(True)]
-    assert ctx.output_schema["properties"]["name"]["enum"] == [s.name for s in menu(True)]
     assert agent.result == "completed"
 
 

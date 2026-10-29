@@ -187,5 +187,7 @@ Records: `tasks/<name>/runs/<ts>_<env>_<instruction>_<outcome>/` (`<env>` = `sim
 `step_NNNN.json/.png` (one per model query: frame, query and response as sent/received, action, result) and `trace.npz`
 (a tools run: no steps). Each fact is stored once; a new file needs an argument; the tests assert the set. Every run's
 code is restorable: `config.json` `code.snapshot` (a commit kept by `refs/g1-runs/<sha>` when the tree was dirty).
-The observation JSON and the system prompt are in `g1/agent/decider.py`; `Decision.parse` validates a
-whole JSON object against the tool's schema and clamps numbers with a note.
+The observation JSON and the system prompt are in `g1/agent/decider.py`. The model answers with one
+**tool call** (OpenAI `tools`, `tool_choice: required`): the only reply format, so only models and hosts
+that support tool calls are used. `Decision.parse` validates its arguments against the tool's schema and
+clamps numbers with a note; no call, or several, is an invalid selection.

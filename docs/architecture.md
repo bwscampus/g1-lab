@@ -56,7 +56,7 @@ takeover -> settle -> snapshot -> think -> act -> settle -> snapshot -> ... -> h
 * **think**: the observation JSON + the image go to the decider on a background thread;
   the loop holds still and never waits. An overloaded model is retried with backoff,
   re-observing every time; a quota error or `step_timeout_s` fails the run.
-* **act**: the decision is parsed (whole JSON object, jsonschema against the tool's
+* **act**: the decision (the model's one tool call) is parsed (jsonschema against the tool's
   parameters, numbers clamped with a note), the tool is built, **dry-run through the joint
   monitor from the commanded pose** (a limit, speed or base violation comes back as
   `motion_not_executed` and moves nothing), then played to its end. A long tool is still one
@@ -168,7 +168,7 @@ four kinds of file and nothing else (`g1/agent/episode.py`):
   overruns, SDK failures, on the twin whether it fell, its true pose and torque-limit time); an
   interruption and its safe return; SDK calls made outside any step (bring-up).
 * `config.json`: how the run was set up: the task as loaded, env, mode, camera, the model settings,
-  the tools on offer (name, prompt, parameter schema), the system prompt and output schema, every
+  the tools on offer (name, prompt, parameter schema), the system prompt, every
   limit, versions, and the code: `{head, snapshot, ref}`. A dirty tree is saved as a commit on HEAD
   kept by `refs/g1-runs/<sha>` (`task.code_snapshot`, a temporary index: nothing else moves), so
   `git checkout <snapshot>` gives the code that ran. Never a `.env` value.

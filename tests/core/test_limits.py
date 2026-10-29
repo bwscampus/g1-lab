@@ -78,8 +78,9 @@ def test_a_changed_limit_changes_what_the_model_is_offered(tmp_path):
         assert TOOLS["move"].schema()["properties"]["dx_m"]["maximum"] == 1.0
         assert "up to 1 m either way" in TOOLS["move"].describe()
         assert validate_args(TOOLS["move"], {"dx_m": 2.0})[0]["dx_m"] == 1.0       # clamped
-        text = build_context(menu(True), can_walk=True, max_decisions=5).instructions
-        assert "up to 1 m either way" in text
+        tools = build_context(menu(True), can_walk=True, max_decisions=5).tools     # what each request offers
+        move = next(t["function"] for t in tools if t["function"]["name"] == "move")
+        assert "up to 1 m either way" in move["description"] and move["parameters"]["properties"]["dx_m"]["maximum"] == 1.0
     finally:
         limits.use(None)
     assert TOOLS["move"].schema()["properties"]["dx_m"]["maximum"] == limits.get("move_dx_max_m")

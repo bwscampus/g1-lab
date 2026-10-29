@@ -530,6 +530,7 @@ class Agent(Runnable):
     def _decide(self, t: float, obs: Obs, d: Decision) -> Action:
         self._rec["response"]["decision"] = {"name": d.name, "arguments": d.arguments, "notes": list(d.notes)}
         self._rec["response"]["text"] = d.raw
+        self._rec["response"]["tool_call_id"] = d.call_id
         args = {k: v for k, v in d.arguments.items() if k != "note"}
         self._say(f"decision {self._env_step}: {d.name}({args}) — {d.note}")
         try:
