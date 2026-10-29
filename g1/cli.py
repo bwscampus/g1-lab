@@ -6,12 +6,13 @@
     g1 status                              # is the robot reachable, and what state is it in
     g1 twin fetch | status                 # the twin's model, walker and room assets
     g1 trace compare RUN_A RUN_B | show RUN   # how far the twin is from the robot on the same task
-    g1 limits [SOURCE]                     # every number and default, from configs/limits.json
+    g1 limits [SOURCE]                     # every number and default, from configs/limits.json (+ the model)
 
 TASK is a folder under tasks/ (or its path): an ``instruction`` the vision model
 works on, or a fixed ``tools`` chain (``g1/agent/task.py``). ``--mode standing``
 lets the base walk; ``gantry`` never does. Every other number and default is in
-configs/limits.json (``g1 limits``) or the task's task.json; .env holds only what is
+configs/limits.json (``g1 limits``), configs/model.json (which model, how it is asked)
+or the task's task.json; .env holds only what is
 private to this machine (the token, the robot's address and key). ``G1_VERBOSE=1``
 prints every SDK call and a health line a second.
 """
@@ -299,7 +300,8 @@ COMMANDS = {
     "status": "is the robot reachable and what state is it in (read-only)",
     "twin": "fetch the twin's model, walker and room assets (fetch | status)",
     "trace": "compare two runs of a task, e.g. the twin's and the robot's (compare | show)",
-    "limits": "print every limit and default in configs/limits.json as one table (or one source: g1 limits guess)",
+    "limits": "print every limit and default in configs/limits.json as one table (or one source: g1 limits guess), "
+              "and the model configs/model.json selects",
 }
 
 
@@ -322,7 +324,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         from g1.envs.robot import status_main
         return status_main(rest)
     if command == "limits":
-        return limits.main(rest)
+        code = limits.main(rest)
+        if code == 0:
+            from g1 import vlm
+            print(f"model: {vlm.DEFAULT_MODEL} on {vlm.PROVIDER}, reasoning_effort {vlm.REASONING_EFFORT}, "
+                  f"max_tokens {vlm.MAX_TOKENS}, temperature {vlm.TEMPERATURE:g} (from {vlm.MODEL_PATH})")
+        return code
     if command == "twin":
         from g1.twin.main import main as twin_main
         return twin_main(rest)

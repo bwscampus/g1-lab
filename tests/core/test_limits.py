@@ -18,7 +18,7 @@ def test_the_file_defines_exactly_the_names_the_code_reads():
     assert set(data["limits"]) == set(limits.NAMES) and len(limits.NAMES) == len(set(limits.NAMES))
     for name, e in data["limits"].items():
         assert e["source"] in limits.SOURCES and e["unit"] and e["note"], name
-    assert limits.get("max_tokens") == data["limits"]["max_tokens"]["value"]
+    assert limits.get("max_decisions") == data["limits"]["max_decisions"]["value"]
 
 
 def test_code_reads_its_numbers_from_the_file():
@@ -32,7 +32,7 @@ def test_code_reads_its_numbers_from_the_file():
         limits.get(n) for n in ("walk_speed", "side_speed", "turn_rate"))
     assert (cli.TO_STAND, cli.RAMP, cli.RELEASED) == tuple(
         limits.get(n) for n in ("return_to_stand_s", "return_ramp_s", "return_released_s"))
-    assert vlm.MAX_TOKENS == limits.get("max_tokens") and vlm.IMAGE_WIDTH == limits.get("image_width_px")
+    assert vlm.IMAGE_WIDTH == limits.get("image_width_px")
     assert len(agent.RETRY_DELAYS) == limits.get("retry_max") and max(agent.RETRY_DELAYS) == limits.get("retry_delay_cap_s")
     assert agent.RECOVERY_TIMEOUT == limits.get("recovery_timeout_s")
     m = JointMonitor()
@@ -94,11 +94,9 @@ def test_a_bad_limits_file_is_refused_with_the_name(tmp_path):
         with pytest.raises(ValueError, match=match):
             limits.load(p)
 
-    broken(lambda d: d["limits"].pop("max_tokens"), "missing .*max_tokens")
-    broken(lambda d: d["limits"].update(max_tokns=d["limits"]["max_tokens"]), "unknown .*max_tokns")
+    broken(lambda d: d["limits"].pop("max_decisions"), "missing .*max_decisions")
+    broken(lambda d: d["limits"].update(max_decisons=d["limits"]["max_decisions"]), "unknown .*max_decisons")
     broken(lambda d: d["limits"]["walk_speed"].update(value="fast"), "walk_speed.value must be a number")
-    broken(lambda d: d["limits"]["reasoning_effort"].update(value="a little"), "reasoning_effort.value must be one of")
-    broken(lambda d: d["limits"]["vlm_model"].update(value=""), "vlm_model.value must be a word")
     broken(lambda d: d["limits"]["walk_speed"].update(value=-1), "must not be negative")
     broken(lambda d: d["limits"]["walk_speed"].update(value=0.5), "walk_speed .* must not exceed base_vx_max")
     broken(lambda d: d["limits"]["side_speed"].update(value=0.3), "side_speed .* must not exceed base_vy_max")
@@ -121,8 +119,8 @@ def test_robot_and_twin_timing_is_never_a_literal():
 def test_env_holds_nothing_editable():
     # .env is private to one machine; every setting anyone may edit is in limits.json
     from g1 import vlm
-    assert vlm.DEFAULT_MODEL == limits.get("vlm_model") and vlm.REASONING_EFFORT == limits.get("reasoning_effort")
+    assert vlm.PROVIDER == vlm.MODEL["provider"] and vlm.REASONING_EFFORT == vlm.MODEL["reasoning_effort"]
     keys = [line.split("=")[0].lstrip("# ").strip() for line in (ROOT / ".env.example").read_text().splitlines()
             if "=" in line and line.lstrip("# ").split("=")[0].strip().isupper()]
-    assert set(keys) <= {"HF_TOKEN", "VLM_BASE_URL", "UNITREE_IFACE", "UNITREE_ROBOT_IP", "UNITREE_AES_128_KEY",
+    assert set(keys) <= {"HF_TOKEN", "VLM_BASE_URL", "OPENROUTER_API_KEY", "UNITREE_IFACE", "UNITREE_ROBOT_IP", "UNITREE_AES_128_KEY",
                          "UNITREE_DOMAIN", "G1_VERBOSE"}, keys

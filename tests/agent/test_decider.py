@@ -7,7 +7,7 @@ from g1.agent.decider import (AgentTurn, Decision, ProtocolError, VLMDecider, bu
                               observation, parse_selection)
 from g1.core import limits
 from g1.tools import menu
-from g1.vlm import Overloaded, QuotaExceeded, RequestError, VLMClient, classify
+from g1.vlm import MAX_TOKENS, Overloaded, QuotaExceeded, RequestError, VLMClient, classify
 from tests.doubles import RedBallDecider
 
 
@@ -145,7 +145,7 @@ def test_hf_decider_keeps_the_conversation_and_prunes_images():
     assert d.name == "move" and d.arguments == {"dx_m": 0.0, "dy_m": 0.0, "dyaw_deg": 45.0, "note": "searching"}
     body = calls[0]
     assert body["response_format"]["type"] == "json_schema" and body["response_format"]["json_schema"]["schema"] == dec.context.output_schema
-    assert body["stream_options"] == {"include_usage": True} and body["max_tokens"] == limits.get("max_tokens")
+    assert body["stream_options"] == {"include_usage": True} and body["max_tokens"] == MAX_TOKENS
     msgs = body["messages"]
     assert msgs[0] == {"role": "system", "content": dec.context.instructions} and len(msgs) == 2
     user = msgs[1]["content"]

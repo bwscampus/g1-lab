@@ -1,15 +1,16 @@
-"""The vision-language model client: Hugging Face Inference Providers over
-their OpenAI-compatible chat-completions endpoint, with image input, stdlib
-urllib, streamed SSE and structured output with a step-down. Shared by the
-decider (choose a tool) and the demo keyframe selector.
+"""The vision-language model client: Hugging Face Inference Providers or
+OpenRouter over their OpenAI-compatible chat-completions endpoint, with image
+input, stdlib urllib, streamed SSE and structured output with a step-down.
+Shared by the decider (choose a tool) and the demo keyframe selector.
 
-The model, its token budget and its reasoning effort are in configs/limits.json
-(``vlm_model``, ``max_tokens``, ``reasoning_effort``). The environment holds only
-what is private to this machine:
+Which model is asked, and how, is configs/model.json: ``provider``, a model id
+per provider (``models``), ``reasoning_effort``, ``max_tokens``, ``temperature``.
+The environment holds only what is private to this machine:
 
-    HF_TOKEN       the key (a fine-grained token with "Make calls to Inference Providers")
-    VLM_BASE_URL   another Hugging Face endpoint, e.g. a dedicated Inference Endpoint
-                   (default: the router)
+    HF_TOKEN            the Hugging Face key (a fine-grained token with "Make calls to Inference Providers")
+    VLM_BASE_URL        another Hugging Face endpoint, e.g. a dedicated Inference Endpoint
+                        (default: the router)
+    OPENROUTER_API_KEY  the OpenRouter key
 
 A ``.env`` file in the repo root (copy ``.env.example``) is read on first use;
 exported variables win over it.
@@ -29,16 +30,58 @@ import numpy as np
 
 from g1.core import limits
 
-PROVIDER = "huggingface"
 HF_BASE_URL = "https://router.huggingface.co/v1"
-DEFAULT_MODEL = limits.get("vlm_model")
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+# provider -> (endpoint, the variable holding its key, where a key comes from)
+PROVIDERS = {
+    "huggingface": (HF_BASE_URL, "HF_TOKEN", "Hugging Face token"),
+    "openrouter": (OPENROUTER_BASE_URL, "OPENROUTER_API_KEY", "OpenRouter key"),
+}
+EFFORTS = ("none", "minimal", "low", "medium", "high", "default")
+MODEL_PATH = limits.ROOT / "configs" / "model.json"
+KEYS = ("version", "provider", "models", "reasoning_effort", "max_tokens", "temperature", "notes")
+
+
+def load_model(path: Path | str | None = None) -> dict:
+    """configs/model.json, checked: a typo or a missing key fails here, naming it."""
+    p = Path(path) if path else MODEL_PATH
+    try:
+        m = json.loads(p.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise ValueError(f"model file not found: {p}") from None
+    except json.JSONDecodeError as e:
+        raise ValueError(f"model file {p}: {e}") from None
+    if not isinstance(m, dict) or m.get("version") != 1:
+        raise ValueError(f"model file {p}: needs version 1")
+    if sorted(m) != sorted(KEYS):
+        raise ValueError(f"model file {p}: needs exactly {list(KEYS)}, has {sorted(m)}")
+    if m["provider"] not in PROVIDERS:
+        raise ValueError(f"model file {p}: provider must be one of {list(PROVIDERS)}, got {m['provider']!r}")
+    models = m["models"]
+    if not isinstance(models, dict) or sorted(models) != sorted(PROVIDERS) or not all(
+            isinstance(v, str) and v.strip() for v in models.values()):
+        raise ValueError(f"model file {p}: models needs a model id for each of {list(PROVIDERS)}")
+    if m["reasoning_effort"] not in EFFORTS:
+        raise ValueError(f"model file {p}: reasoning_effort must be one of {list(EFFORTS)}, got {m['reasoning_effort']!r}")
+    if isinstance(m["max_tokens"], bool) or not isinstance(m["max_tokens"], int) or m["max_tokens"] <= 0:
+        raise ValueError(f"model file {p}: max_tokens must be a positive whole number")
+    t = m["temperature"]
+    if isinstance(t, bool) or not isinstance(t, (int, float)) or t < 0:
+        raise ValueError(f"model file {p}: temperature must be a number >= 0")
+    return m
+
+
+MODEL = load_model()
+PROVIDER = MODEL["provider"]
+DEFAULT_MODEL = MODEL["models"][PROVIDER]
 # The reply budget, reasoning included. A reasoning model thinks before it answers and the
 # thinking counts: at 400 it never reached the answer.
-MAX_TOKENS = int(limits.get("max_tokens"))
+MAX_TOKENS = MODEL["max_tokens"]
 # Sent as ``reasoning_effort`` ("default": not sent). A server that rejects it gets the request without it.
-REASONING_EFFORT = limits.get("reasoning_effort")
-# Settings that moved from .env to configs/limits.json: refused if still set, so none is silently ignored.
-MOVED = {"VLM_MODEL": "vlm_model", "VLM_MAX_TOKENS": "max_tokens", "VLM_REASONING_EFFORT": "reasoning_effort"}
+REASONING_EFFORT = MODEL["reasoning_effort"]
+TEMPERATURE = MODEL["temperature"]
+# Settings that moved from .env to configs/model.json: refused if still set, so none is silently ignored.
+MOVED = {"VLM_MODEL": "models", "VLM_MAX_TOKENS": "max_tokens", "VLM_REASONING_EFFORT": "reasoning_effort"}
 IMAGE_WIDTH = int(limits.get("image_width_px"))
 JPEG_QUALITY = int(limits.get("jpeg_quality"))
 
@@ -68,21 +111,25 @@ def load_dotenv(path: Optional[Path] = None, env: Optional[dict] = None) -> dict
     return loaded
 
 
-def resolve(model: Optional[str] = None, env: Optional[dict] = None) -> tuple[str, str, str]:
-    """(base_url, model, key) from the environment (``.env`` in the repo root
-    is read first)."""
+def resolve(model: Optional[str] = None, env: Optional[dict] = None,
+            provider: str = PROVIDER) -> tuple[str, str, str]:
+    """(base_url, model, key) for ``provider`` from the environment (``.env`` in
+    the repo root is read first)."""
     if env is None:
         load_dotenv()
     env = os.environ if env is None else env
     moved = [f"{var} (now {name})" for var, name in MOVED.items() if env.get(var)]
     if moved:
-        raise RuntimeError(f"set in configs/limits.json, not .env: {', '.join(moved)}; remove them from .env "
-                           "or the environment (g1 limits shows the values in use)")
-    key = env.get("HF_TOKEN")
+        raise RuntimeError(f"set in configs/model.json, not .env: {', '.join(moved)}; remove them from .env "
+                           "or the environment")
+    base_url, key_var, what = PROVIDERS[provider]
+    key = env.get(key_var)
     if not key:
-        raise RuntimeError("no Hugging Face token: set HF_TOKEN (in .env or the environment)")
-    base_url = (env.get("VLM_BASE_URL") or HF_BASE_URL).rstrip("/")
-    return base_url, model or DEFAULT_MODEL, key
+        raise RuntimeError(f"no {what}: set {key_var} (in .env or the environment), "
+                           f"or change provider in configs/model.json (now {provider})")
+    if provider == "huggingface":           # VLM_BASE_URL is another Hugging Face endpoint
+        base_url = env.get("VLM_BASE_URL") or base_url
+    return base_url.rstrip("/"), model or MODEL["models"][provider], key
 
 
 class RequestError(RuntimeError):
@@ -106,7 +153,7 @@ class TruncatedReply(RequestError):
     def __init__(self, max_tokens, reasoning_tokens, text: str = "") -> None:
         spent = f", {reasoning_tokens} of them on reasoning" if reasoning_tokens else ""
         super().__init__(200, f"the reply was cut off at max_tokens={max_tokens}{spent}; "
-                              f"raise max_tokens in configs/limits.json (now {max_tokens})")
+                              f"raise max_tokens in configs/model.json (now {max_tokens})")
         self.text = text
 
 
@@ -173,7 +220,7 @@ def _sse_post(url: str, headers: dict, body: dict, timeout: float) -> Iterator[s
 
 
 class VLMClient:
-    """One chat completion at a time against the Hugging Face endpoint.
+    """One chat completion at a time against the provider's endpoint.
     ``transport`` is injectable for tests.
 
     Structured output is asked for in three steps, each dropped for the rest
@@ -187,7 +234,7 @@ class VLMClient:
     status and body of any attempt it refused before a step-down."""
 
     def __init__(self, model: str = DEFAULT_MODEL, token: Optional[str] = None, *,
-                 base_url: str = HF_BASE_URL, stream: bool = True,
+                 base_url: str = HF_BASE_URL, provider: str = "huggingface", stream: bool = True,
                  json_mode: bool = True, json_schema: bool = True,
                  timeout: float = limits.get("request_timeout_s"),
                  on_text: Optional[Callable[[str], None]] = None,
@@ -195,7 +242,7 @@ class VLMClient:
         self.model = model
         self.token = token or ""
         self.base_url = base_url.rstrip("/")
-        self.provider = PROVIDER
+        self.provider = provider
         self.stream = stream
         self.json_mode = json_mode
         self.json_schema = json_schema
@@ -212,12 +259,12 @@ class VLMClient:
         self.reasoning_effort: Optional[str] = None if REASONING_EFFORT == "default" else REASONING_EFFORT
 
     @classmethod
-    def from_env(cls, model: Optional[str] = None, **kw) -> "VLMClient":
-        base_url, model, key = resolve(model)
-        return cls(model, key, base_url=base_url, **kw)
+    def from_env(cls, model: Optional[str] = None, provider: str = PROVIDER, **kw) -> "VLMClient":
+        base_url, model, key = resolve(model, provider=provider)
+        return cls(model, key, base_url=base_url, provider=provider, **kw)
 
     def complete(self, messages: list[dict], *, max_tokens: Optional[int] = None,
-                 temperature: float = limits.get("vlm_temperature"), schema: Optional[dict] = None) -> str:
+                 temperature: float = TEMPERATURE, schema: Optional[dict] = None) -> str:
         body = {"model": self.model, "stream": self.stream, "temperature": temperature,
                 "max_tokens": max_tokens or self.max_tokens, "messages": messages}
         self.last_chunks = []

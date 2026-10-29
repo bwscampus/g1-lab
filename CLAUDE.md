@@ -27,7 +27,7 @@ Run it with `--sim` before the robot for anything new.
 
 ## Commands
 
-The whole CLI. Everything else is in a file: the task's `task.json`, `configs/limits.json`, `.env`.
+The whole CLI. Everything else is in a file: the task's `task.json`, `configs/limits.json`, `configs/model.json`, `.env`.
 Do not add flags; add a task.json key or a limit. `.env` is private to one machine (secrets and the
 robot's address): never put an editable setting there.
 
@@ -42,11 +42,12 @@ g1 run TASK --mode standing|gantry [--view]   # the robot; --mode is required. s
 g1 status                            # read-only: link ok / robot refuses / no link (UNITREE_IFACE)
 g1 twin fetch|status
 g1 trace compare RUN_A RUN_B | show RUN   # two run dirs of the same task: tracking, sag, lag, A-B difference
-g1 limits [SOURCE]                   # every limit and default in configs/limits.json as one table
+g1 limits [SOURCE]                   # every limit and default in configs/limits.json as one table, + the model in use
 
 TASK = a folder under tasks/ (tpose, find_the_mug) or a path. .env: UNITREE_IFACE, UNITREE_ROBOT_IP,
-UNITREE_AES_128_KEY, UNITREE_DOMAIN, HF_TOKEN, VLM_BASE_URL; G1_VERBOSE=1 prints every SDK call.
-The model (`vlm_model`), `reasoning_effort` and `max_tokens` are limits; VLM_MODEL etc. in .env are refused.
+UNITREE_AES_128_KEY, UNITREE_DOMAIN, HF_TOKEN, VLM_BASE_URL, OPENROUTER_API_KEY; G1_VERBOSE=1 prints every SDK call.
+Which model is asked is `configs/model.json` (`provider`, `models`, `reasoning_effort`, `max_tokens`, `temperature`),
+not a limit: limits.json holds only the robot's and the run's limits. VLM_MODEL etc. in .env are refused.
 
 pytest                               # all tests, on the in-process twin (~2 min)
 pytest -m dds                        # also: g1 run --sim end to end over DDS (needs unitree_sdk2py)
@@ -72,7 +73,7 @@ g1/twin/           assets (g1 twin fetch), model (unitree_mujoco G1 + head camer
                    services (sport/voice/motion_switcher/twin handlers), core (Twin), loopback (in-process link, lockstep),
                    bridge (DDS servers + rt/lowstate + rt/arm_sdk), shm (camera frames), main (TwinProcess, serve, fetch)
 g1/camera.py       Frame, Camera (+subscribe), DirCamera, WebRTCCamera, ShmCamera (the twin's), Viewer (--view)
-g1/vlm.py          VLMClient (Hugging Face), load_dotenv
+g1/vlm.py          VLMClient (Hugging Face or OpenRouter), load_dotenv
 g1/agent/          agent (Agent, build_agent), decider (AgentContext/AgentTurn/Decision, observation(), instructions(),
                    VLMDecider), episode (EpisodeWriter, load_episode), task (find, load_task, run_config, code_snapshot, record_result)
 tasks/             tpose/ (a tools chain), find_the_mug/, point_at_the_laptop/, find_and_point_at_the_laptop/, sit_in_the_chair/ (instructions); runs and results.jsonl inside are git-ignored
@@ -128,7 +129,8 @@ root via `pythonpath`. `limits.ROOT` is the repo root (configs/, tasks/, assets/
 - **The view never touches the tick.** `--view` (live runs) serves the env's camera slot (`Env.source()`)
   from its own threads; `cli.run` starts it after `env.reset()` and stops it inside `with env`. The robot
   takes one WebRTC client, so the live picture must come out of our process.
-- **Hugging Face only** for the model (`HF_TOKEN`, `VLM_BASE_URL`, limit `vlm_model`); no other providers,
+- **Hugging Face or OpenRouter** for the model, switched by `provider` in `configs/model.json` (`HF_TOKEN`,
+  `VLM_BASE_URL` | `OPENROUTER_API_KEY`; a model id for each in `models`; `g1/vlm.py:PROVIDERS`, `load_model`); no other providers,
   no Anthropic SDK. Fakes are test doubles only (`tests/doubles.py`); `search` always uses the real model.
 - **Sim is the robot code.** `--sim` runs `RobotEnv` itself over DDS against the twin process; the tests'
   `SimEnv` subclasses `RobotEnv` and only swaps the link (`envs/link.py`). Never give sim its own path for

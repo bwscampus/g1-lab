@@ -6,46 +6,63 @@ from pathlib import Path
 
 from g1.core import limits
 
-from g1.vlm import DEFAULT_MODEL, RequestError, VLMClient, load_dotenv, resolve
+from g1 import vlm
+from g1.vlm import MODEL, RequestError, VLMClient, load_dotenv, load_model, resolve
+
+HF_MODEL = MODEL["models"]["huggingface"]
 
 
 def test_resolve_defaults_overrides_and_errors():
-    assert resolve(env={"HF_TOKEN": "hf_t"}) == ("https://router.huggingface.co/v1", DEFAULT_MODEL, "hf_t")
-    assert DEFAULT_MODEL == limits.get("vlm_model")                     # the model is in limits.json
+    hf = dict(provider="huggingface")
+    assert resolve(env={"HF_TOKEN": "hf_t"}, **hf) == ("https://router.huggingface.co/v1", HF_MODEL, "hf_t")
+    assert vlm.DEFAULT_MODEL == MODEL["models"][vlm.PROVIDER]           # the model is in model.json
     env = {"HF_TOKEN": "hf_t", "VLM_BASE_URL": "https://x.endpoints.huggingface.cloud/v1/"}
-    assert resolve(env=env) == ("https://x.endpoints.huggingface.cloud/v1", DEFAULT_MODEL, "hf_t")
-    assert resolve("c/d", env=env)[1] == "c/d"                          # the argument beats the file
-    # the settings that moved to limits.json are refused in .env, never silently used
-    for var, name in (("VLM_MODEL", "vlm_model"), ("VLM_MAX_TOKENS", "max_tokens"),
+    assert resolve(env=env, **hf) == ("https://x.endpoints.huggingface.cloud/v1", HF_MODEL, "hf_t")
+    assert resolve("c/d", env=env, **hf)[1] == "c/d"                    # the argument beats the file
+    # the settings that moved to model.json are refused in .env, never silently used
+    for var, name in (("VLM_MODEL", "models"), ("VLM_MAX_TOKENS", "max_tokens"),
                       ("VLM_REASONING_EFFORT", "reasoning_effort")):
-        with pytest.raises(RuntimeError, match=f"configs/limits.json, not .env: {var} \\(now {name}\\)"):
-            resolve(env={"HF_TOKEN": "hf_t", var: "x"})
+        with pytest.raises(RuntimeError, match=f"configs/model.json, not .env: {var} \\(now {name}\\)"):
+            resolve(env={"HF_TOKEN": "hf_t", var: "x"}, **hf)
     with pytest.raises(RuntimeError, match="set HF_TOKEN"):
-        resolve(env={})
-    # only Hugging Face: other providers' variables are not read
+        resolve(env={}, **hf)
+    # the provider is in model.json, never a variable; other providers' keys are not read
     with pytest.raises(RuntimeError, match="set HF_TOKEN"):
-        resolve(env={"VLM_PROVIDER": "openai", "OPENAI_API_KEY": "k", "VLM_API_KEY": "k"})
+        resolve(env={"VLM_PROVIDER": "openai", "OPENAI_API_KEY": "k", "VLM_API_KEY": "k"}, provider="huggingface")
+
+
+def test_resolve_openrouter():
+    env = {"OPENROUTER_API_KEY": "sk-or-t", "HF_TOKEN": "hf_t", "VLM_BASE_URL": "https://x.endpoints.huggingface.cloud/v1"}
+    # its own endpoint, key and model; VLM_BASE_URL is a Hugging Face endpoint, not read here
+    assert resolve(env=env, provider="openrouter") == ("https://openrouter.ai/api/v1",
+                                                       MODEL["models"]["openrouter"], "sk-or-t")
+    with pytest.raises(RuntimeError, match="set OPENROUTER_API_KEY.*provider in configs/model.json"):
+        resolve(env={"HF_TOKEN": "hf_t"}, provider="openrouter")
 
 
 def sse(text):
     return iter([json.dumps({"choices": [{"delta": {"content": text}}]}), "[DONE]"])
 
 
-def test_client_from_env_sends_to_hugging_face(monkeypatch):
-    for var in ("HF_TOKEN", "VLM_BASE_URL"):
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("HF_TOKEN", "hf_t")
+@pytest.mark.parametrize("provider, var, key, url", [
+    ("huggingface", "HF_TOKEN", "hf_t", "https://router.huggingface.co/v1/chat/completions"),
+    ("openrouter", "OPENROUTER_API_KEY", "sk-or-t", "https://openrouter.ai/api/v1/chat/completions"),
+])
+def test_client_from_env_sends_to_the_provider(monkeypatch, provider, var, key, url):
+    for v in ("HF_TOKEN", "VLM_BASE_URL", "OPENROUTER_API_KEY"):
+        monkeypatch.delenv(v, raising=False)
+    monkeypatch.setenv(var, key)
     calls = []
 
     def transport(url, headers, body, timeout):
         calls.append((url, headers, body))
         return sse("{}")
 
-    c = VLMClient.from_env("a/b", transport=transport)
-    assert c.provider == "huggingface" and c.model == "a/b"
+    c = VLMClient.from_env("a/b", provider=provider, transport=transport)
+    assert c.provider == provider and c.model == "a/b"
     assert c.complete([]) == "{}"
-    url, headers, body = calls[0]
-    assert url == "https://router.huggingface.co/v1/chat/completions" and headers["Authorization"] == "Bearer hf_t"
+    sent_url, headers, body = calls[0]
+    assert sent_url == url and headers["Authorization"] == f"Bearer {key}"
     assert body["model"] == "a/b"
 
 
@@ -91,7 +108,7 @@ def test_dotenv_fills_gaps_only(tmp_path):
     env = {}
     load_dotenv(example, env)
     assert env == {"HF_TOKEN": "hf_..."}                                  # the example is loadable
-    assert resolve(env=env)[1] == DEFAULT_MODEL
+    assert resolve(env=env, provider="huggingface")[1] == HF_MODEL
 
 
 def test_a_reply_cut_off_by_the_token_budget_says_so(monkeypatch):
@@ -107,9 +124,9 @@ def test_a_reply_cut_off_by_the_token_budget_says_so(monkeypatch):
 
     c = VLMClient("m", "k", transport=transport)
     with pytest.raises(TruncatedReply, match=f"cut off at max_tokens={MAX_TOKENS}, 400 of them on reasoning; "
-                                             "raise max_tokens in configs/limits.json"):
+                                             "raise max_tokens in configs/model.json"):
         c.complete([])
-    assert calls[0]["max_tokens"] == MAX_TOKENS == limits.get("max_tokens")      # whatever the file says
+    assert calls[0]["max_tokens"] == MAX_TOKENS == MODEL["max_tokens"]          # whatever the file says
 
 
 def test_dotenv_forgives_a_stray_quote(tmp_path):
@@ -117,11 +134,11 @@ def test_dotenv_forgives_a_stray_quote(tmp_path):
     p.write_text('VLM_BASE_URL=https://router.huggingface.co/v1"\nHF_TOKEN="hf_q"\n')
     env = {}
     load_dotenv(p, env)
-    assert resolve(env=env) == ("https://router.huggingface.co/v1", DEFAULT_MODEL, "hf_q")
+    assert resolve(env=env, provider="huggingface") == ("https://router.huggingface.co/v1", HF_MODEL, "hf_q")
 
 
 def test_reasoning_effort_is_sent_and_dropped_when_refused():
-    effort = limits.get("reasoning_effort")
+    effort = MODEL["reasoning_effort"]
     replies = [RequestError(400, "unknown field reasoning_effort"), "ok", "ok"]
     calls = []
 
@@ -151,3 +168,34 @@ def test_reasoning_effort_is_sent_and_dropped_when_refused():
     with pytest.raises(RequestError):
         c.json_mode = False
         c.complete([])
+
+
+def test_a_bad_model_file_is_refused_with_the_name(tmp_path):
+    base = json.loads(vlm.MODEL_PATH.read_text())
+    assert load_model() == base and base["provider"] in vlm.PROVIDERS
+
+    def broken(mutate, match):
+        d = json.loads(json.dumps(base))
+        mutate(d)
+        p = tmp_path / "m.json"
+        p.write_text(json.dumps(d))
+        with pytest.raises(ValueError, match=match):
+            load_model(p)
+
+    broken(lambda d: d.update(provider="openai"), "provider must be one of")
+    broken(lambda d: d["models"].pop("openrouter"), "a model id for each of")
+    broken(lambda d: d["models"].update(huggingface=""), "a model id for each of")
+    broken(lambda d: d.update(reasoning_effort="a little"), "reasoning_effort must be one of")
+    broken(lambda d: d.update(max_tokens=0), "max_tokens must be a positive")
+    broken(lambda d: d.update(temperature=-1), "temperature must be")
+    broken(lambda d: d.update(max_tokns=1), "needs exactly")
+    broken(lambda d: d.update(version=2), "version 1")
+    with pytest.raises(ValueError, match="not found"):
+        load_model(tmp_path / "none.json")
+
+
+def test_limits_hold_no_model_setting():
+    # the robot's and the run's limits only; which model, and how it is asked, is model.json
+    names = set(limits.NAMES)
+    assert not names & {"vlm_provider", "vlm_model", "openrouter_model", "reasoning_effort", "max_tokens",
+                        "vlm_temperature"}
