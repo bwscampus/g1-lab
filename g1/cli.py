@@ -227,7 +227,6 @@ def run_once(task: dict, *, sim: bool, mode: Optional[str], view: bool = False, 
     settings = env.args
     runs = task["dir"] / "runs"
     runs.mkdir(parents=True, exist_ok=True)
-    before = {p.name for p in runs.iterdir()}
     started = datetime.now().isoformat(timespec="seconds")
     config = run_config(task, env_name=env_name, mode=mode, settings=settings, code=code_snapshot())
     try:
@@ -253,9 +252,8 @@ def run_once(task: dict, *, sim: bool, mode: Optional[str], view: bool = False, 
             ok = run(program, env, max_time=task["max_time_s"])
     else:
         ok = run(program, env, max_time=task["max_time_s"])
-    if recorder is not None:                     # the agent's close renamed its directory
-        new = [p for p in runs.iterdir() if p.name not in before and p.is_dir()]
-        folder = max(new, key=lambda p: p.stat().st_mtime) if new else folder
+    if recorder is not None:                     # the agent's close renamed its directory: the recorder knows where
+        folder = Path(recorder.dir)
     else:
         stopped = getattr(program, "interrupted", None)
         write_status(folder, ok, task=task, env_name=env_name, mode=mode, started=started,

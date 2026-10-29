@@ -99,10 +99,8 @@ def load_task(directory: Path | str) -> dict:
 
 def run_dir(task: dict, env_name: str) -> Path:
     """A fresh directory for a run without the agent's recorder (a tools chain)."""
-    from g1.agent.episode import slug
-    d = task["dir"] / "runs" / f"{datetime.now():%Y%m%d-%H%M%S}_{env_name}_{slug(task['tools'])}"
-    d.mkdir(parents=True, exist_ok=False)
-    return d
+    from g1.agent.episode import fresh_dir, slug
+    return fresh_dir(task["dir"] / "runs", f"{datetime.now():%Y%m%d-%H%M%S}", f"{env_name}_{slug(task['tools'])}")
 
 
 def code_snapshot(root: Path = ROOT) -> dict:
@@ -217,6 +215,7 @@ def run_metrics(run: Path, s: dict) -> dict:
     a false "done", and the infrastructure (provider failures, late ticks) that is not the task's."""
     health = s.get("health") or {}
     evaluation = (health.get("twin") or {}).get("evaluation") or {}
+    tokens = (s.get("usage") or {}).get("tokens") or {}
     measured = evaluation.get("measured") or {}
     unsettled = 0
     for step in sorted(run.glob("step_*.json")):
@@ -235,6 +234,10 @@ def run_metrics(run: Path, s: dict) -> dict:
             "contacts": sorted(measured.get("contacts") or {}), "unsettled": unsettled,
             "model_calls": (s.get("usage") or {}).get("calls"),
             "failed_calls": (s.get("usage") or {}).get("failed_calls"),
+            # for the cost: input (prompt, images included; cached part apart) and output (reasoning included)
+            "input_tokens": tokens.get("prompt_tokens"), "cached_input_tokens": tokens.get("cached_tokens"),
+            "output_tokens": tokens.get("completion_tokens"), "reasoning_tokens": tokens.get("reasoning_tokens"),
+            "cost_usd": (s.get("usage") or {}).get("cost_usd"),
             "timing": health.get("timing"), "overrun_fraction": health.get("overrun_fraction"),
             "max_tick_gap_s": health.get("max_tick_gap_s"), "load_avg": health.get("load_avg")}
 

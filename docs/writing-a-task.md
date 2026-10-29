@@ -67,7 +67,13 @@ code, model and limits for every run), and prints one table, also saved as
   how far the feet moved;
 * the execution: falls, forbidden contacts, unsettled results, joint violations;
 * the infrastructure: failed model calls, runs with degraded timing, runs it spoiled (the model's
-  provider gave up, quota, no frame, a loaded machine). Those are not counted in the success rate.
+  provider gave up, quota, no frame, a loaded machine). Those are not counted in the success rate;
+* the cost: input tokens (cached part apart), output tokens (reasoning part apart), and the cost
+  in USD where the provider reports it (OpenRouter does), summed over every run.
+
+Runs go several at once, each in a fresh process with its own twin, DDS domain and log
+(`suites/<name>/runs/<ts>/run_NN_<task>.log`): as many as free memory (`bench_run_mb` each) and the
+performance cores (one kept free) allow, at most `bench_parallel_max`. The first line says how many and why.
 
 Give a task `success` before benchmarking it; without it its runs stay `unreviewed`.
 

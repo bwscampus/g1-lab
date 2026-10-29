@@ -45,6 +45,20 @@ def load_png(path: Path) -> np.ndarray:
     return images.read_rgb(path)
 
 
+def fresh_dir(parent: Path, stamp: str, rest: str) -> Path:
+    """``parent/<stamp>_<rest>``, made now; ``<stamp>-2_<rest>`` and on when runs of one task start in
+    the same second (g1 bench runs several at once)."""
+    parent.mkdir(parents=True, exist_ok=True)
+    k = 1
+    while True:
+        d = parent / f"{stamp}{'' if k == 1 else f'-{k}'}_{rest}"
+        try:
+            d.mkdir(exist_ok=False)
+            return d
+        except FileExistsError:
+            k += 1
+
+
 def slug(text: str, n: int = 32) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:n] or "run"
 
@@ -73,8 +87,7 @@ class EpisodeWriter:
                  task: str = "", mode: Optional[str] = None, max_decisions: Optional[int] = None,
                  threaded: bool = True) -> None:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        self.dir = Path(root) / f"{stamp}_{env}_{slug(instruction)}"
-        self.dir.mkdir(parents=True, exist_ok=False)
+        self.dir = fresh_dir(Path(root), stamp, f"{env}_{slug(instruction)}")
         self.started_at = time.time()
         self.summary = new_summary(self.dir.name, task=task, instruction=instruction, env=env, mode=mode,
                                    model=model, max_decisions=max_decisions)
@@ -100,9 +113,18 @@ class EpisodeWriter:
         u["calls"] += 1
         u["failed_calls"] += call.get("status") != "completed"
         u["model_s"] = round(u["model_s"] + float(call.get("elapsed_s") or 0.0), 6)
-        for k, v in (call.get("usage") or {}).items():
+        usage = call.get("usage") or {}
+        for k, v in usage.items():
             if isinstance(v, int) and not isinstance(v, bool):
                 u["tokens"][k] = u["tokens"].get(k, 0) + v
+        # inside the totals: the reasoning share of completion_tokens, the cached share of prompt_tokens
+        for k, part in (("reasoning_tokens", "completion_tokens_details"), ("cached_tokens", "prompt_tokens_details")):
+            v = (usage.get(part) or {}).get(k)
+            if isinstance(v, int) and not isinstance(v, bool):
+                u["tokens"][k] = u["tokens"].get(k, 0) + v
+        cost = usage.get("cost")                  # what the provider charged, when it says (OpenRouter, USD)
+        if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+            u["cost_usd"] = round(u.get("cost_usd", 0.0) + float(cost), 8)
 
     def update(self, **values) -> None:
         self.summary.update(values)

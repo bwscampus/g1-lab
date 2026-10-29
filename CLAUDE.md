@@ -38,7 +38,10 @@ g1 twin fetch                        # once: the twin's model (unitree_mujoco), 
 g1 run TASK --sim [--mode gantry]    # the twin in the MuJoCo window (always; mjpython): starts it (TwinProcess),
                                      # runs RobotEnv over DDS on lo0, stops it. Headless only in tests (G1_TWIN_HEADLESS=1) and g1 bench
 g1 bench SUITE                       # suites/<name>/suite.json: its tasks on the twin, headless, repeat times,
-                                     # scored by the twin (each task's success), one table + report.json
+                                     # scored by the twin (each task's success), one table + report.json (with the
+                                     # input/output tokens and cost); runs several at once, each in a fresh process
+                                     # with its own twin and DDS domain: as many as memory (bench_run_mb) and the
+                                     # performance cores allow, at most bench_parallel_max
 g1 run TASK --mode standing|gantry [--view]   # the robot; --mode is required. standing may walk, gantry never does;
                                      # --view: its head camera at http://127.0.0.1:8765 (live only)
 g1 status                            # read-only: link ok / robot refuses / no link (UNITREE_IFACE)

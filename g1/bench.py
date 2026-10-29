@@ -4,10 +4,14 @@ twin (each task's ``success``) and reported in one table.
     suites/<name>/
         suite.json      {"tasks": ["point_at_the_laptop"], "repeat": 10, "notes": "..."}
         runs/<ts>/report.json   one per bench: every run's row, the totals, the code snapshot
+        runs/<ts>/run_NN_<task>.log   each run's own output
 
 Every run is ``g1 run TASK --sim`` (its records in the task's runs/ as usual), headless:
-nobody watches ten runs. One process runs them all, so the code, configs/model.json and the
-limits are the same for each; the report records the code snapshot they share.
+nobody watches ten runs. Several run at once, each in its own process with its own twin and
+DDS domain: as many as free memory (bench_run_mb each) and the performance cores allow, at most
+bench_parallel_max (``workers``). They start from one checkout, so the code, configs/model.json
+and the limits are the same for each; the report records the code snapshot they share and the
+input and output tokens (and the cost, where the provider reports it) for estimating the cost.
 
 The table keeps the task apart from the execution: success as the twin judged it, a false
 "done", decisions and time; then falls, forbidden contacts, unsettled results, joint
@@ -114,6 +118,13 @@ def totals(rows: list[dict]) -> dict:
             "failed_model_calls": sum(r.get("failed_calls") or 0 for r in rs),
             "timing_degraded": sum(r.get("timing") == "degraded" for r in rs),
             "infra_failed": len(rs) - len(clean),
+            # what the model cost, over every run (a spoiled run is paid for too)
+            "input_tokens": sum(r.get("input_tokens") or 0 for r in rs),
+            "cached_input_tokens": sum(r.get("cached_input_tokens") or 0 for r in rs),
+            "output_tokens": sum(r.get("output_tokens") or 0 for r in rs),
+            "reasoning_tokens": sum(r.get("reasoning_tokens") or 0 for r in rs),
+            "cost_usd": (round(sum(r.get("cost_usd") or 0.0 for r in rs), 6)
+                         if any(r.get("cost_usd") is not None for r in rs) else None),
         }
     return out
 
@@ -134,32 +145,152 @@ def table(tot: dict) -> str:
     lines.append("success: twin-judged, over the runs the infrastructure did not spoil; decisions, time, point err "
                  "(best per run): medians; feet m: the most the feet moved. Left of the bar the task, then the "
                  "execution, then the infrastructure (failed model calls, late-tick runs, runs it spoiled).")
+    lines.append("")
+    head = f"{'tokens (all runs)':<30} {'input':>12} {'cached':>12} {'output':>12} {'reasoning':>12} {'cost USD':>10}"
+    lines += [head, "-" * len(head)]
+    for name, t in tot.items():
+        cost = "-" if t.get("cost_usd") is None else f"{t['cost_usd']:.4f}"
+        lines.append(f"{name:<30} {t.get('input_tokens', 0):>12,} {t.get('cached_input_tokens', 0):>12,} "
+                     f"{t.get('output_tokens', 0):>12,} {t.get('reasoning_tokens', 0):>12,} {cost:>10}")
+    lines.append("input includes images and the cached part; output includes reasoning. Cost as the provider "
+                 "reported it (OpenRouter does; - where it did not): multiply the tokens by the model's prices otherwise.")
     return "\n".join(lines)
 
 
-def run_suite(suite: dict, run=None) -> dict:
-    """Every task ``repeat`` times; the report. ``run(task) -> (exit code, folder)`` is
-    injectable for tests (default: ``cli.run_once`` on the twin, headless)."""
+def available_mb() -> Optional[float]:
+    """Memory the system could give a new process now (free, inactive and purgeable pages), in MB;
+    None where it cannot be read."""
+    import re
+    import subprocess
+    try:
+        out = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        try:                                        # Linux
+            for line in Path("/proc/meminfo").read_text().splitlines():
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) / 1024
+        except OSError:
+            return None
+        return None
+    page = int(re.search(r"page size of (\d+)", out).group(1)) if "page size of" in out else 4096
+    pages = sum(int(m.group(2)) for m in re.finditer(r"Pages (free|inactive|speculative|purgeable):\s+(\d+)", out))
+    return pages * page / 2**20
+
+
+def performance_cores() -> int:
+    """The cores a real-time run should count on: the performance cores on Apple silicon, else half."""
+    import os
+    import subprocess
+    try:
+        n = int(subprocess.run(["sysctl", "-n", "hw.perflevel0.physicalcpu"], capture_output=True, text=True,
+                               timeout=5).stdout.strip())
+        if n > 0:
+            return n
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    return max(1, (os.cpu_count() or 2) // 2)
+
+
+def workers(runs: int) -> tuple[int, str]:
+    """How many runs at once: what memory allows (bench_run_mb each), what the performance cores
+    allow (one kept for the system), at most bench_parallel_max; and why."""
+    cap = int(limits.get("bench_parallel_max"))
+    per = limits.get("bench_run_mb")
+    mem = available_mb()
+    by_mem = cap if mem is None else max(1, int(mem // per))
+    by_cpu = max(1, performance_cores() - 1)
+    n = max(1, min(runs, cap, by_mem, by_cpu))
+    why = (f"{n} at once: {'?' if mem is None else f'{mem:.0f}'} MB available / {per:g} MB a run -> {by_mem}, "
+           f"{performance_cores()} performance cores -> {by_cpu}, bench_parallel_max {cap}")
+    return n, why
+
+
+def _run_child(task_dir: str, log: str, results) -> None:
+    """One run in a fresh process of its own (no DDS or MuJoCo state left from another run), its
+    output in ``log`` (parallel runs would interleave); (log, exit code, folder) onto ``results``."""
+    import os
+    import sys
+    fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    os.dup2(fd, 1)
+    os.dup2(fd, 2)
+    sys.stdout = sys.stderr = open(1, "w", buffering=1, closefd=False)
+    code, folder = 1, None
+    try:
+        from g1.agent.task import load_task
+        from g1.cli import run_once
+        code, folder = run_once(load_task(task_dir), sim=True, mode=None, headless=True)
+    except BaseException:
+        import traceback
+        traceback.print_exc()
+    finally:
+        sys.stdout.flush()
+        results.put((log, code, None if folder is None else str(folder)))
+
+
+def run_suite(suite: dict, run=None, parallel: Optional[int] = None) -> dict:
+    """Every task ``repeat`` times, ``parallel`` at once (default: ``workers``), each in its own
+    process with its own twin; the report. ``run(task) -> (exit code, folder)`` is injectable for
+    tests and runs one at a time in this process."""
     from g1.agent.task import code_snapshot, find as find_task, load_task
-    from g1.cli import run_once
-    run = run or (lambda task: run_once(task, sim=True, mode=None, headless=True))
     tasks = [load_task(find_task(t)) for t in suite["tasks"]]
     unscored = [t["name"] for t in tasks if not t.get("success")]
     if unscored:
         print(f"warning: no success criteria in {', '.join(unscored)}: their runs stay unreviewed")
     snapshot = code_snapshot()
     started = datetime.now()
-    rows = []
-    for task in tasks:
-        for i in range(suite["repeat"]):
+    out = suite["dir"] / "runs" / f"{started:%Y%m%d-%H%M%S}"
+    k = 1
+    while out.exists():                        # two benches in the same second
+        k += 1
+        out = suite["dir"] / "runs" / f"{started:%Y%m%d-%H%M%S}-{k}"
+    out.mkdir(parents=True)
+    jobs = [(task, i) for task in tasks for i in range(suite["repeat"])]
+    rows: list[Optional[dict]] = [None] * len(jobs)
+    if run is not None:
+        n, why = 1, "1 at once (an injected run)"
+    elif parallel is not None:
+        n, why = max(1, parallel), f"{max(1, parallel)} at once (asked)"
+    else:
+        n, why = workers(len(jobs))
+    print(f"bench {suite['name']}: {len(jobs)} runs, {why}")
+    if run is not None:
+        for k, (task, i) in enumerate(jobs):
             print(f"\n== bench {suite['name']}: {task['name']} {i + 1}/{suite['repeat']} ==")
             code, folder = run(task)
-            rows.append(row(task, folder, code))
+            rows[k] = row(task, folder, code)
+    else:
+        import multiprocessing
+        import queue
+        ctx = multiprocessing.get_context("spawn")
+        results = ctx.Queue()
+        pending = list(enumerate(jobs))
+        running: dict[str, tuple] = {}                # log -> (process, k, task, i)
+        while pending or running:
+            while pending and len(running) < n:      # a fresh process per run, at most n at once
+                k, (task, i) = pending.pop(0)
+                log = str(out / f"run_{k + 1:02d}_{task['name']}.log")
+                proc = ctx.Process(target=_run_child, args=(str(task["dir"]), log, results))
+                proc.start()
+                running[log] = (proc, k, task, i)
+            try:
+                log, code, folder = results.get(timeout=5.0)
+            except queue.Empty:                       # look for a run that died without a word
+                for log, (proc, k, task, i) in list(running.items()):
+                    if not proc.is_alive():
+                        running.pop(log)
+                        print(f"{task['name']} {i + 1}/{suite['repeat']}: died (exit {proc.exitcode}); see {log}")
+                        rows[k] = row(task, None, 1)
+                continue
+            proc, k, task, i = running.pop(log)
+            proc.join()
+            rows[k] = row(task, None if folder is None else Path(folder), code)
+            r = rows[k]
+            print(f"{task['name']} {i + 1}/{suite['repeat']}: {r['outcome'] or 'no record (see the log)'}"
+                  + (f" ({r.get('end_reason')}, {r.get('decisions')} decisions)" if r["run"] else "")
+                  + f"  log {Path(log).name}")
     report = {"suite": suite["name"], "started": started.isoformat(timespec="seconds"),
-              "ended": datetime.now().isoformat(timespec="seconds"), "repeat": suite["repeat"],
+              "ended": datetime.now().isoformat(timespec="seconds"), "repeat": suite["repeat"], "parallel": n,
               "code": snapshot, "model": _model(), "totals": totals(rows), "runs": rows}
-    out = suite["dir"] / "runs" / f"{started:%Y%m%d-%H%M%S}"
-    out.mkdir(parents=True, exist_ok=False)
     from g1.agent.episode import save_json
     save_json(out / "report.json", report)
     report["path"] = out / "report.json"

@@ -159,7 +159,9 @@
     "frame_max_age_s":            {"value": 0.5,   "unit": "s",     "source": "guess",      "note": "oldest camera frame a decision may be made on"},
     "frame_timeout_s":            {"value": 2.0,   "unit": "s",     "source": "guess",      "note": "longest wait for a fresh frame before deciding without one"},
     "max_failures":               {"value": 3,     "unit": "count", "source": "guess",      "note": "consecutive missing frames that end the run"},
-    "overrun_fraction_max":       {"value": 0.01,  "unit": "1",     "source": "guess",      "note": "a run with more of its ticks late than this (a tick more than one control_dt behind) is marked timing: degraded; on 2026-10-28 a loaded machine gave 952 of about 3000, an idle one gives none. g1 bench counts it as an infrastructure failure, not the task's"}
+    "overrun_fraction_max":       {"value": 0.01,  "unit": "1",     "source": "guess",      "note": "a run with more of its ticks late than this (a tick more than one control_dt behind) is marked timing: degraded; on 2026-10-28 a loaded machine gave 952 of about 3000, an idle one gives none. g1 bench counts it as an infrastructure failure, not the task's"},
+    "bench_run_mb":               {"value": 700,   "unit": "MB",    "source": "measured",   "note": "g1 bench: memory one run takes, to size how many run at once; measured 2026-10-29 on the laptop room: the twin about 400 MB physical footprint, the host about 40 MB without the model, plus room for the camera frames and the agent's history"},
+    "bench_parallel_max":         {"value": 2,     "unit": "count", "source": "measured",   "note": "g1 bench: most runs at once, whatever memory and cores allow. Measured 2026-10-29 on this 8 GB, 4+4-core Mac with a model-free laptop-room chain: 2 at once had 2 of 4 runs over overrun_fraction_max (5-6% late), 3 at once none; real agent runs also render the camera and encode images, so 2"}
 
   }
 }
