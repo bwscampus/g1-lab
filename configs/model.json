@@ -5,7 +5,8 @@
         "huggingface": "deepseek-ai/DeepSeek-V4.1-Flash-1017:baseten",
         "openrouter":  "deepseek/deepseek-v4.1-flash-1017"
     },
-    "reasoning_effort": "high",
+    "routing": {"order": ["baseten"], "allow_fallbacks": false},
+    "reasoning_effort": "low",
     "max_tokens": 16000,
     "temperature": 0.0,
     "agent": {
@@ -27,7 +28,8 @@
         "provider": "who serves the model: huggingface (HF_TOKEN in .env) or openrouter (OPENROUTER_API_KEY in .env); the model asked is models[provider]",
         "models.huggingface": "the Hugging Face model id the agent asks (was VLM_MODEL in .env, then limit vlm_model); the suffix pins one of the router's providers. Pinned to baseten 2026-10-21: the only one that served the agent's request (json_schema + reasoning_effort + image, about 1 s); novita refuses json_schema and, unnamed, reasoning_effort; together needs pay-as-you-go; fireworks-ai, featherless-ai and deepinfra do not serve it. Qwen/Qwen3-VL-30B-A3B-Instruct is the verified fast fallback",
         "models.openrouter": "the OpenRouter model id the agent asks: deepseek/deepseek-v4.1-flash-1017, the same model as models.huggingface (2026-10-29: back from openai/gpt-6-luna 1/5 and gpt-6.1-sol 0/5 on point_at_the_laptop, both 3-5 false dones; DeepSeek on Baseten was 4/5)",
-        "reasoning_effort": "one of none, minimal, low, medium, high, default; sent as reasoning_effort. high since 2026-10-29 to test whether more thinking turns point_at_the_laptop's 4/5 (low) into 5/5. Left to the provider, DeepSeek-V4.1-Flash once thought 52 s on one decision. Dropped if the server rejects it",
+        "routing": "OpenRouter only: its provider preferences, sent as the request's provider object ({} lets OpenRouter pick a host per request). Pinned to baseten 2026-10-29: unpinned, B4 went mostly to Wafer (mxfp4, 4-bit) and switched hosts within a run; Baseten served B1's 4/5 through Hugging Face",
+        "reasoning_effort": "one of none, minimal, low, medium, high, default; sent as reasoning_effort: how long a reasoning model may think. low: high on OpenRouter (B4, 2026-10-29, mixed hosts) did not clearly help and used more tokens; to be retested on one pinned host. Left to the provider, DeepSeek-V4.1-Flash once thought 52 s on one decision. Dropped if the server rejects it",
         "max_tokens": "tokens; reply budget, reasoning included; 400 cut a reasoning model off before it answered (a decision used 446), the longest decision seen used 10468 (52 s), and the HF router refused 500000 (its ceiling was 393216). A runaway now ends as a cut-off reply, not a 60 s timeout",
         "temperature": "sampling temperature of every model request (0: the most likely reply)",
         "agent.max_decisions": "count; model decisions per run, rejected replies included (gpt-policy uses 100) (a limit until 2026-10-29)",

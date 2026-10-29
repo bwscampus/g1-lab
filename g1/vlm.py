@@ -42,7 +42,7 @@ PROVIDERS = {
 }
 EFFORTS = ("none", "minimal", "low", "medium", "high", "default")
 MODEL_PATH = limits.ROOT / "configs" / "model.json"
-KEYS = ("version", "provider", "models", "reasoning_effort", "max_tokens", "temperature", "agent", "notes")
+KEYS = ("version", "provider", "models", "routing", "reasoning_effort", "max_tokens", "temperature", "agent", "notes")
 # the agent loop's settings (g1/agent/): whole numbers are counts, the rest seconds or sizes; all > 0 but jitter
 AGENT = {"max_decisions": int, "step_timeout_s": float, "request_timeout_s": float, "retry_max": int,
          "retry_delay_base_s": float, "retry_delay_cap_s": float, "retry_jitter_s": float, "recovery_timeout_s": float,
@@ -68,6 +68,8 @@ def load_model(path: Path | str | None = None) -> dict:
     if not isinstance(models, dict) or sorted(models) != sorted(PROVIDERS) or not all(
             isinstance(v, str) and v.strip() for v in models.values()):
         raise ValueError(f"model file {p}: models needs a model id for each of {list(PROVIDERS)}")
+    if not isinstance(m["routing"], dict):
+        raise ValueError(f"model file {p}: routing must be an object (OpenRouter's provider preferences, {{}} for none)")
     if m["reasoning_effort"] not in EFFORTS:
         raise ValueError(f"model file {p}: reasoning_effort must be one of {list(EFFORTS)}, got {m['reasoning_effort']!r}")
     if isinstance(m["max_tokens"], bool) or not isinstance(m["max_tokens"], int) or m["max_tokens"] <= 0:
@@ -101,6 +103,9 @@ MAX_TOKENS = MODEL["max_tokens"]
 # Sent as ``reasoning_effort`` ("default": not sent). A server that rejects it gets the request without it.
 REASONING_EFFORT = MODEL["reasoning_effort"]
 TEMPERATURE = MODEL["temperature"]
+# OpenRouter only: which of the model's hosts serve it, sent as the request's ``provider`` object
+# (e.g. {"order": ["baseten"], "allow_fallbacks": false}); without it OpenRouter picks a host per request
+ROUTING = MODEL["routing"]
 AGENT_SETTINGS = MODEL["agent"]           # the agent loop's budgets, timeouts, retries and image sizes
 # Settings that moved from .env to configs/model.json: refused if still set, so none is silently ignored.
 MOVED = {"VLM_MODEL": "models", "VLM_MAX_TOKENS": "max_tokens", "VLM_REASONING_EFFORT": "reasoning_effort"}
@@ -223,7 +228,7 @@ def _sse_post(url: str, headers: dict, body: dict, timeout: float) -> Iterator[s
     try:
         resp = urllib.request.urlopen(req, timeout=timeout)
     except urllib.error.HTTPError as e:
-        raise classify(e.code, e.read().decode("utf-8", "replace")[:300]) from None
+        raise classify(e.code, e.read().decode("utf-8", "replace")[:2000]) from None
     with resp:
         if not body.get("stream"):
             yield resp.read().decode("utf-8", "replace")
@@ -257,7 +262,8 @@ class VLMClient:
     status and body of any attempt it refused before a step-down."""
 
     def __init__(self, model: str = DEFAULT_MODEL, token: Optional[str] = None, *,
-                 base_url: str = HF_BASE_URL, provider: str = "huggingface", stream: bool = True,
+                 base_url: str = HF_BASE_URL, provider: str = "huggingface", routing: Optional[dict] = None,
+                 stream: bool = True,
                  json_mode: bool = True, json_schema: bool = True,
                  timeout: float = AGENT_SETTINGS["request_timeout_s"],
                  on_text: Optional[Callable[[str], None]] = None,
@@ -266,6 +272,7 @@ class VLMClient:
         self.token = token or ""
         self.base_url = base_url.rstrip("/")
         self.provider = provider
+        self.routing = dict(routing) if routing else None
         self.stream = stream
         self.json_mode = json_mode
         self.json_schema = json_schema
@@ -285,12 +292,15 @@ class VLMClient:
     @classmethod
     def from_env(cls, model: Optional[str] = None, provider: str = PROVIDER, **kw) -> "VLMClient":
         base_url, model, key = resolve(model, provider=provider)
+        kw.setdefault("routing", ROUTING if provider == "openrouter" else None)
         return cls(model, key, base_url=base_url, provider=provider, **kw)
 
     def complete(self, messages: list[dict], *, max_tokens: Optional[int] = None,
                  temperature: float = TEMPERATURE, schema: Optional[dict] = None) -> str:
         body = {"model": self.model, "stream": self.stream, "temperature": temperature,
                 "max_tokens": max_tokens or self.max_tokens, "messages": messages}
+        if self.routing:
+            body["provider"] = self.routing
         self.last_chunks = []
         while True:
             attempt = dict(body)               # a fresh body per attempt, so records see what was sent
@@ -321,6 +331,8 @@ class VLMClient:
                     continue
                 mentions = e.status == 400 and any(k in e.body for k in ("response_format", "json_schema", "schema",
                                                                          "json_object"))
+                # OpenRouter, routed to hosts that take no response_format (Baseten): no endpoint is left
+                mentions = mentions or (e.status == 404 and "Filter by Parameters" in e.body)
                 if mentions and self.response_mode == "json_schema" and self.json_strict:
                     self.json_strict = False
                     continue

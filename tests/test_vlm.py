@@ -189,6 +189,7 @@ def test_a_bad_model_file_is_refused_with_the_name(tmp_path):
     broken(lambda d: d.update(max_tokens=0), "max_tokens must be a positive")
     broken(lambda d: d.update(temperature=-1), "temperature must be")
     broken(lambda d: d.update(max_tokns=1), "needs exactly")
+    broken(lambda d: d.update(routing=["baseten"]), "routing must be an object")
     broken(lambda d: d["agent"].pop("step_timeout_s"), "agent needs exactly")
     broken(lambda d: d["agent"].update(max_decisions=0), "agent.max_decisions must be a positive whole number")
     broken(lambda d: d["agent"].update(max_decisions=2.5), "agent.max_decisions must be a positive whole number")
@@ -204,3 +205,19 @@ def test_limits_hold_no_model_setting():
     assert not names & {"vlm_provider", "vlm_model", "openrouter_model", "reasoning_effort", "max_tokens",
                         "vlm_temperature", *vlm.AGENT}
     assert sorted(vlm.AGENT_SETTINGS) == sorted(vlm.AGENT)
+
+
+def test_routing_is_sent_to_openrouter_only(monkeypatch):
+    for v in ("HF_TOKEN", "VLM_BASE_URL", "OPENROUTER_API_KEY"):
+        monkeypatch.delenv(v, raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-t")
+    monkeypatch.setenv("HF_TOKEN", "hf_t")
+    monkeypatch.setattr(vlm, "ROUTING", {"order": ["baseten"], "allow_fallbacks": False})
+    calls = []
+
+    def transport(url, headers, body, timeout):
+        calls.append(body)
+        return sse("{}")
+    VLMClient.from_env("a/b", provider="openrouter", transport=transport).complete([])
+    VLMClient.from_env("a/b", provider="huggingface", transport=transport).complete([])
+    assert calls[0]["provider"] == {"order": ["baseten"], "allow_fallbacks": False} and "provider" not in calls[1]

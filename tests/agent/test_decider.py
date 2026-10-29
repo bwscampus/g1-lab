@@ -228,6 +228,20 @@ def test_openai_refusals_step_down_to_a_schema_it_accepts():
     words = "Response input messages must contain the word 'json' in some form to use 'text.format' of type 'json_object'."
     client = VLMClient("m/vl", "k", json_schema=False, transport=transport_of([RequestError(400, words), TURN], calls))
     assert client.complete([]) == TURN and client.response_mode == "none"
+
+
+def test_openrouter_pinned_to_a_host_without_response_format_steps_down_to_the_prompt():
+    # OpenRouter pinned to Baseten (2026-10-29): it removes every host that cannot take response_format
+    calls = []
+    gone = ("No endpoints found for deepseek/deepseek-v4.1-flash-1017. Every candidate endpoint was removed during "
+            "routing: Filter by Parameters removed alibaba, novita/fp8, baseten")
+    replies = [RequestError(404, gone)] * 3 + [TURN, TURN]
+    client = VLMClient("m/vl", "k", provider="openrouter", routing={"order": ["baseten"], "allow_fallbacks": False},
+                       transport=transport_of(replies, calls))
+    assert client.complete([], schema={"type": "object"}) == TURN and client.response_mode == "none"
+    assert [c.get("response_format", {}).get("type") for c in calls] == ["json_schema", "json_schema", "json_object", None]
+    assert all(c["provider"] == {"order": ["baseten"], "allow_fallbacks": False} for c in calls)
+    assert client.complete([], schema={"type": "object"}) == TURN and "response_format" not in calls[-1]
     assert isinstance(classify(429, ""), Overloaded) and isinstance(classify(503, ""), Overloaded)
     assert isinstance(classify(500, "The model is overloaded"), Overloaded)
     assert isinstance(classify(402, ""), QuotaExceeded) and isinstance(classify(403, "monthly quota"), QuotaExceeded)

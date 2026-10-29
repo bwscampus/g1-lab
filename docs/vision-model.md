@@ -18,7 +18,11 @@ Which model is asked, and how, is `configs/model.json` (not `.env`, not `configs
 provider            huggingface | openrouter: who is asked (switch here, nothing else changes)
 models.huggingface  the Hugging Face model id; the suffix (":baseten") pins one of the router's providers
                     (Qwen/Qwen3-VL-30B-A3B-Instruct is the verified fast fallback)
-models.openrouter   the OpenRouter model id (deepseek/deepseek-v4.1-flash-1017, the same model)
+models.openrouter   the OpenRouter model id
+routing             OpenRouter only: its provider preferences, sent as the request's provider object, e.g.
+                    {"order": ["baseten"], "allow_fallbacks": false}. Without it OpenRouter picks a host per
+                    request by price (often a 4-bit one) and may switch hosts within a run. A host that
+                    takes no response_format (Baseten there) is reached by stepping down to plain JSON
 reasoning_effort    sent as reasoning_effort (none|minimal|low|medium|high, or default to leave it
                     out); dropped if the server rejects it
 max_tokens          the reply budget, reasoning included
