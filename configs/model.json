@@ -3,15 +3,15 @@
     "provider": "openrouter",
     "models": {
         "huggingface": "deepseek-ai/DeepSeek-V4.1-Flash-1017:baseten",
-        "openrouter":  "openai/gpt-6.1-sol"
+        "openrouter":  "deepseek/deepseek-v4.1-flash-1017"
     },
-    "reasoning_effort": "low",
+    "reasoning_effort": "high",
     "max_tokens": 16000,
     "temperature": 0.0,
     "agent": {
         "max_decisions": 30,
-        "step_timeout_s": 60.0,
-        "request_timeout_s": 30.0,
+        "step_timeout_s": 120.0,
+        "request_timeout_s": 110.0,
         "retry_max": 20,
         "retry_delay_base_s": 2.0,
         "retry_delay_cap_s": 8.0,
@@ -26,13 +26,13 @@
     "notes": {
         "provider": "who serves the model: huggingface (HF_TOKEN in .env) or openrouter (OPENROUTER_API_KEY in .env); the model asked is models[provider]",
         "models.huggingface": "the Hugging Face model id the agent asks (was VLM_MODEL in .env, then limit vlm_model); the suffix pins one of the router's providers. Pinned to baseten 2026-10-21: the only one that served the agent's request (json_schema + reasoning_effort + image, about 1 s); novita refuses json_schema and, unnamed, reasoning_effort; together needs pay-as-you-go; fireworks-ai, featherless-ai and deepinfra do not serve it. Qwen/Qwen3-VL-30B-A3B-Instruct is the verified fast fallback",
-        "models.openrouter": "the OpenRouter model id the agent asks. openai/gpt-6.1-sol since 2026-10-29 (the user's choice; $2/$10 per M tokens). Before it gpt-6-luna: 1/5 on point_at_the_laptop (3 false dones) against DeepSeek-V4.1-Flash's 4/5. OpenAI refuses the tool schema in strict mode (minProperties): the client retries it not strict",
-        "reasoning_effort": "one of none, minimal, low, medium, high, default; sent as reasoning_effort: how long a reasoning model may think (default: leave it to the provider). Left to the provider, DeepSeek-V4.1-Flash once thought 52 s on one decision; none answered in about 1 s. Dropped if the server rejects it",
+        "models.openrouter": "the OpenRouter model id the agent asks: deepseek/deepseek-v4.1-flash-1017, the same model as models.huggingface (2026-10-29: back from openai/gpt-6-luna 1/5 and gpt-6.1-sol 0/5 on point_at_the_laptop, both 3-5 false dones; DeepSeek on Baseten was 4/5)",
+        "reasoning_effort": "one of none, minimal, low, medium, high, default; sent as reasoning_effort. high since 2026-10-29 to test whether more thinking turns point_at_the_laptop's 4/5 (low) into 5/5. Left to the provider, DeepSeek-V4.1-Flash once thought 52 s on one decision. Dropped if the server rejects it",
         "max_tokens": "tokens; reply budget, reasoning included; 400 cut a reasoning model off before it answered (a decision used 446), the longest decision seen used 10468 (52 s), and the HF router refused 500000 (its ceiling was 393216). A runaway now ends as a cut-off reply, not a 60 s timeout",
         "temperature": "sampling temperature of every model request (0: the most likely reply)",
         "agent.max_decisions": "count; model decisions per run, rejected replies included (gpt-policy uses 100) (a limit until 2026-10-29)",
-        "agent.step_timeout_s": "s; longest wait for one decision before the run fails (a limit until 2026-10-29)",
-        "agent.request_timeout_s": "s; longest one HTTP request to the model may take (a limit until 2026-10-29)",
+        "agent.step_timeout_s": "s; longest wait for one decision before the run fails. 120 since 2026-10-29 (was 60) so a long think at reasoning_effort high is not counted as a failure",
+        "agent.request_timeout_s": "s; longest one HTTP request to the model may take. 110 since 2026-10-29 (was 30), under step_timeout_s, for reasoning_effort high",
         "agent.retry_max": "count; retries when the model is overloaded (a limit until 2026-10-29)",
         "agent.retry_delay_base_s": "s; first retry delay; doubles each time (a limit until 2026-10-29)",
         "agent.retry_delay_cap_s": "s; largest retry delay (a limit until 2026-10-29)",
