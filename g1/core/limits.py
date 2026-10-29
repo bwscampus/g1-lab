@@ -1,9 +1,10 @@
-"""Every tunable limit and default, from one file: ``configs/limits.json``.
+"""Every tunable limit and default of the robot and the run, from one file: ``configs/limits.json``.
 
 Nothing else in the repo holds a limit, and .env holds none: it is for what is
-private to one machine (the token, the robot's address and key). Each entry has a
+private to one machine (the token, the robot's address and key). Which model is
+asked, and how, is ``configs/model.json`` (``g1/vlm.py``). Each entry has a
 ``value``, a ``unit``, a ``source`` (where the number came from) and a ``note`` (what
-it bounds). A setting that is a word, not a number (the model id), has unit
+it bounds). A setting that is a word, not a number, has unit
 ``text`` and, when only some words are allowed, ``choices``. ``g1 limits`` prints
 them all as one table. Code reads a value with ``limits.get("name")``; a tool's parameters
 refer to one with ``limit("name")`` and its prompt text with ``{limit:name}``.
@@ -42,7 +43,7 @@ NAMES = (
     "max_decisions", "step_timeout_s", "max_time_s",
     "settle_min_s", "settle_pos_tol_rad", "settle_vel_tol", "settle_samples", "settle_timeout_s",
     "frame_max_age_s", "frame_timeout_s", "max_failures",
-    "vlm_provider", "vlm_model", "openrouter_model", "reasoning_effort", "max_tokens", "request_timeout_s", "vlm_temperature", "image_width_px", "jpeg_quality", "live_image_window", "history_full_turns",
+    "request_timeout_s", "image_width_px", "jpeg_quality", "live_image_window", "history_full_turns",
     "retry_max", "retry_delay_base_s", "retry_delay_cap_s", "retry_jitter_s", "recovery_timeout_s",
 )
 
@@ -107,7 +108,7 @@ def _check_consistency(limits: dict, p: Path) -> None:
     for low, high in rules:
         if v[low] > v[high]:
             raise ValueError(f"limits file {p}: {low} ({v[low]}) must not exceed {high} ({v[high]})")
-    for name in ("control_dt_s", "walk_speed", "side_speed", "turn_rate", "max_decisions", "max_tokens",
+    for name in ("control_dt_s", "walk_speed", "side_speed", "turn_rate", "max_decisions",
                  "settle_samples", "image_width_px", "history_full_turns", "say_max_chars", "speech_chars_per_s",
                  "twin_physics_dt_s", "twin_lowstate_hz", "twin_camera_fps"):
         if v[name] <= 0:

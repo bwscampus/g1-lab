@@ -2,7 +2,7 @@
 
 The model runs only when the agent asks: one request per decision, on a background thread,
 with the robot standing still. Backend (`g1/vlm.py`): **Hugging Face Inference Providers** or
-**OpenRouter**, chosen by the limit `vlm_provider`; any model there that takes images and returns
+**OpenRouter**, chosen in `configs/model.json`; any model there that takes images and returns
 JSON. Only the chosen provider's key is needed in `.env`:
 
 ```
@@ -11,20 +11,25 @@ VLM_BASE_URL        huggingface, optional: another Hugging Face endpoint, e.g. a
 OPENROUTER_API_KEY  openrouter: a key from https://openrouter.ai/settings/keys
 ```
 
-The rest is in `configs/limits.json` (`g1 limits`), not `.env`:
+Which model is asked, and how, is `configs/model.json` (not `.env`, not `configs/limits.json`;
+`g1 limits` prints it on its last line):
 
 ```
-vlm_provider      huggingface | openrouter: who is asked (switch here, nothing else changes)
-vlm_model         the Hugging Face model id; the suffix (":baseten") pins one of the router's providers
-                  (Qwen/Qwen3-VL-30B-A3B-Instruct is the verified fast fallback)
-openrouter_model  the OpenRouter model id (deepseek/deepseek-v4.1-flash-1017, the same model)
-reasoning_effort  sent as reasoning_effort (none|minimal|low|medium|high, or default to leave it
-                  out); dropped if the server rejects it
-max_tokens        the reply budget, reasoning included
+provider            huggingface | openrouter: who is asked (switch here, nothing else changes)
+models.huggingface  the Hugging Face model id; the suffix (":baseten") pins one of the router's providers
+                    (Qwen/Qwen3-VL-30B-A3B-Instruct is the verified fast fallback)
+models.openrouter   the OpenRouter model id (deepseek/deepseek-v4.1-flash-1017, the same model)
+reasoning_effort    sent as reasoning_effort (none|minimal|low|medium|high, or default to leave it
+                    out); dropped if the server rejects it
+max_tokens          the reply budget, reasoning included
+temperature         sampling temperature
+notes               why each value is what it is
 ```
 
-Setting `VLM_MODEL`, `VLM_MAX_TOKENS` or `VLM_REASONING_EFFORT` in `.env` is refused with a pointer to
-the file, so an old `.env` never silently overrides it.
+A typo or a missing key there fails at import, naming it. Setting `VLM_MODEL`, `VLM_MAX_TOKENS` or
+`VLM_REASONING_EFFORT` in `.env` is refused with a pointer to the file, so an old `.env` never
+silently overrides it. The request's timeout, the image size and the conversation window stay
+limits (`request_timeout_s`, `image_width_px`, `jpeg_quality`, `live_image_window`, `history_full_turns`).
 
 Thinking time is most of a decision's wall time. Left to the provider, DeepSeek-V4.1-Flash
 spent 3 to 52 s per decision and once ran into the 60 s `step_timeout_s`; the agent prints the
@@ -71,7 +76,7 @@ range are clamped and the model is told). Anything else is `invalid_selection` i
 
 Roughly 0.5–1.5k tokens per image plus the text; a 30-decision run is on the order of
 30–60k tokens, more with a reasoning model (its thinking counts against `max_tokens`; the
-budget in `configs/limits.json` is a ceiling, not a cost). A reasoning model also takes
+budget in `configs/model.json` is a ceiling, not a cost). A reasoning model also takes
 longer per decision (10–30 s measured) — raise `step_timeout_s` in `configs/limits.json` if
 it times out. Each run's tokens are in its line of the task's `results.jsonl`. `--sim` runs in
 real time, so the timings mean what they would on the robot.

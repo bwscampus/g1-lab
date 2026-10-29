@@ -1,12 +1,11 @@
 """The vision-language model client: Hugging Face Inference Providers or
-OpenRouter (limit ``vlm_provider``) over their OpenAI-compatible chat-completions endpoint, with image input, stdlib
-urllib, streamed SSE and structured output with a step-down. Shared by the
-decider (choose a tool) and the demo keyframe selector.
+OpenRouter over their OpenAI-compatible chat-completions endpoint, with image
+input, stdlib urllib, streamed SSE and structured output with a step-down.
+Shared by the decider (choose a tool) and the demo keyframe selector.
 
-The provider, the model, its token budget and its reasoning effort are in
-configs/limits.json (``vlm_provider``, ``vlm_model`` or ``openrouter_model``,
-``max_tokens``, ``reasoning_effort``). The environment holds only what is private
-to this machine:
+Which model is asked, and how, is configs/model.json: ``provider``, a model id
+per provider (``models``), ``reasoning_effort``, ``max_tokens``, ``temperature``.
+The environment holds only what is private to this machine:
 
     HF_TOKEN            the Hugging Face key (a fine-grained token with "Make calls to Inference Providers")
     VLM_BASE_URL        another Hugging Face endpoint, e.g. a dedicated Inference Endpoint
@@ -33,20 +32,56 @@ from g1.core import limits
 
 HF_BASE_URL = "https://router.huggingface.co/v1"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-# provider -> (endpoint, the variable holding its key, the limit naming its model, where a key comes from)
+# provider -> (endpoint, the variable holding its key, where a key comes from)
 PROVIDERS = {
-    "huggingface": (HF_BASE_URL, "HF_TOKEN", "vlm_model", "Hugging Face token"),
-    "openrouter": (OPENROUTER_BASE_URL, "OPENROUTER_API_KEY", "openrouter_model", "OpenRouter key"),
+    "huggingface": (HF_BASE_URL, "HF_TOKEN", "Hugging Face token"),
+    "openrouter": (OPENROUTER_BASE_URL, "OPENROUTER_API_KEY", "OpenRouter key"),
 }
-PROVIDER = limits.get("vlm_provider")
-DEFAULT_MODEL = limits.get(PROVIDERS[PROVIDER][2])
+EFFORTS = ("none", "minimal", "low", "medium", "high", "default")
+MODEL_PATH = limits.ROOT / "configs" / "model.json"
+KEYS = ("version", "provider", "models", "reasoning_effort", "max_tokens", "temperature", "notes")
+
+
+def load_model(path: Path | str | None = None) -> dict:
+    """configs/model.json, checked: a typo or a missing key fails here, naming it."""
+    p = Path(path) if path else MODEL_PATH
+    try:
+        m = json.loads(p.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise ValueError(f"model file not found: {p}") from None
+    except json.JSONDecodeError as e:
+        raise ValueError(f"model file {p}: {e}") from None
+    if not isinstance(m, dict) or m.get("version") != 1:
+        raise ValueError(f"model file {p}: needs version 1")
+    if sorted(m) != sorted(KEYS):
+        raise ValueError(f"model file {p}: needs exactly {list(KEYS)}, has {sorted(m)}")
+    if m["provider"] not in PROVIDERS:
+        raise ValueError(f"model file {p}: provider must be one of {list(PROVIDERS)}, got {m['provider']!r}")
+    models = m["models"]
+    if not isinstance(models, dict) or sorted(models) != sorted(PROVIDERS) or not all(
+            isinstance(v, str) and v.strip() for v in models.values()):
+        raise ValueError(f"model file {p}: models needs a model id for each of {list(PROVIDERS)}")
+    if m["reasoning_effort"] not in EFFORTS:
+        raise ValueError(f"model file {p}: reasoning_effort must be one of {list(EFFORTS)}, got {m['reasoning_effort']!r}")
+    if isinstance(m["max_tokens"], bool) or not isinstance(m["max_tokens"], int) or m["max_tokens"] <= 0:
+        raise ValueError(f"model file {p}: max_tokens must be a positive whole number")
+    t = m["temperature"]
+    if isinstance(t, bool) or not isinstance(t, (int, float)) or t < 0:
+        raise ValueError(f"model file {p}: temperature must be a number >= 0")
+    return m
+
+
+MODEL = load_model()
+PROVIDER = MODEL["provider"]
+DEFAULT_MODEL = MODEL["models"][PROVIDER]
 # The reply budget, reasoning included. A reasoning model thinks before it answers and the
 # thinking counts: at 400 it never reached the answer.
-MAX_TOKENS = int(limits.get("max_tokens"))
+MAX_TOKENS = MODEL["max_tokens"]
 # Sent as ``reasoning_effort`` ("default": not sent). A server that rejects it gets the request without it.
-REASONING_EFFORT = limits.get("reasoning_effort")
-# Settings that moved from .env to configs/limits.json: refused if still set, so none is silently ignored.
-MOVED = {"VLM_MODEL": "vlm_model", "VLM_MAX_TOKENS": "max_tokens", "VLM_REASONING_EFFORT": "reasoning_effort"}
+REASONING_EFFORT = MODEL["reasoning_effort"]
+TEMPERATURE = MODEL["temperature"]
+# Settings that moved from .env to configs/model.json: refused if still set, so none is silently ignored.
+MOVED = {"VLM_MODEL": "models", "VLM_MAX_TOKENS": "max_tokens", "VLM_REASONING_EFFORT": "reasoning_effort"}
 IMAGE_WIDTH = int(limits.get("image_width_px"))
 JPEG_QUALITY = int(limits.get("jpeg_quality"))
 
@@ -85,16 +120,16 @@ def resolve(model: Optional[str] = None, env: Optional[dict] = None,
     env = os.environ if env is None else env
     moved = [f"{var} (now {name})" for var, name in MOVED.items() if env.get(var)]
     if moved:
-        raise RuntimeError(f"set in configs/limits.json, not .env: {', '.join(moved)}; remove them from .env "
-                           "or the environment (g1 limits shows the values in use)")
-    base_url, key_var, model_limit, what = PROVIDERS[provider]
+        raise RuntimeError(f"set in configs/model.json, not .env: {', '.join(moved)}; remove them from .env "
+                           "or the environment")
+    base_url, key_var, what = PROVIDERS[provider]
     key = env.get(key_var)
     if not key:
         raise RuntimeError(f"no {what}: set {key_var} (in .env or the environment), "
-                           f"or change vlm_provider in configs/limits.json (now {provider})")
+                           f"or change provider in configs/model.json (now {provider})")
     if provider == "huggingface":           # VLM_BASE_URL is another Hugging Face endpoint
         base_url = env.get("VLM_BASE_URL") or base_url
-    return base_url.rstrip("/"), model or limits.get(model_limit), key
+    return base_url.rstrip("/"), model or MODEL["models"][provider], key
 
 
 class RequestError(RuntimeError):
@@ -118,7 +153,7 @@ class TruncatedReply(RequestError):
     def __init__(self, max_tokens, reasoning_tokens, text: str = "") -> None:
         spent = f", {reasoning_tokens} of them on reasoning" if reasoning_tokens else ""
         super().__init__(200, f"the reply was cut off at max_tokens={max_tokens}{spent}; "
-                              f"raise max_tokens in configs/limits.json (now {max_tokens})")
+                              f"raise max_tokens in configs/model.json (now {max_tokens})")
         self.text = text
 
 
@@ -229,7 +264,7 @@ class VLMClient:
         return cls(model, key, base_url=base_url, provider=provider, **kw)
 
     def complete(self, messages: list[dict], *, max_tokens: Optional[int] = None,
-                 temperature: float = limits.get("vlm_temperature"), schema: Optional[dict] = None) -> str:
+                 temperature: float = TEMPERATURE, schema: Optional[dict] = None) -> str:
         body = {"model": self.model, "stream": self.stream, "temperature": temperature,
                 "max_tokens": max_tokens or self.max_tokens, "messages": messages}
         self.last_chunks = []

@@ -23,7 +23,8 @@ g1 limits [guess]                    # every number and default as one table (or
 ```
 
 That is the whole command line. Everything else lives in a file: what to do in the task's
-`task.json`, every number and default (the model included) in `configs/limits.json`, and in
+`task.json`, every number and default in `configs/limits.json`, which model is asked in
+`configs/model.json`, and in
 `.env` only what is private to one machine: the model's key and the robot's address and key. `G1_VERBOSE=1` prints every SDK call and a health line a second.
 
 Two words to know, both GPT-Policy's:
@@ -77,9 +78,10 @@ cp .env.example .env            # git-ignored; exported variables win over it
 
 Put a Hugging Face token in it (`HF_TOKEN=hf_...`; a fine-grained token with "Make calls to
 Inference Providers", from https://huggingface.co/settings/tokens), or an OpenRouter key
-(`OPENROUTER_API_KEY=sk-or-...`) and set `vlm_provider` to `openrouter`. The provider, the model and
-every other setting are in `configs/limits.json` (`vlm_provider`, `vlm_model`, `openrouter_model`;
-`g1 limits` prints them all; see `docs/vision-model.md`). Then:
+(`OPENROUTER_API_KEY=sk-or-...`) and set `"provider": "openrouter"` in `configs/model.json`. That
+file holds the provider, a model id for each, `reasoning_effort`, `max_tokens` and `temperature`;
+every other setting is in `configs/limits.json` (`g1 limits` prints them all and the model in use;
+see `docs/vision-model.md`). Then:
 
 ```
 g1 run find_the_mug --sim            # a whole task on the twin; recorded, no questions asked
@@ -217,6 +219,7 @@ g1/
                   contract), episode (the run record), task (task.json)
 tasks/            STUDENTS WRITE: one folder per task (task.json, runs/, results.jsonl)
 configs/limits.json   every limit and default, with its unit and where the number came from
+configs/model.json    which model is asked (provider, model id per provider) and how
 docs/             architecture, writing-a-tool, writing-a-task, running-on-the-robot, vision-model
 tests/            pytest, mirroring g1/; everything runs on the twin in-process
 ```

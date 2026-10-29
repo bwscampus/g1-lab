@@ -37,7 +37,7 @@ from g1.core import limits
 from g1.core.config import HEAD_CAMERA_FOV_H, HEAD_CAMERA_PITCH, NUM_JOINTS
 from g1.core.worker import Worker
 from g1.tools import Tool, function_schemas, joint_table, menu, output_schema, parameters, prompt_catalog, validate_args
-from g1.vlm import IMAGE_WIDTH, VLMClient, image_part
+from g1.vlm import IMAGE_WIDTH, TEMPERATURE, VLMClient, image_part
 
 
 
@@ -438,6 +438,6 @@ class VLMDecider(Decider):
         c = self.client
         return {"model": c.model, "provider": c.provider, "stream": c.stream,     # never .env values (base_url)
                 "reasoning_effort": c.reasoning_effort, "max_tokens": c.max_tokens,
-                "temperature": limits.get("vlm_temperature"), "image_max_width_px": self.max_width,
+                "temperature": TEMPERATURE, "image_max_width_px": self.max_width,
                 "jpeg_quality": limits.get("jpeg_quality"), "history_full_turns": self.history_full_turns,
                 "live_image_window": self.live_image_window}
