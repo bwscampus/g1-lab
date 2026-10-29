@@ -1,9 +1,9 @@
 {
     "version": 1,
-    "provider": "huggingface",
+    "provider": "openrouter",
     "models": {
         "huggingface": "deepseek-ai/DeepSeek-V4.1-Flash-1017:baseten",
-        "openrouter":  "deepseek/deepseek-v4.1-flash-1017"
+        "openrouter":  "openai/gpt-6-luna"
     },
     "reasoning_effort": "low",
     "max_tokens": 16000,
@@ -26,7 +26,7 @@
     "notes": {
         "provider": "who serves the model: huggingface (HF_TOKEN in .env) or openrouter (OPENROUTER_API_KEY in .env); the model asked is models[provider]",
         "models.huggingface": "the Hugging Face model id the agent asks (was VLM_MODEL in .env, then limit vlm_model); the suffix pins one of the router's providers. Pinned to baseten 2026-10-21: the only one that served the agent's request (json_schema + reasoning_effort + image, about 1 s); novita refuses json_schema and, unnamed, reasoning_effort; together needs pay-as-you-go; fireworks-ai, featherless-ai and deepinfra do not serve it. Qwen/Qwen3-VL-30B-A3B-Instruct is the verified fast fallback",
-        "models.openrouter": "the OpenRouter model id the agent asks; the same DeepSeek-V4.1-Flash-1017 as models.huggingface. OpenRouter lists it with image input, response_format, structured_outputs and reasoning_effort (GET /api/v1/models, 2026-10-29); not yet run with the agent's request",
+        "models.openrouter": "the OpenRouter model id the agent asks. openai/gpt-6-luna since 2026-10-29 (the user's choice): images, json_schema, reasoning_effort and temperature 0 all accepted in one probe (3.5 s); $0.10/$0.50 per M tokens. Was deepseek/deepseek-v4.1-flash-1017, the same model as models.huggingface",
         "reasoning_effort": "one of none, minimal, low, medium, high, default; sent as reasoning_effort: how long a reasoning model may think (default: leave it to the provider). Left to the provider, DeepSeek-V4.1-Flash once thought 52 s on one decision; none answered in about 1 s. Dropped if the server rejects it",
         "max_tokens": "tokens; reply budget, reasoning included; 400 cut a reasoning model off before it answered (a decision used 446), the longest decision seen used 10468 (52 s), and the HF router refused 500000 (its ceiling was 393216). A runaway now ends as a cut-off reply, not a 60 s timeout",
         "temperature": "sampling temperature of every model request (0: the most likely reply)",
