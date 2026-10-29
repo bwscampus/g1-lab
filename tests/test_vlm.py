@@ -22,30 +22,43 @@ def test_resolve_defaults_overrides_and_errors():
             resolve(env={"HF_TOKEN": "hf_t", var: "x"})
     with pytest.raises(RuntimeError, match="set HF_TOKEN"):
         resolve(env={})
-    # only Hugging Face: other providers' variables are not read
+    # the provider is the limit vlm_provider, never a variable; other providers' keys are not read
     with pytest.raises(RuntimeError, match="set HF_TOKEN"):
-        resolve(env={"VLM_PROVIDER": "openai", "OPENAI_API_KEY": "k", "VLM_API_KEY": "k"})
+        resolve(env={"VLM_PROVIDER": "openai", "OPENAI_API_KEY": "k", "VLM_API_KEY": "k"}, provider="huggingface")
+
+
+def test_resolve_openrouter():
+    env = {"OPENROUTER_API_KEY": "sk-or-t", "HF_TOKEN": "hf_t", "VLM_BASE_URL": "https://x.endpoints.huggingface.cloud/v1"}
+    # its own endpoint, key and model limit; VLM_BASE_URL is a Hugging Face endpoint, not read here
+    assert resolve(env=env, provider="openrouter") == ("https://openrouter.ai/api/v1",
+                                                       limits.get("openrouter_model"), "sk-or-t")
+    with pytest.raises(RuntimeError, match="set OPENROUTER_API_KEY.*vlm_provider"):
+        resolve(env={"HF_TOKEN": "hf_t"}, provider="openrouter")
 
 
 def sse(text):
     return iter([json.dumps({"choices": [{"delta": {"content": text}}]}), "[DONE]"])
 
 
-def test_client_from_env_sends_to_hugging_face(monkeypatch):
-    for var in ("HF_TOKEN", "VLM_BASE_URL"):
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("HF_TOKEN", "hf_t")
+@pytest.mark.parametrize("provider, var, key, url", [
+    ("huggingface", "HF_TOKEN", "hf_t", "https://router.huggingface.co/v1/chat/completions"),
+    ("openrouter", "OPENROUTER_API_KEY", "sk-or-t", "https://openrouter.ai/api/v1/chat/completions"),
+])
+def test_client_from_env_sends_to_the_provider(monkeypatch, provider, var, key, url):
+    for v in ("HF_TOKEN", "VLM_BASE_URL", "OPENROUTER_API_KEY"):
+        monkeypatch.delenv(v, raising=False)
+    monkeypatch.setenv(var, key)
     calls = []
 
     def transport(url, headers, body, timeout):
         calls.append((url, headers, body))
         return sse("{}")
 
-    c = VLMClient.from_env("a/b", transport=transport)
-    assert c.provider == "huggingface" and c.model == "a/b"
+    c = VLMClient.from_env("a/b", provider=provider, transport=transport)
+    assert c.provider == provider and c.model == "a/b"
     assert c.complete([]) == "{}"
-    url, headers, body = calls[0]
-    assert url == "https://router.huggingface.co/v1/chat/completions" and headers["Authorization"] == "Bearer hf_t"
+    sent_url, headers, body = calls[0]
+    assert sent_url == url and headers["Authorization"] == f"Bearer {key}"
     assert body["model"] == "a/b"
 
 

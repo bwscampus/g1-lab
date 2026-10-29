@@ -121,8 +121,8 @@ def test_robot_and_twin_timing_is_never_a_literal():
 def test_env_holds_nothing_editable():
     # .env is private to one machine; every setting anyone may edit is in limits.json
     from g1 import vlm
-    assert vlm.DEFAULT_MODEL == limits.get("vlm_model") and vlm.REASONING_EFFORT == limits.get("reasoning_effort")
+    assert vlm.PROVIDER == limits.get("vlm_provider") and vlm.REASONING_EFFORT == limits.get("reasoning_effort")
     keys = [line.split("=")[0].lstrip("# ").strip() for line in (ROOT / ".env.example").read_text().splitlines()
             if "=" in line and line.lstrip("# ").split("=")[0].strip().isupper()]
-    assert set(keys) <= {"HF_TOKEN", "VLM_BASE_URL", "UNITREE_IFACE", "UNITREE_ROBOT_IP", "UNITREE_AES_128_KEY",
+    assert set(keys) <= {"HF_TOKEN", "VLM_BASE_URL", "OPENROUTER_API_KEY", "UNITREE_IFACE", "UNITREE_ROBOT_IP", "UNITREE_AES_128_KEY",
                          "UNITREE_DOMAIN", "G1_VERBOSE"}, keys

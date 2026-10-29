@@ -76,9 +76,10 @@ cp .env.example .env            # git-ignored; exported variables win over it
 ```
 
 Put a Hugging Face token in it (`HF_TOKEN=hf_...`; a fine-grained token with "Make calls to
-Inference Providers", from https://huggingface.co/settings/tokens). The model and every other
-setting are in `configs/limits.json` (`vlm_model`; `g1 limits` prints them all; see
-`docs/vision-model.md`). Then:
+Inference Providers", from https://huggingface.co/settings/tokens), or an OpenRouter key
+(`OPENROUTER_API_KEY=sk-or-...`) and set `vlm_provider` to `openrouter`. The provider, the model and
+every other setting are in `configs/limits.json` (`vlm_provider`, `vlm_model`, `openrouter_model`;
+`g1 limits` prints them all; see `docs/vision-model.md`). Then:
 
 ```
 g1 run find_the_mug --sim            # a whole task on the twin; recorded, no questions asked

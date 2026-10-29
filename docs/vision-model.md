@@ -1,19 +1,23 @@
 # The vision-language model
 
 The model runs only when the agent asks: one request per decision, on a background thread,
-with the robot standing still. Backend: **Hugging Face Inference Providers** (`g1/vlm.py`),
-any model on the router that takes images and returns JSON.
+with the robot standing still. Backend (`g1/vlm.py`): **Hugging Face Inference Providers** or
+**OpenRouter**, chosen by the limit `vlm_provider`; any model there that takes images and returns
+JSON. Only the chosen provider's key is needed in `.env`:
 
 ```
-HF_TOKEN        a fine-grained token with "Make calls to Inference Providers"
-VLM_BASE_URL    optional: another Hugging Face endpoint, e.g. a dedicated Inference Endpoint
+HF_TOKEN            huggingface: a fine-grained token with "Make calls to Inference Providers"
+VLM_BASE_URL        huggingface, optional: another Hugging Face endpoint, e.g. a dedicated Inference Endpoint
+OPENROUTER_API_KEY  openrouter: a key from https://openrouter.ai/settings/keys
 ```
 
 The rest is in `configs/limits.json` (`g1 limits`), not `.env`:
 
 ```
-vlm_model         the model id; the suffix (":baseten") pins one of the router's providers
+vlm_provider      huggingface | openrouter: who is asked (switch here, nothing else changes)
+vlm_model         the Hugging Face model id; the suffix (":baseten") pins one of the router's providers
                   (Qwen/Qwen3-VL-30B-A3B-Instruct is the verified fast fallback)
+openrouter_model  the OpenRouter model id (deepseek/deepseek-v4.1-flash-1017, the same model)
 reasoning_effort  sent as reasoning_effort (none|minimal|low|medium|high, or default to leave it
                   out); dropped if the server rejects it
 max_tokens        the reply budget, reasoning included
@@ -27,7 +31,7 @@ spent 3 to 52 s per decision and once ran into the 60 s `step_timeout_s`; the ag
 median and longest think at the end of every run, and each step file's `response` records the
 effort sent.
 
-Put the token in `.env` in the repo root (`cp .env.example .env`; git-ignored; exported
+Put the key in `.env` in the repo root (`cp .env.example .env`; git-ignored; exported
 variables win) or export it. A task with an `instruction` uses them; try one on the twin
 before spending a robot run: `g1 run find_the_mug --sim`.
 

@@ -289,7 +289,7 @@ class Decider(Worker[AgentTurn, Decision]):
 
 
 class VLMDecider(Decider):
-    """Asks the vision-language model (Hugging Face, see ``g1/vlm.py``), keeping
+    """Asks the vision-language model (Hugging Face or OpenRouter, see ``g1/vlm.py``), keeping
     the conversation."""
 
     def __init__(self, client: VLMClient, *, max_width: int = IMAGE_WIDTH,

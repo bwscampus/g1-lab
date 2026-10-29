@@ -1,15 +1,17 @@
-"""The vision-language model client: Hugging Face Inference Providers over
-their OpenAI-compatible chat-completions endpoint, with image input, stdlib
+"""The vision-language model client: Hugging Face Inference Providers or
+OpenRouter (limit ``vlm_provider``) over their OpenAI-compatible chat-completions endpoint, with image input, stdlib
 urllib, streamed SSE and structured output with a step-down. Shared by the
 decider (choose a tool) and the demo keyframe selector.
 
-The model, its token budget and its reasoning effort are in configs/limits.json
-(``vlm_model``, ``max_tokens``, ``reasoning_effort``). The environment holds only
-what is private to this machine:
+The provider, the model, its token budget and its reasoning effort are in
+configs/limits.json (``vlm_provider``, ``vlm_model`` or ``openrouter_model``,
+``max_tokens``, ``reasoning_effort``). The environment holds only what is private
+to this machine:
 
-    HF_TOKEN       the key (a fine-grained token with "Make calls to Inference Providers")
-    VLM_BASE_URL   another Hugging Face endpoint, e.g. a dedicated Inference Endpoint
-                   (default: the router)
+    HF_TOKEN            the Hugging Face key (a fine-grained token with "Make calls to Inference Providers")
+    VLM_BASE_URL        another Hugging Face endpoint, e.g. a dedicated Inference Endpoint
+                        (default: the router)
+    OPENROUTER_API_KEY  the OpenRouter key
 
 A ``.env`` file in the repo root (copy ``.env.example``) is read on first use;
 exported variables win over it.
@@ -29,9 +31,15 @@ import numpy as np
 
 from g1.core import limits
 
-PROVIDER = "huggingface"
 HF_BASE_URL = "https://router.huggingface.co/v1"
-DEFAULT_MODEL = limits.get("vlm_model")
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+# provider -> (endpoint, the variable holding its key, the limit naming its model, where a key comes from)
+PROVIDERS = {
+    "huggingface": (HF_BASE_URL, "HF_TOKEN", "vlm_model", "Hugging Face token"),
+    "openrouter": (OPENROUTER_BASE_URL, "OPENROUTER_API_KEY", "openrouter_model", "OpenRouter key"),
+}
+PROVIDER = limits.get("vlm_provider")
+DEFAULT_MODEL = limits.get(PROVIDERS[PROVIDER][2])
 # The reply budget, reasoning included. A reasoning model thinks before it answers and the
 # thinking counts: at 400 it never reached the answer.
 MAX_TOKENS = int(limits.get("max_tokens"))
@@ -68,9 +76,10 @@ def load_dotenv(path: Optional[Path] = None, env: Optional[dict] = None) -> dict
     return loaded
 
 
-def resolve(model: Optional[str] = None, env: Optional[dict] = None) -> tuple[str, str, str]:
-    """(base_url, model, key) from the environment (``.env`` in the repo root
-    is read first)."""
+def resolve(model: Optional[str] = None, env: Optional[dict] = None,
+            provider: str = PROVIDER) -> tuple[str, str, str]:
+    """(base_url, model, key) for ``provider`` from the environment (``.env`` in
+    the repo root is read first)."""
     if env is None:
         load_dotenv()
     env = os.environ if env is None else env
@@ -78,11 +87,14 @@ def resolve(model: Optional[str] = None, env: Optional[dict] = None) -> tuple[st
     if moved:
         raise RuntimeError(f"set in configs/limits.json, not .env: {', '.join(moved)}; remove them from .env "
                            "or the environment (g1 limits shows the values in use)")
-    key = env.get("HF_TOKEN")
+    base_url, key_var, model_limit, what = PROVIDERS[provider]
+    key = env.get(key_var)
     if not key:
-        raise RuntimeError("no Hugging Face token: set HF_TOKEN (in .env or the environment)")
-    base_url = (env.get("VLM_BASE_URL") or HF_BASE_URL).rstrip("/")
-    return base_url, model or DEFAULT_MODEL, key
+        raise RuntimeError(f"no {what}: set {key_var} (in .env or the environment), "
+                           f"or change vlm_provider in configs/limits.json (now {provider})")
+    if provider == "huggingface":           # VLM_BASE_URL is another Hugging Face endpoint
+        base_url = env.get("VLM_BASE_URL") or base_url
+    return base_url.rstrip("/"), model or limits.get(model_limit), key
 
 
 class RequestError(RuntimeError):
@@ -173,7 +185,7 @@ def _sse_post(url: str, headers: dict, body: dict, timeout: float) -> Iterator[s
 
 
 class VLMClient:
-    """One chat completion at a time against the Hugging Face endpoint.
+    """One chat completion at a time against the provider's endpoint.
     ``transport`` is injectable for tests.
 
     Structured output is asked for in three steps, each dropped for the rest
@@ -187,7 +199,7 @@ class VLMClient:
     status and body of any attempt it refused before a step-down."""
 
     def __init__(self, model: str = DEFAULT_MODEL, token: Optional[str] = None, *,
-                 base_url: str = HF_BASE_URL, stream: bool = True,
+                 base_url: str = HF_BASE_URL, provider: str = "huggingface", stream: bool = True,
                  json_mode: bool = True, json_schema: bool = True,
                  timeout: float = limits.get("request_timeout_s"),
                  on_text: Optional[Callable[[str], None]] = None,
@@ -195,7 +207,7 @@ class VLMClient:
         self.model = model
         self.token = token or ""
         self.base_url = base_url.rstrip("/")
-        self.provider = PROVIDER
+        self.provider = provider
         self.stream = stream
         self.json_mode = json_mode
         self.json_schema = json_schema
@@ -212,9 +224,9 @@ class VLMClient:
         self.reasoning_effort: Optional[str] = None if REASONING_EFFORT == "default" else REASONING_EFFORT
 
     @classmethod
-    def from_env(cls, model: Optional[str] = None, **kw) -> "VLMClient":
-        base_url, model, key = resolve(model)
-        return cls(model, key, base_url=base_url, **kw)
+    def from_env(cls, model: Optional[str] = None, provider: str = PROVIDER, **kw) -> "VLMClient":
+        base_url, model, key = resolve(model, provider=provider)
+        return cls(model, key, base_url=base_url, provider=provider, **kw)
 
     def complete(self, messages: list[dict], *, max_tokens: Optional[int] = None,
                  temperature: float = limits.get("vlm_temperature"), schema: Optional[dict] = None) -> str:

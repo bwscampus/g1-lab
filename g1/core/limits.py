@@ -42,7 +42,7 @@ NAMES = (
     "max_decisions", "step_timeout_s", "max_time_s",
     "settle_min_s", "settle_pos_tol_rad", "settle_vel_tol", "settle_samples", "settle_timeout_s",
     "frame_max_age_s", "frame_timeout_s", "max_failures",
-    "vlm_model", "reasoning_effort", "max_tokens", "request_timeout_s", "vlm_temperature", "image_width_px", "jpeg_quality", "live_image_window", "history_full_turns",
+    "vlm_provider", "vlm_model", "openrouter_model", "reasoning_effort", "max_tokens", "request_timeout_s", "vlm_temperature", "image_width_px", "jpeg_quality", "live_image_window", "history_full_turns",
     "retry_max", "retry_delay_base_s", "retry_delay_cap_s", "retry_jitter_s", "recovery_timeout_s",
 )
 

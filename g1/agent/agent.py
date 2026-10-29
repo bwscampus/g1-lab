@@ -602,7 +602,7 @@ def ask_verdict() -> Optional[str]:
 
 def build_agent(task: dict, *, env_name: str, can_walk: bool, has_loco: bool, runs: Path | str,
                 mode: Optional[str] = None, config: Optional[dict] = None) -> Agent:
-    """The agent for a task with an instruction: the vision model (limit vlm_model), the menu
+    """The agent for a task with an instruction: the vision model (limits vlm_provider, vlm_model / openrouter_model), the menu
     this env allows, the scene's and the task's safety notes, recorded under ``runs``; ``config``
     is the run's setup (``task.run_config``), completed here with the model, tools and prompt.
     It asks nothing at the end: ``g1 run`` asks, on the robot only (save it? then the verdict)."""
