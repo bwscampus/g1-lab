@@ -218,13 +218,20 @@ def run_metrics(run: Path, s: dict) -> dict:
     tokens = (s.get("usage") or {}).get("tokens") or {}
     measured = evaluation.get("measured") or {}
     unsettled = 0
+    think_s: list[float] = []              # each model call's wall time, request to its tool call
+    reasoning: list[int] = []              # and the reasoning tokens it spent
     for step in sorted(run.glob("step_*.json")):
         try:
-            result = json.loads(step.read_text(encoding="utf-8")).get("result") or {}
+            data = json.loads(step.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        settle = (result.get("execution_feedback") or {}).get("settle") or {}
+        settle = ((data.get("result") or {}).get("execution_feedback") or {}).get("settle") or {}
         unsettled += settle.get("settled") is False
+        response = data.get("response") or {}
+        if isinstance(response.get("request_elapsed_s"), (int, float)):
+            think_s.append(round(float(response["request_elapsed_s"]), 3))
+            r = ((response.get("usage") or {}).get("completion_tokens_details") or {}).get("reasoning_tokens")
+            reasoning.append(r if isinstance(r, int) else 0)
     return {"twin_passed": evaluation.get("passed"), "twin_failed": evaluation.get("failed"),
             "false_done": s.get("false_done"),
             "pointing_within_s": measured.get("pointing_within_s"),
@@ -238,6 +245,7 @@ def run_metrics(run: Path, s: dict) -> dict:
             "input_tokens": tokens.get("prompt_tokens"), "cached_input_tokens": tokens.get("cached_tokens"),
             "output_tokens": tokens.get("completion_tokens"), "reasoning_tokens": tokens.get("reasoning_tokens"),
             "cost_usd": (s.get("usage") or {}).get("cost_usd"),
+            "think_s": think_s, "reasoning_tokens_per_call": reasoning,
             "timing": health.get("timing"), "overrun_fraction": health.get("overrun_fraction"),
             "max_tick_gap_s": health.get("max_tick_gap_s"), "load_avg": health.get("load_avg")}
 

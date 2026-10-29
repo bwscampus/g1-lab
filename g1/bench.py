@@ -93,6 +93,17 @@ def _median(values) -> Optional[float]:
     return round(statistics.median(v), 3) if v else None
 
 
+def think_stats(seconds: list[float], reasoning: list[int]) -> dict:
+    """Model time per call: count, median, 90th percentile and longest, and the most reasoning tokens."""
+    if not seconds:
+        return {"calls": 0, "think_median_s": None, "think_p90_s": None, "think_max_s": None,
+                "reasoning_tokens_max_call": None}
+    xs = sorted(seconds)
+    p90 = xs[min(len(xs) - 1, int(round(0.9 * (len(xs) - 1))))]
+    return {"calls": len(xs), "think_median_s": round(statistics.median(xs), 2), "think_p90_s": round(p90, 2),
+            "think_max_s": round(xs[-1], 2), "reasoning_tokens_max_call": max(reasoning) if reasoning else None}
+
+
 def totals(rows: list[dict]) -> dict:
     """Per task: the task's numbers over the runs the infrastructure did not spoil, and the
     execution and infrastructure counts over every run."""
@@ -125,6 +136,9 @@ def totals(rows: list[dict]) -> dict:
             "reasoning_tokens": sum(r.get("reasoning_tokens") or 0 for r in rs),
             "cost_usd": (round(sum(r.get("cost_usd") or 0.0 for r in rs), 6)
                          if any(r.get("cost_usd") is not None for r in rs) else None),
+            # how long the model takes per call (request to tool call), over every call of every run
+            **think_stats([t for r in rs for t in r.get("think_s") or []],
+                          [k for r in rs for k in r.get("reasoning_tokens_per_call") or []]),
         }
     return out
 
@@ -152,6 +166,12 @@ def table(tot: dict) -> str:
         cost = "-" if t.get("cost_usd") is None else f"{t['cost_usd']:.4f}"
         lines.append(f"{name:<30} {t.get('input_tokens', 0):>12,} {t.get('cached_input_tokens', 0):>12,} "
                      f"{t.get('output_tokens', 0):>12,} {t.get('reasoning_tokens', 0):>12,} {cost:>10}")
+    lines.append("")
+    head = f"{'model time per call':<30} {'calls':>8} {'median s':>9} {'p90 s':>8} {'max s':>8} {'reasoning tok max':>18}"
+    lines += [head, "-" * len(head)]
+    for name, t in tot.items():
+        lines.append(f"{name:<30} {t.get('calls', 0):>8} {show(t.get('think_median_s')):>9} {show(t.get('think_p90_s')):>8} "
+                     f"{show(t.get('think_max_s')):>8} {show(t.get('reasoning_tokens_max_call')):>18}")
     lines.append("input includes images and the cached part; output includes reasoning. Cost as the provider "
                  "reported it (OpenRouter does; - where it did not): multiply the tokens by the model's prices otherwise.")
     return "\n".join(lines)

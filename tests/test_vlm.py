@@ -125,10 +125,16 @@ def test_a_reply_cut_off_by_the_token_budget_says_so(monkeypatch):
         return iter(chunks)
 
     c = VLMClient("m", "k", transport=transport)
-    with pytest.raises(TruncatedReply, match=f"cut off at max_tokens={MAX_TOKENS}, 400 of them on reasoning; "
+    assert c.max_tokens == MAX_TOKENS == MODEL["max_tokens"]                    # whatever the file says
+    c.max_tokens = 400
+    with pytest.raises(TruncatedReply, match="cut off at max_tokens=400, 400 of them on reasoning; "
                                              "raise max_tokens in configs/model.json"):
         c.complete([], tools=[])
-    assert calls[0]["max_tokens"] == MAX_TOKENS == MODEL["max_tokens"]          # whatever the file says
+    assert calls[0]["max_tokens"] == 400
+    c.max_tokens = None                                                         # no limit of ours: the provider's
+    with pytest.raises(TruncatedReply, match="the provider's own limit"):
+        c.complete([], tools=[])
+    assert "max_tokens" not in calls[1]
 
 
 def test_dotenv_forgives_a_stray_quote(tmp_path):
@@ -222,3 +228,17 @@ def test_routing_is_sent_to_openrouter_only(monkeypatch):
     VLMClient.from_env("a/b", provider="openrouter", transport=transport).complete([], tools=[])
     VLMClient.from_env("a/b", provider="huggingface", transport=transport).complete([], tools=[])
     assert calls[0]["provider"] == {"order": ["baseten"], "allow_fallbacks": False} and "provider" not in calls[1]
+
+
+def test_max_tokens_null_sends_no_limit():
+    calls = []
+
+    def transport(url, headers, body, timeout):
+        calls.append(body)
+        return sse("ok")
+    c = VLMClient("m", "k", transport=transport)
+    c.max_tokens = None
+    assert c.complete([], tools=[]).name == "ok" and "max_tokens" not in calls[0]
+    c.max_tokens = 500
+    c.complete([], tools=[])
+    assert calls[1]["max_tokens"] == 500

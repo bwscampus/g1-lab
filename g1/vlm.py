@@ -73,8 +73,9 @@ def load_model(path: Path | str | None = None) -> dict:
         raise ValueError(f"model file {p}: routing must be an object (OpenRouter's provider preferences, {{}} for none)")
     if m["reasoning_effort"] not in EFFORTS:
         raise ValueError(f"model file {p}: reasoning_effort must be one of {list(EFFORTS)}, got {m['reasoning_effort']!r}")
-    if isinstance(m["max_tokens"], bool) or not isinstance(m["max_tokens"], int) or m["max_tokens"] <= 0:
-        raise ValueError(f"model file {p}: max_tokens must be a positive whole number")
+    mt = m["max_tokens"]
+    if mt is not None and (isinstance(mt, bool) or not isinstance(mt, int) or mt <= 0):
+        raise ValueError(f"model file {p}: max_tokens must be a positive whole number, or null for no limit")
     t = m["temperature"]
     if isinstance(t, bool) or not isinstance(t, (int, float)) or t < 0:
         raise ValueError(f"model file {p}: temperature must be a number >= 0")
@@ -100,7 +101,7 @@ PROVIDER = MODEL["provider"]
 DEFAULT_MODEL = MODEL["models"][PROVIDER]
 # The reply budget, reasoning included. A reasoning model thinks before it answers and the
 # thinking counts: at 400 it never reached the answer.
-MAX_TOKENS = MODEL["max_tokens"]
+MAX_TOKENS = MODEL["max_tokens"]          # None: not sent, the provider's own limit applies
 # Sent as ``reasoning_effort`` ("default": not sent). A server that rejects it gets the request without it.
 REASONING_EFFORT = MODEL["reasoning_effort"]
 TEMPERATURE = MODEL["temperature"]
@@ -180,7 +181,8 @@ class TruncatedReply(RequestError):
 
     def __init__(self, max_tokens, reasoning_tokens, text: str = "") -> None:
         spent = f", {reasoning_tokens} of them on reasoning" if reasoning_tokens else ""
-        super().__init__(200, f"the reply was cut off at max_tokens={max_tokens}{spent}; "
+        where = (f"max_tokens={max_tokens}" if max_tokens else "the provider's own limit (max_tokens not sent)")
+        super().__init__(200, f"the reply was cut off at {where}{spent}; "
                               f"raise max_tokens in configs/model.json (now {max_tokens})")
         self.text = text
 
@@ -326,9 +328,10 @@ class VLMClient:
         """The model's one tool call for ``messages``, choosing among ``tools`` (OpenAI function
         definitions). ``NoToolCall`` if it answered without exactly one; ``ToolsUnsupported`` if
         the host takes no tool calls."""
-        body = {"model": self.model, "stream": self.stream, "temperature": temperature,
-                "max_tokens": max_tokens or self.max_tokens, "messages": messages,
+        body = {"model": self.model, "stream": self.stream, "temperature": temperature, "messages": messages,
                 "tools": tools, "tool_choice": "required", "parallel_tool_calls": False}
+        if (max_tokens or self.max_tokens) is not None:          # None: no limit of ours
+            body["max_tokens"] = max_tokens or self.max_tokens
         if self.routing:
             body["provider"] = self.routing
         self.last_chunks = []

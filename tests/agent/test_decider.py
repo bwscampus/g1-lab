@@ -155,7 +155,7 @@ def test_hf_decider_keeps_the_conversation_and_prunes_images():
     body = calls[0]
     assert body["tools"] == dec.context.tools and body["tool_choice"] == "required" and body["parallel_tool_calls"] is False
     assert "response_format" not in body
-    assert body["stream_options"] == {"include_usage": True} and body["max_tokens"] == MAX_TOKENS
+    assert body["stream_options"] == {"include_usage": True} and body.get("max_tokens") == MAX_TOKENS   # null: not sent
     msgs = body["messages"]
     assert msgs[0] == {"role": "system", "content": dec.context.instructions} and len(msgs) == 2
     user = msgs[1]["content"]

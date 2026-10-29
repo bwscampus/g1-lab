@@ -68,3 +68,9 @@ def test_parallel_runs_fit_memory_cores_and_the_cap(monkeypatch):
     assert n == 1 and "MB available" in why                          # only one fits
     monkeypatch.setattr(bench, "available_mb", lambda: None)
     assert bench.workers(5)[0] == min(cap, 3)
+
+
+def test_model_time_per_call_is_summarised():
+    t = bench.think_stats([1.0, 2.0, 3.0, 4.0, 50.0], [10, 20, 30, 40, 9000])
+    assert (t["calls"], t["think_median_s"], t["think_max_s"], t["reasoning_tokens_max_call"]) == (5, 3.0, 50.0, 9000)
+    assert t["think_p90_s"] == 50.0 and bench.think_stats([], [])["think_median_s"] is None
