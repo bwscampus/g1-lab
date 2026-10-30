@@ -430,3 +430,21 @@ def test_lower_arm_ends_the_point():
     o = observations(dec)
     assert "error" not in o[3]["previous_result"] and env.base_ticks > 0      # walking allowed again
     agent.close()
+
+
+def test_a_run_whose_env_fails_to_start_still_closes_cleanly(tmp_path):
+    # the robot's camera timed out in setup (2026-10-30): close() ran before reset() and raised,
+    # burying the camera error under an AttributeError
+    from g1.envs.base import Env
+
+    class NoCamera(Env):
+        def setup(self):
+            raise TimeoutError("no camera frame from 192.168.123.161 within 15s")
+
+    dec = Sequence([("done", {"summary": "s", "hindsight": ""})])
+    agent = Agent("g", dec, menu(True))
+    agent.recorder = recorder(tmp_path, dec)
+    import argparse
+    with pytest.raises(TimeoutError, match="no camera frame"):
+        run(agent, NoCamera(argparse.Namespace(camera="auto", view=False)), max_time=5)
+    assert agent.recorder.dir.name.endswith("_interrupted")

@@ -102,6 +102,7 @@ class Agent(Runnable):
         self.steps: list[dict] = []               # the step records, as written
         self._closed = False
         self._finalized = False
+        self._calls: list[dict] = []              # model calls; reset() starts them again (close() may come first)
 
     # -- lifecycle -------------------------------------------------------------
     def reset(self, obs: Obs) -> None:
