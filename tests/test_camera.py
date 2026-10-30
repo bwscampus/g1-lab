@@ -94,6 +94,37 @@ def test_camera_dir_feeds_the_program_on_sim_time(tmp_path):
     assert run(Watch(0.5), env) is True and env.renderer is not None    # no --camera-dir: the render feeds it
 
 
+# -- the robot's stream: aiortc's jitter buffer -----------------------------------------
+
+def assembled(packets_per_frame: int) -> list:
+    """Frames that come out of the jitter buffer an aiortc receiver makes for video, fed
+    one frame of ``packets_per_frame`` packets and the first packet of the next."""
+    from aiortc import rtcrtpreceiver
+    from aiortc.rtp import RtpPacket
+    buffer = rtcrtpreceiver.JitterBuffer(capacity=128, is_video=True)   # as RTCRtpReceiver asks
+    out = []
+    for seq in range(packets_per_frame + 1):
+        p = RtpPacket(sequence_number=seq, timestamp=0 if seq < packets_per_frame else 3000)
+        p._data = b"x"
+        out.append(buffer.add(p)[1])
+    return [f for f in out if f is not None]
+
+
+def test_a_keyframe_larger_than_aiortcs_buffer_still_arrives(monkeypatch):
+    """The G1's keyframes run ~150 packets; aiortc's 128-packet video buffer passed on
+    only each one's tail (no SPS/PPS, no start), so no frame ever decoded.
+    WebRTCCamera.start enlarges it."""
+    pytest.importorskip("aiortc")
+    from aiortc import jitterbuffer, rtcrtpreceiver
+    from g1.camera import roomy_video_jitter_buffer
+    monkeypatch.setattr(rtcrtpreceiver, "JitterBuffer", jitterbuffer.JitterBuffer)
+    assert [len(f.data) for f in assembled(150)] == [22]   # aiortc as shipped: the tail only
+    roomy_video_jitter_buffer()
+    roomy_video_jitter_buffer()                         # again, as a second start would
+    assert [len(f.data) for f in assembled(150)] == [150]
+    assert rtcrtpreceiver.JitterBuffer(capacity=16, prefetch=4).capacity == 16   # audio untouched
+
+
 # -- subscribers ----------------------------------------------------------------------
 
 def test_subscribers_see_every_publish_and_a_bad_one_is_dropped(capsys):

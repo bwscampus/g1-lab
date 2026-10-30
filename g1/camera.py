@@ -29,6 +29,11 @@ from g1.core import limits
 
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".bmp")
 
+# aiortc reassembles a video frame in a 128-packet jitter buffer; a longer frame comes
+# out as its tail only. The G1's keyframes (SPS + PPS + IDR) run ~150 packets in a
+# detailed scene, so with 128 every keyframe is cut and nothing ever decodes.
+VIDEO_JITTER_PACKETS = 1024     # a power of 2 (aiortc's requirement)
+
 
 @dataclass
 class Frame:
@@ -164,7 +169,8 @@ class WebRTCCamera(Camera):
         # logs each as "H264Decoder() failed to decode, skipping package". That is
         # normal at stream start (the G1 sends 1280x720 H.264 at ~15 fps), not a fault.
         logging.getLogger("aiortc.codecs.h264").setLevel(logging.ERROR)
-        self.conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip=self.ip,
+        roomy_video_jitter_buffer()
+        self.conn =UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip=self.ip,
                                             aes_128_key=self.aes_key)
         self.loop = asyncio.new_event_loop()
         self.thread = threading.Thread(target=self._run, name="webrtc-camera", daemon=True)
@@ -223,6 +229,20 @@ class WebRTCCamera(Camera):
         if not loop.is_running():
             loop.close()
         self.thread = None
+
+
+def roomy_video_jitter_buffer(packets: int = VIDEO_JITTER_PACKETS) -> None:
+    """Give video ``packets`` of jitter buffer in every aiortc receiver made from now on
+    (audio keeps its own). aiortc has no setting for it, so its receiver module's
+    JitterBuffer is replaced by a subclass of the original; calling it again is harmless."""
+    from aiortc import rtcrtpreceiver
+    from aiortc.jitterbuffer import JitterBuffer
+
+    class RoomyJitterBuffer(JitterBuffer):
+        def __init__(self, capacity: int, prefetch: int = 0, is_video: bool = False) -> None:
+            super().__init__(max(capacity, packets) if is_video else capacity, prefetch, is_video)
+
+    rtcrtpreceiver.JitterBuffer = RoomyJitterBuffer
 
 
 class ShmCamera(Camera):
