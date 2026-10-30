@@ -10,7 +10,7 @@
 | **observation** | the one JSON object a turn sends: instruction, images, measured state, extra, `previous_result`. |
 | **decision** | the model's reply: `{"name": tool, "arguments": {...}}`, validated against the tool's schema. |
 | **execution result** | what the host reports after a tool: residuals, the commanded base displacement, a settle report — or why nothing ran. |
-| **verdict** | the human's success/failed label after the run. `done` is the model's conclusion, not the label. |
+| **verdict** | the success/failed label after the run: a human's on the robot, the twin's on `--sim` when the task has `success` criteria (`outcome_source` says which). `done` is the model's conclusion, not the label; `false_done` marks a `done` the twin did not confirm. |
 
 Retired words: skill, policy, primitive, routine, goal. Nothing in the repo is called a policy.
 
@@ -56,7 +56,7 @@ takeover -> settle -> snapshot -> think -> act -> settle -> snapshot -> ... -> h
 * **think**: the observation JSON + the image go to the decider on a background thread;
   the loop holds still and never waits. An overloaded model is retried with backoff,
   re-observing every time; a quota error or `step_timeout_s` fails the run.
-* **act**: the decision is parsed (whole JSON object, jsonschema against the tool's
+* **act**: the decision (the model's one tool call) is parsed (jsonschema against the tool's
   parameters, numbers clamped with a note), the tool is built, **dry-run through the joint
   monitor from the commanded pose** (a limit, speed or base violation comes back as
   `motion_not_executed` and moves nothing), then played to its end. A long tool is still one
@@ -78,6 +78,9 @@ Offered to the model (`menu(allow_base, has_loco)` hides what an env cannot do; 
 ```
 move(dx_m, dy_m, dyaw_deg)      one base displacement -> LocoClient.Move (translate, then turn)   ≙ move_to
 arm_path(waypoints)             joint-space waypoints over waist + arms -> arm_sdk               ≙ move_eef_chunk
+look(yaw_deg, seconds)          turn the waist (the camera and a raised arm turn with it)
+point(down_deg, rise_s, hold_s) the right arm straight out where the torso faces, left UP: the next image shows it
+lower_arm(seconds)              the right arm back down (a run that ends pointing lowers it before the hand-back)
 hold(seconds)                   stand still
 check(tool, arguments)          dry-run without moving                                          ≙ check_path
 wave_hand / shake_hand          the onboard controller's own gestures (the twin plays stand-ins) ≙ set_gripper
@@ -165,7 +168,7 @@ four kinds of file and nothing else (`g1/agent/episode.py`):
   overruns, SDK failures, on the twin whether it fell, its true pose and torque-limit time); an
   interruption and its safe return; SDK calls made outside any step (bring-up).
 * `config.json`: how the run was set up: the task as loaded, env, mode, camera, the model settings,
-  the tools on offer (name, prompt, parameter schema), the system prompt and output schema, every
+  the tools on offer (name, prompt, parameter schema), the system prompt, every
   limit, versions, and the code: `{head, snapshot, ref}`. A dirty tree is saved as a commit on HEAD
   kept by `refs/g1-runs/<sha>` (`task.code_snapshot`, a temporary index: nothing else moves), so
   `git checkout <snapshot>` gives the code that ran. Never a `.env` value.
@@ -177,9 +180,19 @@ four kinds of file and nothing else (`g1/agent/episode.py`):
   time, joints and commands at both ends, the commanded base), its result in full after the settle,
   and the SDK calls it made. `tick_start`/`tick_end` are rows of `trace.npz` (one per control tick;
   `t_start`/`t_end` the same instants in run seconds), so a frame lines up with the measured joints.
-* `trace.npz`: every tick at 50 Hz, commanded and measured (on the twin, its true base pose too).
+* `trace.npz`: every tick at 50 Hz, commanded and measured (on the twin, its true base pose too: each
+  tick in-process; with `--sim`, the twin's samples from its Summary interpolated onto the ticks, which
+  both processes stamp on the monotonic clock).
 
-The human verdict wins the outcome; a model conclusion without one is `unreviewed`. A tools run
+`summary.json`'s `health` also says whether the run's timing can be trusted: `overrun_fraction` (ticks
+more than one tick late), `max_tick_gap_s`, `load_avg`, and `timing: degraded` above the limit
+`overrun_fraction_max`. A loaded machine makes the arms lag their commands, so a degraded run says
+little about the task.
+
+The verdict wins the outcome. On `--sim` a task with `success` criteria is scored by the twin from its
+truth (`g1/twin/core.py` `Evaluator`: the arm's ray to a target, how far the feet moved, forbidden
+contacts, a fall) and labelled from it (`outcome_source: twin`); the model never sees the criteria. On
+the robot it is the human's. A model conclusion with neither is `unreviewed`. A tools run
 has `summary.json` (its checks decide), `config.json` and `trace.npz`. Each run adds a line to the
 task's `results.jsonl` (the summary's comparable fields). A new file is a deliberate change: the
 tests assert the exact set.

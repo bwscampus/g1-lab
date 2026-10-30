@@ -2,7 +2,7 @@
 
     TOOLS                 name -> class, every tool (visible or not)
     menu(allow_base, has_loco)   the classes a model may choose from
-    prompt_catalog / function_schemas / output_schema   the three renderings a model reads
+    function_schemas      the tools as OpenAI function definitions: what the model is offered
     parse_tool("turn:45") / parse_chain("walk_forward:0.5,hold:1,tpose")   a task's "tools" chain
     Chain                 several tools played in order with the bookends once
 
@@ -25,11 +25,6 @@ from g1.tools.base import (NOTE, Limit, Tool, flag, format_text, integer, limit,
                            validate_args)
 
 ARM_JOINTS = [JOINT_NAMES[j] for j in UPPER_BODY]      # the 17 joints arm_sdk may command, by name
-SELECTION_DESCRIPTION = (
-    "One tool selection for a Unitree G1 humanoid with {n_joints} joints. The host plans the tool, checks it "
-    "against joint and speed limits, runs it to its end (arm_sdk joint targets; LocoClient velocity commands "
-    "for the base; the onboard controller for gestures), waits for the joints to settle, then supplies a fresh "
-    "observation with the result.")
 
 TOOLS: dict[str, type[Tool]] = {}
 
@@ -135,47 +130,10 @@ def parameters(cls: type[Tool], context: Sequence[type[Tool]] = ()) -> dict:
     return _fill(cls.schema(), context or list(TOOLS.values()))
 
 
-def prompt_catalog(context: Sequence[type[Tool]]) -> str:
-    return "\n".join(f"- {t.name}: {t.describe()}" for t in context)
-
-
 def function_schemas(context: Sequence[type[Tool]]) -> list[dict]:
     return [{"type": "function", "function": {"name": t.name, "description": t.describe(),
                                               "parameters": parameters(t, context)}}
             for t in context]
-
-
-def output_schema(context: Sequence[type[Tool]], strict: bool = True) -> dict:
-    arguments = []
-    for t in context:
-        p = parameters(t, context)
-        p = _strict(p) if strict else p
-        if p not in arguments:
-            arguments.append(p)
-    return {"type": "object",
-            "properties": {"name": {"type": "string", "enum": [t.name for t in context]},
-                           "arguments": {"anyOf": arguments}},
-            "required": ["name", "arguments"], "additionalProperties": False,
-            "description": format_text(SELECTION_DESCRIPTION)}
-
-
-def _strict(schema: Any) -> Any:
-    """Every property required, optional ones nullable: what structured-output
-    providers accept. Used for the request only; host validation keeps defaults."""
-    if isinstance(schema, list):
-        return [_strict(v) for v in schema]
-    if not isinstance(schema, dict):
-        return schema
-    out = {k: _strict(v) for k, v in schema.items()}
-    if out.get("type") == "object" and isinstance(out.get("properties"), dict):
-        required = set(out.get("required", []))
-        for key, spec in out["properties"].items():
-            if key not in required:
-                spec = {k: v for k, v in spec.items() if k != "default"}
-                out["properties"][key] = {"anyOf": [spec, {"type": "null"}]}
-        out["required"] = list(out["properties"])
-        out["additionalProperties"] = False
-    return out
 
 
 def joint_table() -> list[dict]:
@@ -266,6 +224,10 @@ class Chain(Tool):
             if i > 0 and pause > 0:
                 parts.append(Hold(seconds=pause))
             parts.append(t)
+        from g1.tools.arms import LowerArm, raises_arm
+        raised = [r for r in map(raises_arm, tools) if r is not None]
+        if raised and raised[-1]:                 # a chain ending with the arm pointing lowers it first
+            parts.append(LowerArm())
         parts.append(Handback())
         segs: list[Segment] = []
         joints: set[int] = set()
@@ -291,8 +253,8 @@ def parse_chain(spec: str, pause: float = 1.0) -> Chain:
     return Chain(*(parse_tool(item) for item in items), pause=pause)
 
 
-__all__ = ["TOOLS", "Tool", "Chain", "Limit", "NOTE", "ARM_JOINTS", "SELECTION_DESCRIPTION",
+__all__ = ["TOOLS", "Tool", "Chain", "Limit", "NOTE", "ARM_JOINTS",
            "limit", "num", "integer", "text", "flag", "resolve", "format_text", "validate_args",
-           "menu", "parameters", "prompt_catalog", "function_schemas", "output_schema", "joint_table",
+           "menu", "parameters", "function_schemas", "joint_table",
            "parse_tool", "parse_chain", "prefixed", "split_outside",
            "register", "unregister", "load_module", "discover", "tools_in"]

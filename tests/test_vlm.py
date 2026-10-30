@@ -40,8 +40,10 @@ def test_resolve_openrouter():
         resolve(env={"HF_TOKEN": "hf_t"}, provider="openrouter")
 
 
-def sse(text):
-    return iter([json.dumps({"choices": [{"delta": {"content": text}}]}), "[DONE]"])
+def sse(name):
+    """A streamed reply: one tool call to ``name`` with no arguments."""
+    return iter([json.dumps({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "function": {
+        "name": name, "arguments": "{}"}}]}, "finish_reason": "tool_calls"}]}), "[DONE]"])
 
 
 @pytest.mark.parametrize("provider, var, key, url", [
@@ -56,11 +58,11 @@ def test_client_from_env_sends_to_the_provider(monkeypatch, provider, var, key, 
 
     def transport(url, headers, body, timeout):
         calls.append((url, headers, body))
-        return sse("{}")
+        return sse("ok")
 
     c = VLMClient.from_env("a/b", provider=provider, transport=transport)
     assert c.provider == provider and c.model == "a/b"
-    assert c.complete([]) == "{}"
+    assert c.complete([], tools=[]).name == "ok"
     sent_url, headers, body = calls[0]
     assert sent_url == url and headers["Authorization"] == f"Bearer {key}"
     assert body["model"] == "a/b"
@@ -78,9 +80,9 @@ def test_stream_options_step_down():
         return sse(r)
 
     c = VLMClient("m", "k", transport=transport)
-    assert c.complete([]) == "ok" and c.stream_options is False
+    assert c.complete([], tools=[]).name == "ok" and c.stream_options is False
     assert "stream_options" in calls[0] and "stream_options" not in calls[1]
-    assert c.complete([]) == "ok" and "stream_options" not in calls[2]
+    assert c.complete([], tools=[]).name == "ok" and "stream_options" not in calls[2]
 
 
 def test_an_error_inside_the_stream_is_raised_not_swallowed():
@@ -90,11 +92,11 @@ def test_an_error_inside_the_stream_is_raised_not_swallowed():
         return VLMClient("m", "k", transport=lambda *a: iter([json.dumps({"error": error})]))
 
     with pytest.raises(QuotaExceeded, match="insufficient credits"):
-        failing({"message": "insufficient credits", "type": "insufficient_quota", "code": 402}).complete([])
+        failing({"message": "insufficient credits", "type": "insufficient_quota", "code": 402}).complete([], tools=[])
     with pytest.raises(Overloaded):
-        failing({"message": "model is overloaded", "code": "overloaded"}).complete([])
+        failing({"message": "model is overloaded", "code": "overloaded"}).complete([], tools=[])
     with pytest.raises(RequestError, match="boom"):
-        failing("boom").complete([])
+        failing("boom").complete([], tools=[])
 
 
 def test_dotenv_fills_gaps_only(tmp_path):
@@ -123,10 +125,16 @@ def test_a_reply_cut_off_by_the_token_budget_says_so(monkeypatch):
         return iter(chunks)
 
     c = VLMClient("m", "k", transport=transport)
-    with pytest.raises(TruncatedReply, match=f"cut off at max_tokens={MAX_TOKENS}, 400 of them on reasoning; "
+    assert c.max_tokens == MAX_TOKENS == MODEL["max_tokens"]                    # whatever the file says
+    c.max_tokens = 400
+    with pytest.raises(TruncatedReply, match="cut off at max_tokens=400, 400 of them on reasoning; "
                                              "raise max_tokens in configs/model.json"):
-        c.complete([])
-    assert calls[0]["max_tokens"] == MAX_TOKENS == MODEL["max_tokens"]          # whatever the file says
+        c.complete([], tools=[])
+    assert calls[0]["max_tokens"] == 400
+    c.max_tokens = None                                                         # no limit of ours: the provider's
+    with pytest.raises(TruncatedReply, match="the provider's own limit"):
+        c.complete([], tools=[])
+    assert "max_tokens" not in calls[1]
 
 
 def test_dotenv_forgives_a_stray_quote(tmp_path):
@@ -151,23 +159,22 @@ def test_reasoning_effort_is_sent_and_dropped_when_refused():
 
     c = VLMClient("m", "k", transport=transport)
     assert effort != "default"                      # the test needs the field sent; "default" never sends it
-    assert c.complete([]) == "ok" and c.reasoning_effort is None
+    assert c.complete([], tools=[]).name == "ok" and c.reasoning_effort is None
     assert calls[0]["reasoning_effort"] == effort and "reasoning_effort" not in calls[1]
-    assert c.complete([]) == "ok" and "reasoning_effort" not in calls[2]
+    assert c.complete([], tools=[]).name == "ok" and "reasoning_effort" not in calls[2]
     # a provider that refuses it without naming it (HF router, novita, 2026-10-21)
     calls.clear()
     refusal = '{"message":"invalid request error","type":"invalid_request_error"}'
     replies[:] = [RequestError(400, refusal), "ok"]
     c = VLMClient("m", "k", transport=transport)
-    assert c.complete([]) == "ok" and c.reasoning_effort is None
+    assert c.complete([], tools=[]).name == "ok" and c.reasoning_effort is None
     # last_chunks keeps everything the server sent back for the call: the refusal, then the stream
-    assert c.last_chunks == [{"http_status": 400, "body": refusal}, {"choices": [{"delta": {"content": "ok"}}]}]
+    assert c.last_chunks == [{"http_status": 400, "body": refusal}, {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "ok", "arguments": "{}"}}]}, "finish_reason": "tool_calls"}]}]
     assert calls[0]["reasoning_effort"] == effort and "reasoning_effort" not in calls[1]
     # a 400 with nothing left to drop is raised
     replies[:] = [RequestError(400, "bad")]
     with pytest.raises(RequestError):
-        c.json_mode = False
-        c.complete([])
+        c.complete([], tools=[])
 
 
 def test_a_bad_model_file_is_refused_with_the_name(tmp_path):
@@ -189,6 +196,11 @@ def test_a_bad_model_file_is_refused_with_the_name(tmp_path):
     broken(lambda d: d.update(max_tokens=0), "max_tokens must be a positive")
     broken(lambda d: d.update(temperature=-1), "temperature must be")
     broken(lambda d: d.update(max_tokns=1), "needs exactly")
+    broken(lambda d: d.update(routing=["baseten"]), "routing must be an object")
+    broken(lambda d: d["agent"].pop("step_timeout_s"), "agent needs exactly")
+    broken(lambda d: d["agent"].update(max_decisions=0), "agent.max_decisions must be a positive whole number")
+    broken(lambda d: d["agent"].update(max_decisions=2.5), "agent.max_decisions must be a positive whole number")
+    broken(lambda d: d["agent"].update(retry_delay_base_s=10.0), "must not exceed agent.retry_delay_cap_s")
     broken(lambda d: d.update(version=2), "version 1")
     with pytest.raises(ValueError, match="not found"):
         load_model(tmp_path / "none.json")
@@ -198,4 +210,35 @@ def test_limits_hold_no_model_setting():
     # the robot's and the run's limits only; which model, and how it is asked, is model.json
     names = set(limits.NAMES)
     assert not names & {"vlm_provider", "vlm_model", "openrouter_model", "reasoning_effort", "max_tokens",
-                        "vlm_temperature"}
+                        "vlm_temperature", *vlm.AGENT}
+    assert sorted(vlm.AGENT_SETTINGS) == sorted(vlm.AGENT)
+
+
+def test_routing_is_sent_to_openrouter_only(monkeypatch):
+    for v in ("HF_TOKEN", "VLM_BASE_URL", "OPENROUTER_API_KEY"):
+        monkeypatch.delenv(v, raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-t")
+    monkeypatch.setenv("HF_TOKEN", "hf_t")
+    monkeypatch.setattr(vlm, "ROUTING", {"order": ["baseten"], "allow_fallbacks": False})
+    calls = []
+
+    def transport(url, headers, body, timeout):
+        calls.append(body)
+        return sse("ok")
+    VLMClient.from_env("a/b", provider="openrouter", transport=transport).complete([], tools=[])
+    VLMClient.from_env("a/b", provider="huggingface", transport=transport).complete([], tools=[])
+    assert calls[0]["provider"] == {"order": ["baseten"], "allow_fallbacks": False} and "provider" not in calls[1]
+
+
+def test_max_tokens_null_sends_no_limit():
+    calls = []
+
+    def transport(url, headers, body, timeout):
+        calls.append(body)
+        return sse("ok")
+    c = VLMClient("m", "k", transport=transport)
+    c.max_tokens = None
+    assert c.complete([], tools=[]).name == "ok" and "max_tokens" not in calls[0]
+    c.max_tokens = 500
+    c.complete([], tools=[])
+    assert calls[1]["max_tokens"] == 500

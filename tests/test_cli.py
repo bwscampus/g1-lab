@@ -145,8 +145,10 @@ def task_dir(tmp_path, name="t", **spec):
     return d
 
 
-def test_g1_has_five_commands_and_run_three_flags(capsys):
+def test_g1_has_six_commands_and_run_three_flags(capsys):
     assert main([]) == 0 and "g1 run TASK --sim" in capsys.readouterr().out
+    from g1.cli import COMMANDS
+    assert sorted(COMMANDS) == ["bench", "limits", "run", "status", "trace", "twin"]
     with pytest.raises(SystemExit):
         main(["fly"])
     assert "unknown command" in capsys.readouterr().err
@@ -222,7 +224,7 @@ def test_an_instruction_task_runs_the_agent(tmp_path, monkeypatch, capsys):
     config = json.loads((run_dir / "config.json").read_text())
     assert config["env"] == "sim" and config["task"]["safety_notes"] == ["a wall behind"]
     assert config["system_prompt"] == dec.context.instructions and config["menu"] == [t.name for t in dec.context.menu]
-    assert config["output_schema"] == dec.context.output_schema and "a wall behind" in config["system_prompt"]
+    assert config["tools"] == dec.context.tools and "output_schema" not in config and "a wall behind" in config["system_prompt"]
     import numpy as np
     trace = np.load(run_dir / "trace.npz")                          # a step's ticks are rows of the trace
     step = json.loads((run_dir / "step_0001.json").read_text())

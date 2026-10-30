@@ -36,7 +36,12 @@ pip install -e ".[sim,dev]"          # unitree_sdk2py (needed for --sim too) / u
 g1 twin fetch                        # once: the twin's model (unitree_mujoco), walker (NVIDIA GR00T) and room into assets/
 
 g1 run TASK --sim [--mode gantry]    # the twin in the MuJoCo window (always; mjpython): starts it (TwinProcess),
-                                     # runs RobotEnv over DDS on lo0, stops it. Headless only in tests: G1_TWIN_HEADLESS=1
+                                     # runs RobotEnv over DDS on lo0, stops it. Headless only in tests (G1_TWIN_HEADLESS=1) and g1 bench
+g1 bench SUITE                       # suites/<name>/suite.json: its tasks on the twin, headless, repeat times,
+                                     # scored by the twin (each task's success), one table + report.json (with the
+                                     # input/output tokens and cost); runs several at once, each in a fresh process
+                                     # with its own twin and DDS domain: as many as memory (bench_run_mb) and the
+                                     # performance cores allow, at most bench_parallel_max
 g1 run TASK --mode standing|gantry [--view]   # the robot; --mode is required. standing may walk, gantry never does;
                                      # --view: its head camera at http://127.0.0.1:8765 (live only)
 g1 status                            # read-only: link ok / robot refuses / no link (UNITREE_IFACE)
@@ -46,8 +51,10 @@ g1 limits [SOURCE]                   # every limit and default in configs/limits
 
 TASK = a folder under tasks/ (tpose, find_the_mug) or a path. .env: UNITREE_IFACE, UNITREE_ROBOT_IP,
 UNITREE_AES_128_KEY, UNITREE_DOMAIN, HF_TOKEN, VLM_BASE_URL, OPENROUTER_API_KEY; G1_VERBOSE=1 prints every SDK call.
-Which model is asked is `configs/model.json` (`provider`, `models`, `reasoning_effort`, `max_tokens`, `temperature`),
-not a limit: limits.json holds only the robot's and the run's limits. VLM_MODEL etc. in .env are refused.
+Which model is asked, and how, is `configs/model.json` (`provider`, `models`, `reasoning_effort`, `max_tokens`,
+`temperature`, and `agent`: the decision budget, timeouts, retries, image size, history windows). It may be tuned
+(benchmark with `g1 bench`); `configs/limits.json` holds the robot's and the run's hard limits, not to be changed
+to make a task pass. VLM_MODEL etc. in .env are refused.
 
 pytest                               # all tests, on the in-process twin (~2 min)
 pytest -m dds                        # also: g1 run --sim end to end over DDS (needs unitree_sdk2py)
@@ -57,12 +64,14 @@ pytest tests/tools/test_tools.py::test_every_tool_pair_is_continuous
 ## Layout
 
 ```
-g1/cli.py          run | status | twin | trace; run_settings() (every setting an env reads), run_task(), run(), safe_return
+g1/cli.py          run | bench | status | twin | trace; run_settings() (every setting an env reads), run_task()/run_once(),
+                   twin_verdict(), run(), safe_return
+g1/bench.py        g1 bench: load_suite, run_suite, totals (task | execution | infrastructure), table
 g1/core/           config (joint table, STAND_Q, UPPER_BODY, LOCO_METHODS, BASE_VEL_MAX), limits (configs/limits.json),
                    action (Action, Obs, Segment, Runnable, ease, EPS), poses, images (Pillow, RGB), worker
 g1/tools/          __init__: discovery (TOOLS), menu(), the three renderings, parse_tool/parse_chain, Chain
                    base: the Tool contract + the segment player + validate_args + num/integer/text/flag/limit
-                   move (move, walk_forward, turn) · arms (arm_path, look, point, tpose, sixseven) · gestures (wave_hand,
+                   move (move, walk_forward, turn) · arms (arm_path, look, point, lower_arm, tpose, sixseven) · gestures (wave_hand,
                    shake_hand) · posture (sit: SetFsmId(3)) · speech (say: AudioClient.TtsMaker) · control (hold, check + dry_run, done,
                    give_up, takeover, handback)
 g1/envs/           base (Env, EnvAbort, shield_sigint, verbose, sdk_log), monitor (JointMonitor), scene (the room),
@@ -76,6 +85,7 @@ g1/camera.py       Frame, Camera (+subscribe), DirCamera, WebRTCCamera, ShmCamer
 g1/vlm.py          VLMClient (Hugging Face or OpenRouter), load_dotenv
 g1/agent/          agent (Agent, build_agent), decider (AgentContext/AgentTurn/Decision, observation(), instructions(),
                    VLMDecider), episode (EpisodeWriter, load_episode), task (find, load_task, run_config, code_snapshot, record_result)
+suites/            stationary/ (point_at_the_laptop x 10); runs/ inside are git-ignored
 tasks/             tpose/ (a tools chain), find_the_mug/, point_at_the_laptop/, find_and_point_at_the_laptop/, sit_in_the_chair/ (instructions); runs and results.jsonl inside are git-ignored
 docs/              architecture, writing-a-tool, writing-a-task, running-on-the-robot, vision-model
 tests/             mirrors g1/ (core, tools, envs, agent, twin) + test_camera, test_cli, test_vlm; doubles.py (RedBallDecider,
@@ -112,7 +122,10 @@ root via `pythonpath`. `limits.ROOT` is the repo root (configs/, tasks/, assets/
   `handback`: 1→0 holding the last pose); walking tools use `{}` (base only); only `arm_path` and the arm
   presets move the arms, and a tool that needs a starting pose makes it its own first segment. No
   countdown; the bring-up says "entering control mode (FSM 200)" and skips the transition when already
-  there. The Ctrl-C safe return is the one deliberate exception (it ends at STAND).
+  there. The Ctrl-C safe return is one deliberate exception (it ends at STAND); the other is `point`:
+  it leaves the right arm up so the next image shows the aim, `lower_arm` lowers it, walking and gestures are
+  refused while it is up, and a run (agent or chain) that ends with it up lowers it before the hand-back.
+  While it is up the settle checks only the speed of the arm and the waist's pitch and roll (they sag under it).
 - **Every movement is dry-run before it executes** (`g1/tools/control.py:dry_run` through a
   `JointMonitor` from the commanded pose); a violation is `motion_not_executed`, spends a decision,
   moves nothing. **Errors are feedback**: no re-ask loop.
@@ -152,6 +165,10 @@ root via `pythonpath`. `limits.ROOT` is the repo root (configs/, tasks/, assets/
   `Summary` (its `twin` service) fails the run on a fall.
 - Joint indexing is DDS order (= the twin model's motor order); index 29 is the arm_sdk weight slot.
 
+- **The twin judges sim runs.** A task's `success` (task.json) is scored by `g1/twin/core.py:Evaluator` from
+  the simulator's truth every tick (the arm's ray to a target, the feet's drift, forbidden contacts, a fall),
+  sent back in the twin's Summary, and labels the `--sim` run (`cli.twin_verdict`, `outcome_source: twin`,
+  `false_done`). Feet, not pelvis: the pelvis twists over planted feet. Never sent to the model.
 - **The model knows only what the robot knows**: its tools, the camera, the task's objective and rules,
   its own joints (measured), IMU and commands, and its own earlier turns. Never the room's layout (no
   furniture, wall or object positions or sizes) and never the twin's truth (true base pose, contacts), in sim
@@ -173,5 +190,7 @@ Records: `tasks/<name>/runs/<ts>_<env>_<instruction>_<outcome>/` (`<env>` = `sim
 `step_NNNN.json/.png` (one per model query: frame, query and response as sent/received, action, result) and `trace.npz`
 (a tools run: no steps). Each fact is stored once; a new file needs an argument; the tests assert the set. Every run's
 code is restorable: `config.json` `code.snapshot` (a commit kept by `refs/g1-runs/<sha>` when the tree was dirty).
-The observation JSON and the system prompt are in `g1/agent/decider.py`; `Decision.parse` validates a
-whole JSON object against the tool's schema and clamps numbers with a note.
+The observation JSON and the system prompt are in `g1/agent/decider.py`. The model answers with one
+**tool call** (OpenAI `tools`, `tool_choice: required`): the only reply format, so only models and hosts
+that support tool calls are used. `Decision.parse` validates its arguments against the tool's schema and
+clamps numbers with a note; no call, or several, is an invalid selection.

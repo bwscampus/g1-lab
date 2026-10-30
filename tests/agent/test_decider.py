@@ -7,7 +7,8 @@ from g1.agent.decider import (AgentTurn, Decision, ProtocolError, VLMDecider, bu
                               observation, parse_selection)
 from g1.core import limits
 from g1.tools import menu
-from g1.vlm import MAX_TOKENS, Overloaded, QuotaExceeded, RequestError, VLMClient, classify
+from g1.vlm import (MAX_TOKENS, NoToolCall, Overloaded, QuotaExceeded, RequestError, ToolCall, ToolsUnsupported,
+                    VLMClient, classify)
 from tests.doubles import RedBallDecider
 
 
@@ -73,23 +74,20 @@ def test_decision_parse_validates_like_theirs():
         parse_selection("[1, 2]")
 
 
-def test_context_renders_catalog_and_rules():
+def test_context_renders_rules_and_offers_the_tools():
     c = ctx(safety_notes=["never walk backward"])
     text = c.instructions
-    assert text.count("Robot tool catalog:") == 1 and "- move:" in text and "- check:" in text
+    assert "Call exactly one tool per turn" in text and "Robot tool catalog" not in text   # the tools come as tools
+    assert '"name": "..."' not in text and "- move:" not in text
     assert "- left_elbow: [-1.047, 2.094] rad, stand 1.28" in text and "palms up" in text
     assert "Rules for this task:\n- never walk backward" in text
     assert "hidden obstacles" not in text and "not absent from the room" not in text and "base_pose_env" not in text
     assert "30 decisions" in text and "note" in text and "give_up" in text
-    assert json.loads(text.split("Robot tool catalog:\n", 1)[1]) == c.tools
-    schema = c.output_schema
-    assert schema["required"] == ["name", "arguments"] and schema["additionalProperties"] is False
-    strict = next(a for a in schema["properties"]["arguments"]["anyOf"] if set(a["properties"]) == {"seconds", "note"})   # hold
-    assert strict["required"] == ["seconds", "note"] and strict["properties"]["seconds"]["anyOf"][1] == {"type": "null"}
+    assert [t["function"]["name"] for t in c.tools] == [m.name for m in menu(True)]
+    assert "output_schema" not in c.record() and c.record()["tools"] == c.tools
     check = next(t for t in c.tools if t["function"]["name"] == "check")["function"]["parameters"]
-    assert check["properties"]["tool"]["enum"] == ["move", "arm_path", "look", "point", "hold", "say"]
-    no_base = ctx(False).instructions
-    assert "- move:" not in no_base.split("Tools:")[1].split("Every movement")[0]
+    assert check["properties"]["tool"]["enum"] == ["move", "arm_path", "look", "point", "lower_arm", "hold", "say"]
+    assert "move" not in [t["function"]["name"] for t in ctx(False).tools]
     assert instructions(menu(True), can_walk=True, max_decisions=5) == build_context(menu(True), can_walk=True, max_decisions=5).instructions
 
 
@@ -114,8 +112,19 @@ def test_red_ball_rules():
     assert len(dec.calls) == 6
 
 
-def sse(text, usage=None):
-    chunks = [json.dumps({"choices": [{"delta": {"content": text}}]})]
+def sse(reply, usage=None):
+    """A streamed reply: a (name, arguments) tool call, split across chunks as servers send it,
+    or plain text (no call); a list of calls for several."""
+    calls = reply if isinstance(reply, list) else ([reply] if isinstance(reply, tuple) else [])
+    chunks = [json.dumps({"choices": [{"delta": {"content": reply}}]})] if isinstance(reply, str) else []
+    for i, (name, args) in enumerate(calls):
+        text = json.dumps(args)
+        cut = len(text) // 2
+        chunks.append(json.dumps({"choices": [{"delta": {"tool_calls": [
+            {"index": i, "id": f"call_{i}", "type": "function", "function": {"name": name, "arguments": ""}}]}}]}))
+        for part in (text[:cut], text[cut:]):
+            chunks.append(json.dumps({"choices": [{"delta": {"tool_calls": [{"index": i, "function": {"arguments": part}}]}}]}))
+    chunks.append(json.dumps({"choices": [{"delta": {}, "finish_reason": "tool_calls" if calls else "stop"}]}))
     if usage:
         chunks.append(json.dumps({"choices": [], "usage": usage}))
     return iter(chunks + ["[DONE]"])
@@ -133,8 +142,8 @@ def transport_of(replies, calls):
     return transport
 
 
-TURN = '{"name": "move", "arguments": {"dyaw_deg": 45, "note": "searching"}}'
-HOLD = '{"name": "hold", "arguments": {"seconds": 1, "note": "waiting"}}'
+TURN = ("move", {"dyaw_deg": 45, "note": "searching"})
+HOLD = ("hold", {"seconds": 1, "note": "waiting"})
 
 
 def test_hf_decider_keeps_the_conversation_and_prunes_images():
@@ -144,8 +153,9 @@ def test_hf_decider_keeps_the_conversation_and_prunes_images():
     d = dec.decide(turn(step=0, request_id=1))
     assert d.name == "move" and d.arguments == {"dx_m": 0.0, "dy_m": 0.0, "dyaw_deg": 45.0, "note": "searching"}
     body = calls[0]
-    assert body["response_format"]["type"] == "json_schema" and body["response_format"]["json_schema"]["schema"] == dec.context.output_schema
-    assert body["stream_options"] == {"include_usage": True} and body["max_tokens"] == MAX_TOKENS
+    assert body["tools"] == dec.context.tools and body["tool_choice"] == "required" and body["parallel_tool_calls"] is False
+    assert "response_format" not in body
+    assert body["stream_options"] == {"include_usage": True} and body.get("max_tokens") == MAX_TOKENS   # null: not sent
     msgs = body["messages"]
     assert msgs[0] == {"role": "system", "content": dec.context.instructions} and len(msgs) == 2
     user = msgs[1]["content"]
@@ -155,17 +165,19 @@ def test_hf_decider_keeps_the_conversation_and_prunes_images():
     assert dec.last_call is None                                     # set by process(), not decide()
     dec.decide(turn(step=1, request_id=2))
     msgs = calls[1]["messages"]
-    assert [m["role"] for m in msgs] == ["system", "user", "assistant", "user"]
-    assert msgs[2]["content"] == TURN                                # its own reply, verbatim
+    assert [m["role"] for m in msgs] == ["system", "user", "assistant", "tool", "user"]
+    call = msgs[2]["tool_calls"][0]                                  # its own call, verbatim, then its answer
+    assert call["id"] == "call_0" and call["function"]["name"] == "move"
+    assert json.loads(call["function"]["arguments"]) == TURN[1] and msgs[3]["tool_call_id"] == "call_0"
     dec.decide(turn(step=2, request_id=3))
     msgs = calls[2]["messages"]
-    assert [m["role"] for m in msgs] == ["system", "user", "assistant", "user", "assistant", "user"]
+    assert [m["role"] for m in msgs] == ["system", "user", "assistant", "tool", "user", "assistant", "tool", "user"]
     first = msgs[1]["content"]                                       # oldest image pruned, text kept
     assert [b["type"] for b in first] == ["text", "text"] and "omitted" in first[-1]["text"]
     assert json.loads(first[0]["text"])["extra"]["env_step"] == 0
-    assert any(b["type"] == "image_url" for b in msgs[3]["content"]) and any(b["type"] == "image_url" for b in msgs[5]["content"])
+    assert any(b["type"] == "image_url" for b in msgs[4]["content"]) and any(b["type"] == "image_url" for b in msgs[7]["content"])
     tr = dec.transcript()
-    assert tr[0]["role"] == "system" and {"type": "image", "image": "step_0002.png"} in tr[3]["content"]
+    assert tr[0]["role"] == "system" and {"type": "image", "image": "step_0002.png"} in tr[4]["content"]
     sent = dec.queries[3]                                            # the query as recorded: no system prompt,
     assert [m["role"] for m in sent] == [m["role"] for m in msgs[1:]]   # each image named by its step file
     assert {"type": "image", "image": "step_0003.png"} in sent[-1]["content"]
@@ -181,41 +193,64 @@ def test_hf_decider_fresh_turns_and_call_details():
     assert dec.latest().name == "hold" and dec.latest().request_id == 2 and dec.latest().latency >= 0
     call = dec.last_call
     assert call["status"] == "completed" and call["usage"] == {"prompt_tokens": 10, "completion_tokens": 3}
-    assert call["response_mode"] == "json_schema" and call["request_id"] == 2
+    assert call["response_mode"] == "tool_calls" and call["request_id"] == 2
     assert call["chunks"] and all(isinstance(c, dict) for c in call["chunks"])   # what the server sent, for the step file
     assert dec.settings()["model"] == "m/vl" and "base_url" not in dec.settings()  # config.json: never a .env value
 
 
 def test_hf_decider_bad_reply_is_a_protocol_error():
     calls = []
-    dec = VLMDecider(VLMClient("m/vl", "hf_x", transport=transport_of(['{"name": "fly", "arguments": {}}'], calls)))
+    dec = VLMDecider(VLMClient("m/vl", "hf_x", transport=transport_of([("fly", {})], calls)))
     dec.start(ctx())
     dec.threaded = False
     assert dec.request(turn()) is True
     assert dec.latest() is None and dec.errors == 1 and isinstance(dec.last_error, ProtocolError)
     assert "unknown tool" in str(dec.last_error) and dec.last_call["status"] == "failed"
     assert dec.last_call["error_type"] == "ProtocolError" and not dec.pending
-    assert dec._turns[-1]["assistant"]["content"] == '{"name": "fly", "arguments": {}}'   # the mistake stays in history
+    assert dec._turns[-1]["assistant"]["tool_calls"][0]["function"]["name"] == "fly"   # the mistake stays in history
 
 
-def test_hf_client_steps_down_structured_output_and_classifies_errors():
+def test_the_client_joins_a_streamed_tool_call_and_classifies_errors():
     calls = []
-    replies = [RequestError(400, "response_format json_schema is not supported"), TURN,
-               RequestError(400, "response_format not supported"), TURN, TURN]
-    client = VLMClient("m/vl", "hf_x", transport=transport_of(replies, calls))
-    assert client.complete([], schema={"type": "object"}) == TURN
-    assert [c.get("response_format", {}).get("type") for c in calls] == ["json_schema", "json_object"]
-    assert client.response_mode == "json_object" and not client.json_schema
-    assert client.complete([], schema={"type": "object"}) == TURN
-    assert [c.get("response_format", {}).get("type") for c in calls[2:]] == ["json_object", None]
-    assert client.response_mode == "none" and client.last_usage == {"prompt_tokens": 10, "completion_tokens": 3}
-    assert client.complete([]) == TURN and "response_format" not in calls[-1] and client.calls == 5
+    client = VLMClient("m/vl", "k", provider="openrouter", routing={"order": ["baseten"], "allow_fallbacks": False},
+                       transport=transport_of([TURN], calls))
+    call = client.complete([], tools=[{"type": "function", "function": {"name": "move"}}])
+    assert call == ToolCall("call_0", "move", json.dumps(TURN[1]), "")                  # fragments joined
+    assert calls[0]["provider"] == {"order": ["baseten"], "allow_fallbacks": False}
+    assert client.last_usage == {"prompt_tokens": 10, "completion_tokens": 3} and client.response_mode == "tool_calls"
     assert isinstance(classify(429, ""), Overloaded) and isinstance(classify(503, ""), Overloaded)
     assert isinstance(classify(500, "The model is overloaded"), Overloaded)
     assert isinstance(classify(402, ""), QuotaExceeded) and isinstance(classify(403, "monthly quota"), QuotaExceeded)
     assert type(classify(500, "boom")) is RequestError
     with pytest.raises(Overloaded):
-        VLMClient("m", "k", transport=transport_of([Overloaded(429, "x")], [])).complete([])
+        VLMClient("m", "k", transport=transport_of([Overloaded(429, "x")], [])).complete([], tools=[])
+
+
+def test_a_reply_without_exactly_one_call_is_an_invalid_selection():
+    for reply, what in (("I would turn left.", "no tool call"), ([TURN, HOLD], r"2 tool calls \(move, hold\)")):
+        with pytest.raises(NoToolCall, match=what):
+            VLMClient("m", "k", transport=transport_of([reply], [])).complete([], tools=[])
+    calls = []
+    dec = VLMDecider(VLMClient("m/vl", "k", transport=transport_of(["I would turn left.", TURN], calls)))
+    dec.start(ctx())
+    with pytest.raises(ProtocolError, match="no tool call") as e:
+        dec.decide(turn(step=0, request_id=1))
+    assert e.value.raw == "I would turn left."
+    dec.decide(turn(step=1, request_id=2))
+    roles = [m["role"] for m in calls[1]["messages"]]
+    assert roles == ["system", "user", "assistant", "user"]           # text, no call: nothing to answer
+    assert calls[1]["messages"][2]["content"] == "I would turn left."
+
+
+def test_a_host_without_tool_calls_says_so_and_is_not_retried():
+    # OpenRouter when no host of the model takes tool calls
+    gone = ("No endpoints found for x/y. Every candidate endpoint was removed during routing: "
+            "Filter by Tool Compatibility removed a, b")
+    calls = []
+    client = VLMClient("x/y", "k", provider="openrouter", transport=transport_of([RequestError(404, gone)], calls))
+    with pytest.raises(ToolsUnsupported, match="takes no tool calls.*configs/model.json"):
+        client.complete([], tools=[])
+    assert len(calls) == 1
 
 
 def test_threaded_decider_answers_in_the_background():
@@ -248,7 +283,7 @@ def test_old_turns_become_one_summary_line_each():
         text = observation("find it", {"joint_pos": [0.0]}, [], {"env_step": step}, prev)
         dec.decide(AgentTurn(text, {"head": solid()}, request_id=step + 1, step=step))
     msgs = calls[-1]["messages"]
-    assert [m["role"] for m in msgs] == ["system"] + ["user", "assistant"] * 4 + ["user"]   # 4 full turns + this one
+    assert [m["role"] for m in msgs] == ["system"] + ["user", "assistant", "tool"] * 4 + ["user"]   # 4 full turns + this one
     head = msgs[1]["content"][0]["text"]
     lines = head.splitlines()
     assert lines[0].startswith("Earlier in this run (summarised by the host") and len(lines) == 1 + 7   # turns 0..6

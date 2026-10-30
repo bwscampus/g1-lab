@@ -327,7 +327,7 @@ class RobotEnv(Env):
         domain = dds_domain(self.args.iface, getattr(self.args, "domain", None))
         self._say(f"dds: ChannelFactoryInitialize({domain}, {self.args.iface!r})")
         link.init(domain, self.args.iface)
-        self.health = Health(clock=link.now)
+        self.link_health = Health(clock=link.now)     # the live link monitor (self.health is report()'s summary)
         self.loco = link.loco()
         self.loco.SetTimeout(limits.get("rpc_timeout_s"))
         self.loco.Init()
@@ -378,7 +378,7 @@ class RobotEnv(Env):
                                      f"{sdk.fsm_name(fsm)}): another controller may own the FSM, or it is in "
                                      "a protection state; check the app and the remote, run g1 status")
                 link.sleep(limits.get("fsm_poll_s"))
-        self.arm = ArmSdk(self.health, link=link)
+        self.arm = ArmSdk(self.link_health, link=link)
         self.monitor = self._make_monitor()
         self.base = None
         if self.can_walk:
@@ -492,10 +492,12 @@ class RobotEnv(Env):
     def reset(self) -> np.ndarray:
         self.arm.release()                    # drop any stale arm_sdk takeover
         q0 = self.arm.fresh_state(iface=self.args.iface)
-        self._say(f"lowstate: first message, age {self.health.age_ms():.0f} ms, {self.health.rate():.0f}/s")
+        self._say(f"lowstate: first message, age {self.link_health.age_ms():.0f} ms, {self.link_health.rate():.0f}/s")
         self.overruns = 0
         self.ticks = 0
         self._wall = self.link.now()
+        self._tick_at = None              # when the last tick ended, for the longest gap between two
+        self.max_tick_gap = 0.0
         self._health_at = self.link.now()
         return q0
 
@@ -548,6 +550,10 @@ class RobotEnv(Env):
             self.link.sleep(lag)
         elif lag < -CONTROL_DT:
             self.overruns += 1          # the program step took longer than a tick
+        now, last = self.link.now(), getattr(self, "_tick_at", None)
+        if last is not None:
+            self.max_tick_gap = max(getattr(self, "max_tick_gap", 0.0), now - last)
+        self._tick_at = now
         q = np.array([m.q for m in self.arm.state.motor_state[:NUM_JOINTS]])
         if self.monitor is not None:
             self._observe(q, action)
@@ -575,7 +581,7 @@ class RobotEnv(Env):
 
     def health_line(self) -> str:
         """One line a second with G1_VERBOSE=1: the link, the tick, the base, the camera."""
-        h = getattr(self, "health", None)
+        h = getattr(self, "link_health", None)
         parts = [f"t={self.ticks * CONTROL_DT:6.1f}"]
         if h is not None:
             parts.append(f"lowstate {h.rate():.0f}/s (age {h.age_ms():.0f} ms)")
@@ -632,6 +638,7 @@ class RobotEnv(Env):
         monitor = getattr(self, "monitor", None)
         ok = True
         health: dict = {"joint_check": None, "violations": None, "violation_kinds": [], "overruns": 0,
+                        "overrun_fraction": None, "max_tick_gap_s": None, "timing": None, "load_avg": None,
                         "sdk_calls": len(self.sdk_log), "sdk_failed_codes": [], "fell": None, "twin": None}
         if monitor is not None and monitor.ticks:
             ok = monitor.report("sim" if sim else "robot")
@@ -643,7 +650,9 @@ class RobotEnv(Env):
             twin = getattr(self, "_twin_report", None)
             if twin is not None:
                 health["fell"] = twin.get("fallen_at") is not None
-                health["twin"] = {k: twin.get(k) for k in ("fallen_at", "pelvis_z", "fsm", "base_pose", "torque_limit_s")}
+                health["twin"] = {k: twin.get(k) for k in ("fallen_at", "pelvis_z", "fsm", "base_pose", "torque_limit_s",
+                                                           "evaluation")}
+                self.twin_truth = twin.get("truth")     # for trace.npz's base_true; never in the summary
         base = getattr(self, "base", None)
         if base is not None:
             print(base.summary())
@@ -651,7 +660,16 @@ class RobotEnv(Env):
             print(f"audio: {self.audio_calls} call(s)")
         failed = [e for e in self.sdk_log if e["code"] != 0]
         health["sdk_failed_codes"] = sorted({e["code"] for e in failed})
-        health["overruns"] = getattr(self, "overruns", 0)
+        overruns, ticks = getattr(self, "overruns", 0), getattr(self, "ticks", 0)
+        health["overruns"] = overruns
+        if ticks:
+            fraction = overruns / ticks
+            health.update(overrun_fraction=round(fraction, 4), max_tick_gap_s=round(getattr(self, "max_tick_gap", 0.0), 4),
+                          timing="degraded" if fraction > limits.get("overrun_fraction_max") else "ok")
+        try:
+            health["load_avg"] = [round(v, 2) for v in os.getloadavg()]   # a busy machine is the usual cause
+        except (AttributeError, OSError):
+            pass
         self.health = health
         if self.sdk_log:
             print(f"sdk: {len(self.sdk_log)} call(s), {len(failed)} failed"
@@ -666,13 +684,17 @@ class RobotEnv(Env):
 
     def _twin_verdict(self) -> bool:
         """What only the twin knows: did it fall, where did the base really go."""
-        try:
-            client = self.link.twin_client()
-            client.SetTimeout(limits.get("twin_summary_timeout_s"))
-            client.Init()
-            code, report = client.Summary()
-        except Exception as e:
-            code, report = -1, f"{type(e).__name__}: {e}"
+        for attempt in range(2):         # a loaded machine can miss one reply; the verdict is worth a second ask
+            try:
+                client = self.link.twin_client()
+                client.SetTimeout(limits.get("twin_summary_timeout_s"))
+                client.Init()
+                code, report = client.Summary()
+            except Exception as e:
+                code, report = -1, f"{type(e).__name__}: {e}"
+            if code == 0 or not sdk.is_transport(code):
+                break
+            print(f"twin: no summary yet ({sdk.explain(code)}), asking again")
         if code != 0 or not isinstance(report, dict):
             print(f"twin: no summary ({sdk.explain(code) if code != -1 else report})")
             return True

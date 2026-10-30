@@ -1,10 +1,13 @@
 """The vision-language model client: Hugging Face Inference Providers or
 OpenRouter over their OpenAI-compatible chat-completions endpoint, with image
-input, stdlib urllib, streamed SSE and structured output with a step-down.
+input, stdlib urllib and streamed SSE; the model answers with one tool call.
 Shared by the decider (choose a tool) and the demo keyframe selector.
 
 Which model is asked, and how, is configs/model.json: ``provider``, a model id
-per provider (``models``), ``reasoning_effort``, ``max_tokens``, ``temperature``.
+per provider (``models``), ``reasoning_effort``, ``max_tokens``, ``temperature``,
+and the agent loop's settings (``agent``: the decision budget, timeouts, retries,
+image size, history windows). These may be tuned; configs/limits.json holds the
+robot's and the run's hard limits.
 The environment holds only what is private to this machine:
 
     HF_TOKEN            the Hugging Face key (a fine-grained token with "Make calls to Inference Providers")
@@ -24,6 +27,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from dataclasses import dataclass
 from typing import Callable, Iterator, Optional
 
 import numpy as np
@@ -39,7 +43,11 @@ PROVIDERS = {
 }
 EFFORTS = ("none", "minimal", "low", "medium", "high", "default")
 MODEL_PATH = limits.ROOT / "configs" / "model.json"
-KEYS = ("version", "provider", "models", "reasoning_effort", "max_tokens", "temperature", "notes")
+KEYS = ("version", "provider", "models", "routing", "reasoning_effort", "max_tokens", "temperature", "agent", "notes")
+# the agent loop's settings (g1/agent/): whole numbers are counts, the rest seconds or sizes; all > 0 but jitter
+AGENT = {"max_decisions": int, "step_timeout_s": float, "request_timeout_s": float, "retry_max": int,
+         "retry_delay_base_s": float, "retry_delay_cap_s": float, "retry_jitter_s": float, "recovery_timeout_s": float,
+         "image_width_px": int, "jpeg_quality": int, "live_image_window": int, "history_full_turns": int}
 
 
 def load_model(path: Path | str | None = None) -> dict:
@@ -61,13 +69,30 @@ def load_model(path: Path | str | None = None) -> dict:
     if not isinstance(models, dict) or sorted(models) != sorted(PROVIDERS) or not all(
             isinstance(v, str) and v.strip() for v in models.values()):
         raise ValueError(f"model file {p}: models needs a model id for each of {list(PROVIDERS)}")
+    if not isinstance(m["routing"], dict):
+        raise ValueError(f"model file {p}: routing must be an object (OpenRouter's provider preferences, {{}} for none)")
     if m["reasoning_effort"] not in EFFORTS:
         raise ValueError(f"model file {p}: reasoning_effort must be one of {list(EFFORTS)}, got {m['reasoning_effort']!r}")
-    if isinstance(m["max_tokens"], bool) or not isinstance(m["max_tokens"], int) or m["max_tokens"] <= 0:
-        raise ValueError(f"model file {p}: max_tokens must be a positive whole number")
+    mt = m["max_tokens"]
+    if mt is not None and (isinstance(mt, bool) or not isinstance(mt, int) or mt <= 0):
+        raise ValueError(f"model file {p}: max_tokens must be a positive whole number, or null for no limit")
     t = m["temperature"]
     if isinstance(t, bool) or not isinstance(t, (int, float)) or t < 0:
         raise ValueError(f"model file {p}: temperature must be a number >= 0")
+    a = m["agent"]
+    if not isinstance(a, dict) or sorted(a) != sorted(AGENT):
+        have = sorted(a) if isinstance(a, dict) else a
+        raise ValueError(f"model file {p}: agent needs exactly {list(AGENT)}, has {have}")
+    for name, kind in AGENT.items():
+        v = a[name]
+        ok = not isinstance(v, bool) and (isinstance(v, int) if kind is int else isinstance(v, (int, float)))
+        if not ok or v < 0 or (v == 0 and name != "retry_jitter_s"):
+            raise ValueError(f"model file {p}: agent.{name} must be a positive {'whole ' if kind is int else ''}number, "
+                             f"got {v!r}")
+    if a["retry_delay_base_s"] > a["retry_delay_cap_s"]:
+        raise ValueError(f"model file {p}: agent.retry_delay_base_s must not exceed agent.retry_delay_cap_s")
+    if a["jpeg_quality"] > 100:
+        raise ValueError(f"model file {p}: agent.jpeg_quality must be 1-100")
     return m
 
 
@@ -76,14 +101,18 @@ PROVIDER = MODEL["provider"]
 DEFAULT_MODEL = MODEL["models"][PROVIDER]
 # The reply budget, reasoning included. A reasoning model thinks before it answers and the
 # thinking counts: at 400 it never reached the answer.
-MAX_TOKENS = MODEL["max_tokens"]
+MAX_TOKENS = MODEL["max_tokens"]          # None: not sent, the provider's own limit applies
 # Sent as ``reasoning_effort`` ("default": not sent). A server that rejects it gets the request without it.
 REASONING_EFFORT = MODEL["reasoning_effort"]
 TEMPERATURE = MODEL["temperature"]
+# OpenRouter only: which of the model's hosts serve it, sent as the request's ``provider`` object
+# (e.g. {"order": ["baseten"], "allow_fallbacks": false}); without it OpenRouter picks a host per request
+ROUTING = MODEL["routing"]
+AGENT_SETTINGS = MODEL["agent"]           # the agent loop's budgets, timeouts, retries and image sizes
 # Settings that moved from .env to configs/model.json: refused if still set, so none is silently ignored.
 MOVED = {"VLM_MODEL": "models", "VLM_MAX_TOKENS": "max_tokens", "VLM_REASONING_EFFORT": "reasoning_effort"}
-IMAGE_WIDTH = int(limits.get("image_width_px"))
-JPEG_QUALITY = int(limits.get("jpeg_quality"))
+IMAGE_WIDTH = AGENT_SETTINGS["image_width_px"]
+JPEG_QUALITY = AGENT_SETTINGS["jpeg_quality"]
 
 
 DOTENV = Path(__file__).resolve().parents[1] / ".env"       # the repo root
@@ -152,9 +181,33 @@ class TruncatedReply(RequestError):
 
     def __init__(self, max_tokens, reasoning_tokens, text: str = "") -> None:
         spent = f", {reasoning_tokens} of them on reasoning" if reasoning_tokens else ""
-        super().__init__(200, f"the reply was cut off at max_tokens={max_tokens}{spent}; "
+        where = (f"max_tokens={max_tokens}" if max_tokens else "the provider's own limit (max_tokens not sent)")
+        super().__init__(200, f"the reply was cut off at {where}{spent}; "
                               f"raise max_tokens in configs/model.json (now {max_tokens})")
         self.text = text
+
+
+class NoToolCall(RequestError):
+    """The model answered without exactly one tool call (text only, or several calls). The agent
+    treats it as an invalid selection: it costs a decision and the model is told."""
+
+    def __init__(self, text: str, n: int, names: list) -> None:
+        what = "no tool call" if n == 0 else f"{n} tool calls ({', '.join(names)})"
+        super().__init__(200, f"{what}; call exactly one tool" + (f" (text: {text[:200]!r})" if text else ""))
+        self.text = text
+
+
+# what a host says when it takes no tool calls (OpenRouter: no endpoint left after "Tool Compatibility")
+TOOLS_REFUSED = ("tool_choice", "Tool Compatibility", "tools are not supported", "does not support tools",
+                 "tool calling", "function calling")
+
+
+class ToolsUnsupported(RequestError):
+    """The model or host takes no tool calls: retrying will not help, choose another."""
+
+    def __init__(self, status: int, body: str, provider: str = "", model: str = "") -> None:
+        super().__init__(status, f"{model} on {provider} takes no tool calls, which the agent needs: choose a model "
+                                 f"and host that support them in configs/model.json ({body[:300]})")
 
 
 def classify(status: int, body: str) -> RequestError:
@@ -201,7 +254,7 @@ def _sse_post(url: str, headers: dict, body: dict, timeout: float) -> Iterator[s
     try:
         resp = urllib.request.urlopen(req, timeout=timeout)
     except urllib.error.HTTPError as e:
-        raise classify(e.code, e.read().decode("utf-8", "replace")[:300]) from None
+        raise classify(e.code, e.read().decode("utf-8", "replace")[:2000]) from None
     with resp:
         if not body.get("stream"):
             yield resp.read().decode("utf-8", "replace")
@@ -219,38 +272,44 @@ def _sse_post(url: str, headers: dict, body: dict, timeout: float) -> Iterator[s
             yield "\n".join(plain)
 
 
-class VLMClient:
-    """One chat completion at a time against the provider's endpoint.
-    ``transport`` is injectable for tests.
+@dataclass
+class ToolCall:
+    """The model's one tool call: its id (to answer it in the history), the tool's name and its
+    arguments as the model wrote them (a JSON string), and any text it sent alongside."""
+    id: str
+    name: str
+    arguments: str
+    text: str = ""
 
-    Structured output is asked for in three steps, each dropped for the rest
-    of the session on a 400 that names it: a ``json_schema`` response format
-    when the caller passes a schema, then ``json_object``, then nothing (the
-    prompt alone); ``stream_options`` is dropped the same way for servers that
-    reject it. ``response_mode`` says which one the last call used; the caller
-    validates the reply itself either way. ``last_usage`` holds the provider's
-    token counts for the last call, ``last_elapsed`` its wall time, ``last_chunks``
-    everything the server sent back for it, as sent: each streamed payload, and the
-    status and body of any attempt it refused before a step-down."""
+
+class VLMClient:
+    """One chat completion at a time against the provider's endpoint, answered with exactly
+    one tool call (``tools``, ``tool_choice: required``, one call at a time): the model picks a
+    tool and fills in its arguments, the form models are trained for. Only models and hosts
+    that support tool calls are used (configs/model.json). ``transport`` is injectable for tests.
+
+    ``stream_options`` and ``reasoning_effort`` are dropped for the rest of the session on a
+    400 that names them. ``last_usage`` holds the provider's token counts for the last call,
+    ``last_elapsed`` its wall time, ``last_chunks`` everything the server sent back for it, as
+    sent: each streamed payload, and the status and body of any attempt it refused."""
+
+    response_mode = "tool_calls"
 
     def __init__(self, model: str = DEFAULT_MODEL, token: Optional[str] = None, *,
-                 base_url: str = HF_BASE_URL, provider: str = "huggingface", stream: bool = True,
-                 json_mode: bool = True, json_schema: bool = True,
-                 timeout: float = limits.get("request_timeout_s"),
+                 base_url: str = HF_BASE_URL, provider: str = "huggingface", routing: Optional[dict] = None,
+                 stream: bool = True, timeout: float = AGENT_SETTINGS["request_timeout_s"],
                  on_text: Optional[Callable[[str], None]] = None,
                  transport: Optional[Callable[[str, dict, dict, float], Iterator[str]]] = None) -> None:
         self.model = model
         self.token = token or ""
         self.base_url = base_url.rstrip("/")
         self.provider = provider
+        self.routing = dict(routing) if routing else None
         self.stream = stream
-        self.json_mode = json_mode
-        self.json_schema = json_schema
         self.stream_options = True
         self.timeout = timeout
         self.on_text = on_text
         self.transport = transport or _sse_post
-        self.response_mode = "none"
         self.last_usage: Optional[dict] = None
         self.last_elapsed = 0.0
         self.last_chunks: list = []
@@ -261,12 +320,20 @@ class VLMClient:
     @classmethod
     def from_env(cls, model: Optional[str] = None, provider: str = PROVIDER, **kw) -> "VLMClient":
         base_url, model, key = resolve(model, provider=provider)
+        kw.setdefault("routing", ROUTING if provider == "openrouter" else None)
         return cls(model, key, base_url=base_url, provider=provider, **kw)
 
-    def complete(self, messages: list[dict], *, max_tokens: Optional[int] = None,
-                 temperature: float = TEMPERATURE, schema: Optional[dict] = None) -> str:
-        body = {"model": self.model, "stream": self.stream, "temperature": temperature,
-                "max_tokens": max_tokens or self.max_tokens, "messages": messages}
+    def complete(self, messages: list[dict], *, tools: list[dict], max_tokens: Optional[int] = None,
+                 temperature: float = TEMPERATURE) -> ToolCall:
+        """The model's one tool call for ``messages``, choosing among ``tools`` (OpenAI function
+        definitions). ``NoToolCall`` if it answered without exactly one; ``ToolsUnsupported`` if
+        the host takes no tool calls."""
+        body = {"model": self.model, "stream": self.stream, "temperature": temperature, "messages": messages,
+                "tools": tools, "tool_choice": "required", "parallel_tool_calls": False}
+        if (max_tokens or self.max_tokens) is not None:          # None: no limit of ours
+            body["max_tokens"] = max_tokens or self.max_tokens
+        if self.routing:
+            body["provider"] = self.routing
         self.last_chunks = []
         while True:
             attempt = dict(body)               # a fresh body per attempt, so records see what was sent
@@ -274,32 +341,19 @@ class VLMClient:
                 attempt["stream_options"] = {"include_usage": True}
             if self.reasoning_effort is not None:
                 attempt["reasoning_effort"] = self.reasoning_effort
-            if schema is not None and self.json_schema:
-                self.response_mode = "json_schema"
-                attempt["response_format"] = {"type": "json_schema",
-                                              "json_schema": {"name": "selection", "schema": schema, "strict": True}}
-            elif self.json_mode:
-                self.response_mode = "json_object"
-                attempt["response_format"] = {"type": "json_object"}
-            else:
-                self.response_mode = "none"
             try:
                 return self._send(attempt)
+            except NoToolCall:
+                raise
             except RequestError as e:
                 self.last_chunks.append({"http_status": e.status, "body": e.body})
-                # Structured output and stream_options are server-dependent: step down and retry.
+                if e.status in (400, 404) and any(k in e.body for k in TOOLS_REFUSED):
+                    raise ToolsUnsupported(e.status, e.body, self.provider, self.model) from None
                 if e.status == 400 and self.stream_options and "stream_options" in e.body:
                     self.stream_options = False
                     continue
                 if e.status == 400 and self.reasoning_effort is not None and "reasoning_effort" in e.body:
                     self.reasoning_effort = None
-                    continue
-                mentions = e.status == 400 and any(k in e.body for k in ("response_format", "json_schema", "schema"))
-                if mentions and self.response_mode == "json_schema":
-                    self.json_schema = False
-                    continue
-                if mentions and self.response_mode == "json_object":
-                    self.json_mode = False
                     continue
                 # Some providers refuse reasoning_effort without naming it ("invalid request error"):
                 # a 400 that names nothing above drops it once.
@@ -308,11 +362,12 @@ class VLMClient:
                     continue
                 raise
 
-    def _send(self, body: dict) -> str:
+    def _send(self, body: dict) -> ToolCall:
         headers = {"Content-Type": "application/json"}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         parts: list[str] = []
+        calls: dict[int, dict] = {}            # streamed tool-call fragments, joined by index
         finish = None
         self.last_usage = None
         self.calls += 1
@@ -336,16 +391,28 @@ class VLMClient:
                     continue
                 c = choices[0]
                 finish = c.get("finish_reason") or finish
-                delta = (c.get("delta") or {}).get("content") or (c.get("message") or {}).get("content") or ""
-                if delta:
-                    parts.append(delta)
+                message = c.get("delta") or c.get("message") or {}
+                text = message.get("content") or ""
+                if text:
+                    parts.append(text)
                     if self.on_text is not None:
-                        self.on_text(delta)
+                        self.on_text(text)
+                for k, tc in enumerate(message.get("tool_calls") or []):
+                    entry = calls.setdefault(tc.get("index", k), {"id": "", "name": "", "arguments": ""})
+                    entry["id"] = entry["id"] or tc.get("id") or ""
+                    fn = tc.get("function") or {}
+                    entry["name"] += fn.get("name") or ""
+                    args = fn.get("arguments")
+                    entry["arguments"] += args if isinstance(args, str) else (json.dumps(args) if args else "")
         finally:
             self.last_elapsed = time.monotonic() - t0
+        text = "".join(parts)
         if finish == "length":
             # A reasoning model thinks first and the thinking counts against max_tokens:
             # a small budget is spent before the answer starts, and the reply comes back empty.
             details = (self.last_usage or {}).get("completion_tokens_details") or {}
-            raise TruncatedReply(body.get("max_tokens"), details.get("reasoning_tokens"), "".join(parts))
-        return "".join(parts)
+            raise TruncatedReply(body.get("max_tokens"), details.get("reasoning_tokens"), text)
+        if len(calls) != 1:
+            raise NoToolCall(text, len(calls), [c["name"] for c in calls.values()])
+        call = next(iter(calls.values()))
+        return ToolCall(call["id"] or f"call_{self.calls}", call["name"], call["arguments"] or "{}", text)

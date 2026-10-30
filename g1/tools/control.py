@@ -13,6 +13,7 @@ from g1.core import limits
 from g1.core.action import Obs, Segment
 from g1.core.config import CONTROL_DT, HEAD_CAMERA_FOVY, HEAD_CAMERA_PITCH, JOINT_NAMES, joint_index
 from g1.tools.base import Tool, limit, num, text
+from g1.vlm import IMAGE_WIDTH
 
 
 WAIST_YAW, WAIST_ROLL, WAIST_PITCH = joint_index("waist_yaw"), joint_index("waist_roll"), joint_index("waist_pitch")
@@ -99,8 +100,9 @@ class LocatePoint(Tool):
               "height). The host answers bearing_from_torso_deg (+ left), look_yaw_deg (the waist yaw that centres "
               "it: use it with look) and below_horizontal_deg (from the camera). It is a direction only, no "
               "distance. Use it before look or point instead of guessing an angle from the image.")
-    params = {"x_px": num(0, limit("image_width_px"), None, "pixel column, from the left edge"),
-              "y_px": num(0, limit("image_width_px"), None, "pixel row, from the top edge")}
+    # the image the model is sent is at most IMAGE_WIDTH wide (agent.image_width_px in configs/model.json)
+    params = {"x_px": num(0, IMAGE_WIDTH, None, "pixel column, from the left edge"),
+              "y_px": num(0, IMAGE_WIDTH, None, "pixel row, from the top edge")}
 
     def query(self, cmd: np.ndarray, joints: Sequence[int], *, view: Optional[dict] = None) -> dict:
         if not view or view.get("frame_size") is None:

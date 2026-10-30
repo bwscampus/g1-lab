@@ -13,6 +13,7 @@ itself is ``python -m g1.twin.main serve ...``, not a user command.
 from __future__ import annotations
 
 import argparse
+import json
 import signal
 import sys
 import time
@@ -43,6 +44,8 @@ def _parser() -> argparse.ArgumentParser:
                    help=f"head camera size (default {HEAD_CAMERA_SIZE[0]}x{HEAD_CAMERA_SIZE[1]}; the robot streams 720x1280)")
     p.add_argument("--camera-fps", type=float, default=limits.get("twin_camera_fps"))
     p.add_argument("--no-camera", action="store_true", help="do not render the head camera")
+    p.add_argument("--success", type=json.loads, default=None, metavar="JSON",
+                   help="the task's success criteria, scored on the twin (task.json success)")
     p.add_argument("--seconds", type=float, default=None, help="stop after this long (default: until Ctrl-C)")
     return p
 
@@ -60,7 +63,8 @@ def run(args: argparse.Namespace) -> int:
         raise SystemExit("g1 twin refuses DDS domain 0: that is the robot's")
     fsm = args.fsm if args.fsm is not None else (FSM_DAMP if args.gantry else FSM_MAIN)
     twin = Twin(scene=args.scene, objects=args.sim_objects, obstacle=args.sim_obstacle,
-                camera_size=args.camera_size, fsm=fsm, band=args.gantry, voice="twin", start=args.start)
+                camera_size=args.camera_size, fsm=fsm, band=args.gantry, voice="twin", start=args.start,
+                success=args.success)
     viewer = None
     if not args.headless:
         if sys.platform == "darwin" and not getattr(mujoco.viewer, "_MJPYTHON", None):
@@ -117,6 +121,30 @@ def run(args: argparse.Namespace) -> int:
     return 0
 
 
+DOMAINS = range(100, 200)      # the twins' private DDS domains (the robot is on 0)
+
+
+def reserve_domain():
+    """A DDS domain no other twin on this machine holds, and the open lock file that holds it
+    (closing it frees the domain). Parallel runs (g1 bench) each get their own domain, and with
+    it their own camera buffer in shared memory."""
+    import fcntl
+    import os
+    import tempfile
+    from pathlib import Path
+    start = os.getpid() % len(DOMAINS)
+    for k in range(len(DOMAINS)):
+        domain = DOMAINS[(start + k) % len(DOMAINS)]
+        f = open(Path(tempfile.gettempdir()) / f"g1-twin-domain-{domain}.lock", "w")
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            f.close()
+            continue
+        return domain, f
+    raise SystemExit(f"no free twin DDS domain in {DOMAINS.start}-{DOMAINS.stop - 1}: are 100 twins running?")
+
+
 class TwinProcess:
     """``with TwinProcess(task, mode=..., viewer=...) as twin:`` a twin serving the task's
     scene on ``twin.iface`` / ``twin.domain`` until the block ends (normally, on an error
@@ -129,7 +157,7 @@ class TwinProcess:
                  timeout: float = limits.get("twin_start_timeout_s")) -> None:
         import os
         self.iface = "lo0" if sys.platform == "darwin" else "lo"
-        self.domain = 100 + os.getpid() % 100         # private: never another twin's, never the robot's 0
+        self.domain, self._domain_lock = reserve_domain()   # private: never another twin's, never the robot's 0
         exe = sys.executable
         if viewer and sys.platform == "darwin":
             from pathlib import Path
@@ -144,6 +172,8 @@ class TwinProcess:
             self.cmd += ["--start", ",".join(f"{v:g}" for v in task["start"])]
         if task.get("camera_size"):
             self.cmd += ["--camera-size", "x".join(str(v) for v in task["camera_size"])]
+        if task.get("success"):
+            self.cmd += ["--success", json.dumps(task["success"])]
         if mode == "gantry":
             self.cmd.append("--gantry")
         if not viewer:
@@ -197,6 +227,9 @@ class TwinProcess:
         if self._echo is not None:
             self._echo.join(timeout=2)
         self.proc = None
+        if self._domain_lock is not None:
+            self._domain_lock.close()             # the domain is free for the next twin
+            self._domain_lock = None
 
 
 def main(argv: list[str] | None = None) -> int:

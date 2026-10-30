@@ -18,18 +18,25 @@ Which model is asked, and how, is `configs/model.json` (not `.env`, not `configs
 provider            huggingface | openrouter: who is asked (switch here, nothing else changes)
 models.huggingface  the Hugging Face model id; the suffix (":baseten") pins one of the router's providers
                     (Qwen/Qwen3-VL-30B-A3B-Instruct is the verified fast fallback)
-models.openrouter   the OpenRouter model id (deepseek/deepseek-v4.1-flash-1017, the same model)
+models.openrouter   the OpenRouter model id
+routing             OpenRouter only: its provider preferences, sent as the request's provider object, e.g.
+                    {"order": ["baseten"], "allow_fallbacks": false}. Without it OpenRouter picks a host per
+                    request by price (often a 4-bit one) and may switch hosts within a run. Do not add
+                    require_parameters: it drops Baseten there (it does not list every parameter we send)
 reasoning_effort    sent as reasoning_effort (none|minimal|low|medium|high, or default to leave it
                     out); dropped if the server rejects it
 max_tokens          the reply budget, reasoning included
 temperature         sampling temperature
+agent               the agent loop: max_decisions (the default budget; a task's task.json may set its own),
+                    step_timeout_s, request_timeout_s, retries, image_width_px, jpeg_quality,
+                    live_image_window, history_full_turns
 notes               why each value is what it is
 ```
 
 A typo or a missing key there fails at import, naming it. Setting `VLM_MODEL`, `VLM_MAX_TOKENS` or
 `VLM_REASONING_EFFORT` in `.env` is refused with a pointer to the file, so an old `.env` never
-silently overrides it. The request's timeout, the image size and the conversation window stay
-limits (`request_timeout_s`, `image_width_px`, `jpeg_quality`, `live_image_window`, `history_full_turns`).
+silently overrides it. Everything in model.json may be tuned and compared with `g1 bench`;
+`configs/limits.json` holds the robot's and the run's hard limits.
 
 Thinking time is most of a decision's wall time. Left to the provider, DeepSeek-V4.1-Flash
 spent 3 to 52 s per decision and once ran into the 60 s `step_timeout_s`; the agent prints the
@@ -49,7 +56,9 @@ pose), in sim as on the robot; GPT-Policy gives its model no scene layout either
 
 The system prompt, once per run (`g1/agent/decider.py:instructions`): the robot and camera
 conventions, the joint table and sign conventions, the task's rules (`safety_notes`), the
-reply rules, and the tool catalog as bullets and as JSON. Then per decision one user message:
+and the reply rules. The tools themselves (name, prompt, parameter schema) go with every request
+as OpenAI function definitions (`tools`, from `g1/tools` `function_schemas`). Then per decision one
+user message:
 the observation JSON —
 
 ```
@@ -59,24 +68,26 @@ extra {env_step, decisions_left, can_walk, attempt}, previous_result
 ```
 
 — and the head image (JPEG at `image_width_px`; `images` gives the size as sent, which is the
-size `locate_point` pixels are in). Structured output is requested as
-`json_schema` (the output schema of the menu), stepped down to `json_object`, then none,
-when a provider rejects it. The conversation is the model's memory: the system prompt once,
-then the newest `history_full_turns` (8) turns in full — observation and the model's own reply
-verbatim — and before them one host-written line per older turn (the tool, its note, the
+size `locate_point` pixels are in). The model answers with **one tool call** (`tool_choice:
+"required"`, `parallel_tool_calls: false`): tool calling is the one reply format, so only models
+and hosts that support tool calls are used; one that refuses them fails the run with a hint to
+change `configs/model.json`. The conversation is the model's memory: the system prompt once,
+then the newest `history_full_turns` (8) turns in full — observation, the model's own tool call
+verbatim and the host's one-line answer to it (`tool` message; the result itself is the next
+observation's `previous_result`) — and before them one host-written line per older turn (the tool, its note, the
 result), as GPT-Policy's Claude adapter summarises. Only the last `live_image_window` (8)
-observations keep their image. Both are in `configs/limits.json`.
+observations keep their image. Both are in `configs/model.json` (`agent`).
 
-The reply must be one whole JSON object, `{"name": ..., "arguments": {...}}`, naming a tool
-from the menu and satisfying its parameter schema (jsonschema Draft 2020-12; numbers out of
-range are clamped and the model is told). Anything else is `invalid_selection` in the next
-`previous_result`, and costs a decision.
+The tool call must name a tool from the menu and its arguments satisfy that tool's parameter
+schema (jsonschema Draft 2020-12; numbers out of
+range are clamped and the model is told). Anything else, including a reply with no tool call or
+several, is `invalid_selection` in the next `previous_result`, and costs a decision.
 
 ## Cost and pacing
 
 Roughly 0.5–1.5k tokens per image plus the text; a 30-decision run is on the order of
 30–60k tokens, more with a reasoning model (its thinking counts against `max_tokens`; the
 budget in `configs/model.json` is a ceiling, not a cost). A reasoning model also takes
-longer per decision (10–30 s measured) — raise `step_timeout_s` in `configs/limits.json` if
+longer per decision (10–30 s measured) — raise `agent.step_timeout_s` in `configs/model.json` if
 it times out. Each run's tokens are in its line of the task's `results.jsonl`. `--sim` runs in
 real time, so the timings mean what they would on the robot.

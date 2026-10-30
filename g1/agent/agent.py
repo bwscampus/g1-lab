@@ -40,15 +40,18 @@ from g1.core.action import EPS, Action, Obs, Runnable
 from g1.core.images import sent_size
 from g1.core.config import CONTROL_DT, LOCO_FSM, UPPER_BODY, joint_index
 from g1.tools import Tool, menu, prefixed
+from g1.tools.arms import R_ARM, raises_arm
+
+LOADED_BY_POINT = frozenset(R_ARM) | {joint_index("waist_pitch"), joint_index("waist_roll")}
 from g1.tools.control import Handback, Takeover, dry_run
-from g1.vlm import IMAGE_WIDTH, Overloaded, QuotaExceeded
+from g1.vlm import AGENT_SETTINGS, IMAGE_WIDTH, Overloaded, QuotaExceeded
 
 WAIST_YAW = joint_index("waist_yaw")
 
 # their MODEL_RETRY_DELAYS_S / MODEL_RECOVERY_TIMEOUT_S; the numbers are in configs/limits.json
-RETRY_DELAYS = tuple(min(limits.get("retry_delay_base_s") * (2 ** k), limits.get("retry_delay_cap_s"))
-                     for k in range(int(limits.get("retry_max"))))
-RECOVERY_TIMEOUT = limits.get("recovery_timeout_s")
+RETRY_DELAYS = tuple(min(AGENT_SETTINGS["retry_delay_base_s"] * (2 ** k), AGENT_SETTINGS["retry_delay_cap_s"])
+                     for k in range(AGENT_SETTINGS["retry_max"]))
+RECOVERY_TIMEOUT = AGENT_SETTINGS["recovery_timeout_s"]
 
 
 class Agent(Runnable):
@@ -57,8 +60,8 @@ class Agent(Runnable):
 
     def __init__(self, instruction: str, decider: Decider, tools: Sequence[type[Tool]], *,
                  recorder: Optional[EpisodeWriter] = None,
-                 max_decisions: int = limits.get("max_decisions"),
-                 step_timeout: float = limits.get("step_timeout_s"),
+                 max_decisions: int = AGENT_SETTINGS["max_decisions"],
+                 step_timeout: float = AGENT_SETTINGS["step_timeout_s"],
                  settle_min: float = limits.get("settle_min_s"),
                  settle_tol: float = limits.get("settle_pos_tol_rad"),
                  settle_vel_tol: float = limits.get("settle_vel_tol"),
@@ -129,6 +132,7 @@ class Agent(Runnable):
         self._wall0 = 0.0
         self._wait_until = 0.0
         self._seated = False                      # a sit finished: nothing may walk or call onboard again
+        self._arm_up = False                      # the right arm is left pointing (point; lower_arm ends it)
         self.decider.start(self.context)
         self._enter_sub("takeover", 0.0, Takeover())
 
@@ -232,6 +236,15 @@ class Agent(Runnable):
         self._settle_vel = math.inf
         return self._hold()
 
+    def _handback(self) -> Tool:
+        """Hand the arms back; a right arm left pointing is lowered first, whatever ended the run."""
+        if not self._arm_up:
+            return Handback()
+        from g1.tools.arms import LowerArm
+        self._say("lowering the right arm before the hand-back")
+        return Tool.of([*LowerArm().segments(), *Handback().segments()], joints=self.joints, name="handback",
+                       allows_start=True)
+
     def _to_handback(self, t: float, result: str, error: Optional[str] = None,
                      reason: Optional[str] = None) -> Action:
         self.result = result
@@ -242,7 +255,7 @@ class Agent(Runnable):
         self._say(f"result: {result}" + (f" ({error})" if error else ""))
         if self.recorder is not None:
             self.recorder.update(end_reason=self.end_reason, error=error)
-        self._enter_sub("handback", t, Handback())
+        self._enter_sub("handback", t, self._handback())
         return self._hold()
 
     def _fail(self, t: float, error: str, reason: str) -> Action:
@@ -263,7 +276,7 @@ class Agent(Runnable):
             "frame": None if frame is None else {
                 "image": f"step_{self._request_id:04d}.png", "seq": frame.seq, "stamp": frame.stamp,
                 "age_s": float(obs.frame_age), "shape": list(frame.image.shape),
-                "sent": {"width": sent[0], "height": sent[1], "jpeg_quality": limits.get("jpeg_quality")}},
+                "sent": {"width": sent[0], "height": sent[1], "jpeg_quality": AGENT_SETTINGS["jpeg_quality"]}},
             "frame_error": None if frame is not None else (self._previous or {}).get("error"),
             "query": None, "response": None, "action": None, "result": None, "sdk_calls": []}
         self.steps.append(self._rec)
@@ -326,7 +339,10 @@ class Agent(Runnable):
         return {"settled": self._settled >= self.settle_samples, "observed_s": self._settle_elapsed,
                 "consecutive_samples": self._settled, "required_samples": self.settle_samples,
                 "max_position_error_rad": self._settle_err, "max_velocity_rad_s": self._settle_vel,
-                "position_tolerance_rad": self.settle_tol, "velocity_tolerance_rad_s": self.settle_vel_tol}
+                "position_tolerance_rad": self.settle_tol, "velocity_tolerance_rad_s": self.settle_vel_tol,
+                **({"position_excludes": "the raised right arm and the waist's pitch and roll (they sag under "
+                                         "the arm's weight; only their speed is checked)"}
+                   if self._arm_up else {})}
 
     def _feedback(self, obs: Obs) -> None:
         """The finished tool's execution result: full in the record, compact for the model."""
@@ -394,7 +410,11 @@ class Agent(Runnable):
             return self._to_settle(t, obs)
 
         if st == "settle":
-            err = float(np.max(np.abs(obs.q[self.joints] - self._cmd[self.joints])))
+            # a pointing arm is commanded above its aim by the sag it will have (point_sag_deg), and its
+            # weight bends the waist forward (9 deg on the twin at arm_sdk's gains): while it is up those
+            # joints never meet their commands, so only their speed counts
+            held = [j for j in self.joints if not (self._arm_up and j in LOADED_BY_POINT)]
+            err = float(np.max(np.abs(obs.q[held] - self._cmd[held])))
             if obs.qd is not None:
                 vel = float(np.max(np.abs(obs.qd[self.joints])))
             else:
@@ -493,7 +513,7 @@ class Agent(Runnable):
                 reason = "retry_limit" if self._attempt >= len(self.retry_delays) else "recovery_deadline"
                 self._finish(t, {"status": "retry_exhausted", "retries": self._attempt, "reason": reason})
                 return self._fail(t, f"model overloaded: {reason}", "model_overloaded")
-            delay = self.retry_delays[self._attempt] + random.uniform(0, limits.get("retry_jitter_s"))
+            delay = self.retry_delays[self._attempt] + random.uniform(0, AGENT_SETTINGS["retry_jitter_s"])
             self._attempt += 1
             self._finish(t, {"status": "retry", "retry": self._attempt, "max_retries": len(self.retry_delays),
                              "delay_s": delay, "recovery_timeout_s": self.recovery_timeout})
@@ -510,6 +530,7 @@ class Agent(Runnable):
     def _decide(self, t: float, obs: Obs, d: Decision) -> Action:
         self._rec["response"]["decision"] = {"name": d.name, "arguments": d.arguments, "notes": list(d.notes)}
         self._rec["response"]["text"] = d.raw
+        self._rec["response"]["tool_call_id"] = d.call_id
         args = {k: v for k, v in d.arguments.items() if k != "note"}
         self._say(f"decision {self._env_step}: {d.name}({args}) — {d.note}")
         try:
@@ -538,6 +559,9 @@ class Agent(Runnable):
         if tool.needs_loco and not self.has_loco:
             return self._reject(t, obs, d.name, "tool_rejected: no onboard controller for gestures in this env",
                                 raw=d.raw, arguments=d.arguments)
+        if self._arm_up and (tool.needs_base or tool.needs_loco):
+            return self._reject(t, obs, d.name, "tool_rejected: the right arm is raised (point); lower it with "
+                                "lower_arm before walking or a gesture", raw=d.raw, arguments=d.arguments)
         if self._seated and (tool.needs_base or tool.needs_loco):
             return self._reject(t, obs, d.name, "tool_rejected: the robot is seated; it cannot walk, gesture or "
                                 "sit again (end with done)", raw=d.raw, arguments=d.arguments)
@@ -548,6 +572,9 @@ class Agent(Runnable):
                                 violations=verdict["violations"], n_violations=verdict["n_violations"],
                                 requested_motion={k: v for k, v in d.arguments.items() if k != "note"})
         self._decision, self._tool = d, tool
+        raised = raises_arm(tool)
+        if raised is not None:
+            self._arm_up = raised
         self._rec["action"] = {"tool": tool.name, "args": dict(tool.args), "dry_run": verdict,
                                "planned_s": tool.duration, "needs_base": tool.needs_base,
                                "t_start": t, "t_end": None, "tick_start": self._tick(t), "tick_end": None,
@@ -610,7 +637,7 @@ def build_agent(task: dict, *, env_name: str, can_walk: bool, has_loco: bool, ru
     tools = menu(can_walk, has_loco)
     notes = list(task["safety_notes"])          # rules only: the room's layout is never told
     agent = Agent(task["instruction"], decider, tools, max_decisions=task["max_decisions"],
-                  step_timeout=limits.get("step_timeout_s"), can_walk=can_walk, has_loco=has_loco,
+                  step_timeout=AGENT_SETTINGS["step_timeout_s"], can_walk=can_walk, has_loco=has_loco,
                   safety_notes=notes, verdict=None)
     config = {**(config or {}), "model": decider.settings(), **agent.context.record()}
     agent.recorder = EpisodeWriter(runs, env=env_name, instruction=task["instruction"], model=decider.model,

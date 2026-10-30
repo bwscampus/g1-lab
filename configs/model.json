@@ -1,20 +1,48 @@
 {
     "version": 1,
-    "provider": "huggingface",
+    "provider": "openrouter",
     "models": {
         "huggingface": "deepseek-ai/DeepSeek-V4.1-Flash-1017:baseten",
         "openrouter":  "deepseek/deepseek-v4.1-flash-1017"
     },
-    "reasoning_effort": "low",
-    "max_tokens": 16000,
+    "routing": {},
+    "reasoning_effort": "high",
+    "max_tokens": null,
     "temperature": 0.0,
+    "agent": {
+        "max_decisions": 30,
+        "step_timeout_s": 600.0,
+        "request_timeout_s": 590.0,
+        "retry_max": 20,
+        "retry_delay_base_s": 2.0,
+        "retry_delay_cap_s": 8.0,
+        "retry_jitter_s": 0.5,
+        "recovery_timeout_s": 300.0,
+        "image_width_px": 640,
+        "jpeg_quality": 80,
+        "live_image_window": 8,
+        "history_full_turns": 8
+    },
 
     "notes": {
         "provider": "who serves the model: huggingface (HF_TOKEN in .env) or openrouter (OPENROUTER_API_KEY in .env); the model asked is models[provider]",
         "models.huggingface": "the Hugging Face model id the agent asks (was VLM_MODEL in .env, then limit vlm_model); the suffix pins one of the router's providers. Pinned to baseten 2026-10-21: the only one that served the agent's request (json_schema + reasoning_effort + image, about 1 s); novita refuses json_schema and, unnamed, reasoning_effort; together needs pay-as-you-go; fireworks-ai, featherless-ai and deepinfra do not serve it. Qwen/Qwen3-VL-30B-A3B-Instruct is the verified fast fallback",
-        "models.openrouter": "the OpenRouter model id the agent asks; the same DeepSeek-V4.1-Flash-1017 as models.huggingface. OpenRouter lists it with image input, response_format, structured_outputs and reasoning_effort (GET /api/v1/models, 2026-10-29); not yet run with the agent's request",
-        "reasoning_effort": "one of none, minimal, low, medium, high, default; sent as reasoning_effort: how long a reasoning model may think (default: leave it to the provider). Left to the provider, DeepSeek-V4.1-Flash once thought 52 s on one decision; none answered in about 1 s. Dropped if the server rejects it",
-        "max_tokens": "tokens; reply budget, reasoning included; 400 cut a reasoning model off before it answered (a decision used 446), the longest decision seen used 10468 (52 s), and the HF router refused 500000 (its ceiling was 393216). A runaway now ends as a cut-off reply, not a 60 s timeout",
-        "temperature": "sampling temperature of every model request (0: the most likely reply)"
+        "models.openrouter": "the OpenRouter model id the agent asks: deepseek/deepseek-v4.1-flash-1017, the same model as models.huggingface (2026-10-29: back from openai/gpt-6-luna 1/5 and gpt-6.1-sol 0/5 on point_at_the_laptop, both 3-5 false dones; DeepSeek on Baseten was 4/5)",
+        "routing": "OpenRouter only: its provider preferences, sent as the request's provider object. {} since 2026-10-29 (the user's choice): any host that takes tool calls, OpenRouter picking by price and availability, possibly a different host per request and 4-bit ones (B4 went mostly to Wafer, mxfp4). Pinned to Baseten ({\"order\": [\"baseten\"], \"allow_fallbacks\": false}), B6 scored 3/4 with tool calls. A filter such as {\"quantizations\": [\"fp8\", \"bf16\"]} keeps the 4-bit hosts out. Do not add require_parameters: it drops Baseten (it does not list every parameter sent)",
+        "reasoning_effort": "one of none, minimal, low, medium, high, default; sent as reasoning_effort. high on 2026-10-29 for the bench B9 (medium) / B10 (high), 2 runs each, max_tokens unbounded, on OpenRouter, any host, tool calls, 30 decisions: looking for 5/5 on point_at_the_laptop. B4 (high, before tool calls) did not clearly help. Dropped if the server rejects it",
+        "max_tokens": "tokens, or null: the reply budget, reasoning included; null (2026-10-29, the user's choice) sends none, so the provider's own limit applies. At 16000, effort medium and high cut 3 of 10 replies off mid-thought (B7, B8: 16000 reasoning tokens, no tool call); unbounded to measure how long they really think (bench: model time per call). A reasoning model left alone once thought 52 s and 10468 tokens on one decision",
+        "temperature": "sampling temperature of every model request (0: the most likely reply)",
+        "agent.max_decisions": "count; model decisions per run, rejected replies included (gpt-policy uses 100) (a limit until 2026-10-29)",
+        "agent.step_timeout_s": "s; longest wait for one decision before the run fails. 600 since 2026-10-29 (was 120) while max_tokens is unbounded, so a long think is measured, not cut off",
+        "agent.request_timeout_s": "s; longest one HTTP request to the model may take. 590 since 2026-10-29 (was 110), under step_timeout_s, while max_tokens is unbounded",
+        "agent.retry_max": "count; retries when the model is overloaded (a limit until 2026-10-29)",
+        "agent.retry_delay_base_s": "s; first retry delay; doubles each time (a limit until 2026-10-29)",
+        "agent.retry_delay_cap_s": "s; largest retry delay (a limit until 2026-10-29)",
+        "agent.retry_jitter_s": "s; up to this much random time is added to each retry delay (a limit until 2026-10-29)",
+        "agent.recovery_timeout_s": "s; total time allowed for retries before the run fails (a limit until 2026-10-29)",
+        "agent.image_width_px": "px; frames are downscaled to this width before they are sent (a limit until 2026-10-29)",
+        "agent.jpeg_quality": "0-100; JPEG quality of frames sent to the model (records stay lossless PNG) (a limit until 2026-10-29)",
+        "agent.live_image_window": "count; observation images kept in the conversation; older turns keep their text (a limit until 2026-10-29)",
+        "agent.history_full_turns": "count; earlier turns sent in full (observation, image if still in live_image_window, reply); older ones are replaced by one host-written line each, as GPT-Policy's Claude adapter does (a limit until 2026-10-29)"
     }
 }

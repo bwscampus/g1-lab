@@ -168,9 +168,8 @@ def test_observation_and_feedback_follow_the_contract():
     assert o[2]["state"]["base_pose_cmd"][0] == pytest.approx(0.3 * math.cos(math.radians(30)), abs=1e-6)
     # the context the decider was started with
     ctx = dec.context
-    assert "never walk backward" in ctx.instructions and "Robot tool catalog:" in ctx.instructions
+    assert "never walk backward" in ctx.instructions and "Call exactly one tool per turn" in ctx.instructions
     assert [t["function"]["name"] for t in ctx.tools] == [s.name for s in menu(True)]
-    assert ctx.output_schema["properties"]["name"]["enum"] == [s.name for s in menu(True)]
     assert agent.result == "completed"
 
 
@@ -402,3 +401,32 @@ def test_give_up_and_skipped_verdict(tmp_path):
     summary = json.loads((rec.dir / "summary.json").read_text())
     assert summary["model_outcome"] == "give_up" and summary["end_reason"] == "give_up"
     assert summary["closing"] == {"reason": "r", "hindsight": "h"} and summary["outcome_source"] == "unreviewed"
+
+
+@pytest.mark.parametrize("end", [("done", {"summary": "s", "hindsight": ""}), ("give_up", {"reason": "r", "hindsight": ""})])
+def test_a_point_stays_up_for_the_next_image_and_is_lowered_at_the_end(end):
+    from g1.core.poses import STAND
+    from g1.tools.arms import R_ARM
+    dec = Sequence([("point", {"down_deg": 20.0, "rise_s": 1.0, "hold_s": 0.5}), ("move", {"dx_m": 0.2}), end])
+    env = check(mode="standing")
+    agent = Agent("point at it", dec, menu(True), max_decisions=5)
+    assert run(agent, env, max_time=120) is True
+    o = observations(dec)
+    shoulder = R_ARM[0]
+    assert o[1]["state"]["joint_pos"][shoulder] < -1.0                       # the next observation: the arm still raised
+    settle = o[1]["previous_result"]["result"]["execution_feedback"]["settle"]
+    assert settle["settled"] is True and "raised right arm" in settle["position_excludes"]   # its sag is expected
+    assert "lower_arm" in o[2]["previous_result"]["error"] and env.base_ticks == 0             # no walking while pointing
+    assert agent._cmd[R_ARM] == pytest.approx([STAND[j] for j in R_ARM])                     # lowered before the hand-back
+    agent.close()
+
+
+def test_lower_arm_ends_the_point():
+    dec = Sequence([("point", {"down_deg": 20.0, "rise_s": 1.0, "hold_s": 0.5}), ("lower_arm", {"seconds": 1.0}),
+                    ("move", {"dyaw_deg": 10}), ("done", {"summary": "s", "hindsight": ""})])
+    env = check(mode="standing")
+    agent = Agent("point at it", dec, menu(True), max_decisions=6)
+    assert run(agent, env, max_time=120) is True
+    o = observations(dec)
+    assert "error" not in o[3]["previous_result"] and env.base_ticks > 0      # walking allowed again
+    agent.close()

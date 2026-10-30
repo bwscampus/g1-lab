@@ -14,11 +14,17 @@ the physics loop never interleave mid-step.
 
 ``--mode gantry`` hangs the torso from a rope above its standing height (slack
 while it stands, taut when it sags), so Damp leaves it hanging instead of fallen.
+
+A task's ``success`` (task.json) is scored here, every control tick, from the
+simulator's truth (``Evaluator``): the robot cannot say whether it pointed at the
+laptop, the twin can. The verdict reaches the records through the Summary call,
+never the model.
 """
 from __future__ import annotations
 
 import math
 import threading
+import time
 from dataclasses import dataclass
 
 import numpy as np
@@ -36,6 +42,12 @@ BAND_KP = limits.get("twin_band_kp")
 BAND_KD = limits.get("twin_band_kd")
 ROPE_SLACK = limits.get("twin_rope_slack_m")   # below the standing torso: slack in any stance, so the feet carry it
 ROPE_LATERAL = limits.get("twin_rope_lateral")  # sideways stiffness and damping, as a fraction
+TRUTH_PERIOD = limits.get("twin_truth_period_s")
+MARGIN_DEG = limits.get("success_margin_deg")      # an angle criterion passes this much beyond its number   # the base truth kept for the host's trace
+# the right arm's pointing ray: shoulder to wrist (the arm is straight when it points)
+ARM_RAY = ("right_shoulder_pitch_link", "right_wrist_yaw_link")
+FEET = ("left_ankle_roll_link", "right_ankle_roll_link")
+SUCCESS_KEYS = ("point_at", "within_deg", "for_s", "feet_drift_max_m", "feet_yaw_drift_max_deg", "no_contact")
 
 
 @dataclass
@@ -50,9 +62,129 @@ class LowState:
     acc: np.ndarray               # m/s^2, pelvis frame
 
 
+class Evaluator:
+    """A task's ``success`` criteria, measured on the twin every control tick:
+
+        point_at                the object the right arm must point at (a body name, or its prefix: laptop)
+        within_deg, for_s       ... the arm's ray (shoulder to wrist) within within_deg of the object's
+                                centre, for for_s seconds without a break
+        feet_drift_max_m        how far the feet (their midpoint) may move from where they stood: did it
+                                walk or slide. Not the pelvis: it twists over planted feet when an arm
+                                swings out with the waist turned
+        feet_yaw_drift_max_deg  ... and how far the line between them may turn
+        no_contact              geoms (or bodies) by name or prefix the robot must never touch
+
+    The angle criteria pass up to success_margin_deg beyond their number (measurement error).
+    A fall always fails. ``result()`` is the verdict and what was measured."""
+
+    def __init__(self, twin: "Twin", criteria: dict) -> None:
+        unknown = sorted(set(criteria) - set(SUCCESS_KEYS))
+        if unknown:
+            raise ValueError(f"success: unknown {unknown} (known: {', '.join(SUCCESS_KEYS)})")
+        if "point_at" in criteria and not {"within_deg", "for_s"} <= set(criteria):
+            raise ValueError("success: point_at needs within_deg and for_s")
+        self.twin = twin
+        self.criteria = dict(criteria)
+        m, mj = twin.model, twin.mujoco
+        body = lambda n: mj.mj_name2id(m, mj.mjtObj.mjOBJ_BODY, n)
+        self.ray = tuple(body(n) for n in ARM_RAY)
+        self.target_geoms: list[int] = []
+        if "point_at" in criteria:
+            name = criteria["point_at"]
+            bodies = [b for b in range(m.nbody) if m.body(b).name == name] or \
+                     [b for b in range(m.nbody) if m.body(b).name.startswith(name)]
+            if not bodies:
+                raise ValueError(f"success: point_at {name!r}: no such object in the scene")
+            self.target_geoms = [g for g in range(m.ngeom) if m.geom_bodyid[g] == bodies[0]]
+        self.feet = tuple(body(n) for n in FEET)
+        robot_root = body("pelvis")
+        self.robot = np.array([m.body_rootid[m.geom_bodyid[g]] == robot_root for g in range(m.ngeom)])
+        names = criteria.get("no_contact", [])
+
+        def matches(g: int) -> bool:
+            for n in (m.geom(g).name, m.body(m.geom_bodyid[g]).name):
+                if any(n == k or n.startswith(k) for k in names):
+                    return True
+            return False
+        self.forbidden = np.array([bool(names) and not self.robot[g] and matches(g) for g in range(m.ngeom)])
+        self.reset()
+
+    def reset(self) -> None:
+        self.error_min = math.inf
+        self.within_s = 0.0           # the current unbroken stretch within within_deg
+        self.within_best_s = 0.0
+        self.error_at_best = math.nan
+        self.drift_max = 0.0
+        self.yaw_drift_max = 0.0
+        self.feet0 = self._feet()
+        self.contacts: dict[str, float] = {}     # "robot geom/object geom" -> first time
+
+    def _feet(self) -> tuple[np.ndarray, float]:
+        """The feet's midpoint (x, y) and the heading of the line from the right foot to the left."""
+        left, right = (self.twin.data.xpos[b][:2].copy() for b in self.feet)
+        return (left + right) / 2, math.atan2(left[1] - right[1], left[0] - right[0])
+
+    def target(self) -> np.ndarray:
+        d = self.twin.data
+        return d.geom_xpos[self.target_geoms].mean(axis=0)
+
+    def pointing_error_deg(self) -> float:
+        d = self.twin.data
+        shoulder, wrist = (d.xpos[b] for b in self.ray)
+        arm, to = wrist - shoulder, self.target() - shoulder
+        c = float(np.dot(arm, to) / (np.linalg.norm(arm) * np.linalg.norm(to) + 1e-12))
+        return math.degrees(math.acos(max(-1.0, min(1.0, c))))
+
+    def tick(self, dt: float) -> None:
+        c = self.criteria
+        if self.target_geoms:
+            err = self.pointing_error_deg()
+            self.error_min = min(self.error_min, err)
+            self.within_s = self.within_s + dt if err <= c["within_deg"] + MARGIN_DEG else 0.0
+            if self.within_s > self.within_best_s:
+                self.within_best_s, self.error_at_best = self.within_s, err
+        (mid0, yaw0), (mid, yaw) = self.feet0, self._feet()
+        self.drift_max = max(self.drift_max, float(np.linalg.norm(mid - mid0)))
+        self.yaw_drift_max = max(self.yaw_drift_max, abs(math.degrees(math.remainder(yaw - yaw0, 2 * math.pi))))
+        if self.forbidden.any():
+            m, d = self.twin.model, self.twin.data
+            for con in d.contact[:d.ncon]:
+                a, b = int(con.geom1), int(con.geom2)
+                for r, o in ((a, b), (b, a)):
+                    if self.robot[r] and self.forbidden[o]:
+                        self.contacts.setdefault(f"{m.geom(r).name or m.body(m.geom_bodyid[r]).name}/{m.geom(o).name}",
+                                                 round(self.twin.time, 3))
+
+    def result(self) -> dict:
+        c = self.criteria
+        x, y, yaw = self.twin.base_pose()
+        measured: dict = {"feet_drift_max_m": round(self.drift_max, 4),
+                          "feet_yaw_drift_max_deg": round(self.yaw_drift_max, 2),
+                          "pelvis_end": [round(x, 3), round(y, 3), round(math.degrees(yaw), 1)],
+                          "contacts": self.contacts, "fell": self.twin.onboard.fallen_at is not None}
+        failed = []
+        if self.target_geoms:
+            measured.update(pointing_error_min_deg=round(self.error_min, 2) if math.isfinite(self.error_min) else None,
+                            pointing_within_s=round(self.within_best_s, 3),
+                            pointing_error_at_best_deg=None if math.isnan(self.error_at_best)
+                            else round(self.error_at_best, 2))
+            if self.within_best_s + 1e-9 < c["for_s"]:
+                failed.append("point_at")
+        if "feet_drift_max_m" in c and self.drift_max > c["feet_drift_max_m"]:
+            failed.append("feet_drift_max_m")
+        if "feet_yaw_drift_max_deg" in c and self.yaw_drift_max > c["feet_yaw_drift_max_deg"] + MARGIN_DEG:
+            failed.append("feet_yaw_drift_max_deg")
+        if self.contacts:
+            failed.append("no_contact")
+        if measured["fell"]:
+            failed.append("fell")
+        return {"passed": not failed, "failed": failed, "criteria": c, "margin_deg": MARGIN_DEG, "measured": measured}
+
+
 class Twin:
     def __init__(self, *, scene: str = "none", objects=(), obstacle=None, camera_size=None,
-                 fsm: int = FSM_MAIN, band: bool = False, voice: str = "sim", start=None) -> None:
+                 fsm: int = FSM_MAIN, band: bool = False, voice: str = "sim", start=None,
+                 success: dict | None = None) -> None:
         import mujoco
         self.mujoco = mujoco
         self.model = twin_model.load_model(obstacle, scene=scene, objects=objects, camera_size=camera_size)
@@ -66,6 +198,7 @@ class Twin:
         self.torso = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "torso_link")
         self._sensor = {n: (self.model.sensor(n).adr[0], self.model.sensor(n).dim[0])
                         for n in ("imu_quat", "imu_gyro", "imu_acc")}
+        self.evaluator = Evaluator(self, success) if success else None
         self.reset()
 
     def reset(self) -> None:
@@ -92,6 +225,8 @@ class Twin:
             self.onboard.reset(self.start_fsm, keep_gait=True)   # the walker keeps its history
             self.services.log.clear()
             self.steps = 0
+            self.truth_log: list[list[float]] = []    # [monotonic s, x, y, yaw]: the host's trace lines up on it
+            self._truth_at = -math.inf
             self.mark_start()
 
     # -- the SDK's side ---------------------------------------------------------------------------
@@ -122,6 +257,11 @@ class Twin:
             for _ in range(SUBSTEPS):
                 self._substep()
             self.steps += 1
+            if self.evaluator is not None:
+                self.evaluator.tick(CONTROL_DT)
+            if self.time - self._truth_at >= TRUTH_PERIOD - 1e-9:
+                self._truth_at = self.time
+                self.truth_log.append([round(time.monotonic(), 4), *(round(v, 4) for v in self.base_pose())])
 
     def advance(self, dt: float) -> None:
         end = self.time + dt - 1e-9
@@ -158,8 +298,10 @@ class Twin:
                 math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z)))
 
     def mark_start(self) -> None:
-        """Measure base_pose() from here (the program's start)."""
+        """Measure base_pose() from here (the program's start); the scoring starts again too."""
         self.start = self.truth()
+        if getattr(self, "evaluator", None) is not None:
+            self.evaluator.reset()
 
     def base_pose(self) -> tuple[float, float, float]:
         """Truth relative to where the run started, in the start's heading frame."""
@@ -180,7 +322,8 @@ class Twin:
                 "pelvis_z": self.pelvis_z, "fsm": self.onboard.fsm,
                 "torque_limit_s": {JOINT_NAMES[i]: round(int(n) * twin_model.PHYSICS_DT, 4)
                                    for i, n in enumerate(self.onboard.saturated) if n},
-                "summary": self.summary()}
+                "evaluation": None if self.evaluator is None else self.evaluator.result(),
+                "truth": self.truth_log, "summary": self.summary()}
 
     def summary(self) -> str:
         o = self.onboard
@@ -203,6 +346,9 @@ class Twin:
             parts.append(f"seated on {seat}" if seat else "seated with no seat under it")
         if o.fallen_at is not None:
             parts.append(f"FELL at t = {o.fallen_at:.2f} s")
+        if self.evaluator is not None:
+            r = self.evaluator.result()
+            parts.append("success criteria " + ("met" if r["passed"] else f"NOT met ({', '.join(r['failed'])})"))
         return "; ".join(parts)
 
     def seat(self) -> str | None:

@@ -146,11 +146,10 @@
     "twin_volume":                {"value": 50,     "unit": "0-100",  "source": "guess",      "note": "twin: the speaker volume GetVolume reports at start"},
     "twin_start_timeout_s":       {"value": 60.0,   "unit": "s",      "source": "repo",       "note": "--sim: longest wait for the twin process to load the model and walker and start serving"},
     "twin_status_period_s":       {"value": 10.0,   "unit": "s",      "source": "repo",       "note": "--sim with G1_VERBOSE=1: the twin's status line (pose, rates, real-time factor) every this many sim seconds"},
+    "twin_truth_period_s":        {"value": 0.1,    "unit": "s",      "source": "guess",      "note": "--sim: how often the twin keeps its true base pose for the run's trace.npz (base_true, interpolated onto the host's ticks); sent whole in the Summary at the end, so not every tick"},
     "twin_summary_timeout_s":     {"value": 5.0,    "unit": "s",      "source": "repo",       "note": "--sim: request timeout of the twin's Summary (did it fall, where the base really went) at the end of a run"},
     "sim_viewer_hold_s":          {"value": 2.0,    "unit": "s",      "source": "repo",       "note": "in-process twin (tests) with a viewer: the window stays open this long after the run"},
 
-    "max_decisions":              {"value": 30,    "unit": "count", "source": "guess",      "note": "model decisions per run, rejected replies included (gpt-policy uses 100)"},
-    "step_timeout_s":             {"value": 60.0,  "unit": "s",     "source": "guess",      "note": "longest wait for one decision before the run fails"},
     "max_time_s":                 {"value": 120.0, "unit": "s",     "source": "repo",       "note": "longest a program may run before the runner stops it (raise it for search)"},
     "settle_min_s":               {"value": 0.5,   "unit": "s",     "source": "guess",      "note": "shortest stand-still before a frame is taken, so StopMove has landed"},
     "settle_pos_tol_rad":         {"value": 0.03,  "unit": "rad",   "source": "gpt-policy", "note": "settled when every commanded joint is this close to its command; tuned for their arm, sim arms reach 0.019"},
@@ -160,16 +159,10 @@
     "frame_max_age_s":            {"value": 0.5,   "unit": "s",     "source": "guess",      "note": "oldest camera frame a decision may be made on"},
     "frame_timeout_s":            {"value": 2.0,   "unit": "s",     "source": "guess",      "note": "longest wait for a fresh frame before deciding without one"},
     "max_failures":               {"value": 3,     "unit": "count", "source": "guess",      "note": "consecutive missing frames that end the run"},
+    "overrun_fraction_max":       {"value": 0.01,  "unit": "1",     "source": "guess",      "note": "a run with more of its ticks late than this (a tick more than one control_dt behind) is marked timing: degraded; on 2026-10-28 a loaded machine gave 952 of about 3000, an idle one gives none. g1 bench counts it as an infrastructure failure, not the task's"},
+    "success_margin_deg":         {"value": 1.0,   "unit": "deg",   "source": "user",       "note": "the twin's scoring: an angle criterion in a task's success (within_deg, feet_yaw_drift_max_deg) passes up to this much beyond what the task says, for measurement error; 10 deg in task.json accepts up to 11 (2026-10-29)"},
+    "bench_run_mb":               {"value": 700,   "unit": "MB",    "source": "measured",   "note": "g1 bench: memory one run takes, to size how many run at once; measured 2026-10-29 on the laptop room: the twin about 400 MB physical footprint, the host about 40 MB without the model, plus room for the camera frames and the agent's history"},
+    "bench_parallel_max":         {"value": 2,     "unit": "count", "source": "measured",   "note": "g1 bench: most runs at once, whatever memory and cores allow. Measured 2026-10-29 on this 8 GB, 4+4-core Mac with a model-free laptop-room chain: 2 at once had 2 of 4 runs over overrun_fraction_max (5-6% late), 3 at once none; real agent runs also render the camera and encode images, so 2"}
 
-    "request_timeout_s":          {"value": 30.0,  "unit": "s",     "source": "guess",      "note": "longest one HTTP request to the model may take"},
-    "image_width_px":             {"value": 640,   "unit": "px",    "source": "guess",      "note": "frames are downscaled to this width before they are sent"},
-    "jpeg_quality":               {"value": 80,    "unit": "0-100", "source": "guess",      "note": "JPEG quality of frames sent to the model (records stay lossless PNG)"},
-    "live_image_window":          {"value": 8,     "unit": "count", "source": "gpt-policy", "note": "observation images kept in the conversation; older turns keep their text"},
-    "history_full_turns":         {"value": 8,      "unit": "count",  "source": "guess",      "note": "earlier turns sent in full (observation, image if still in live_image_window, reply); older ones are replaced by one host-written line each, as GPT-Policy's Claude adapter does"},
-    "retry_max":                  {"value": 20,    "unit": "count", "source": "gpt-policy", "note": "retries when the model is overloaded"},
-    "retry_delay_base_s":         {"value": 2.0,   "unit": "s",     "source": "gpt-policy", "note": "first retry delay; doubles each time"},
-    "retry_delay_cap_s":          {"value": 8.0,   "unit": "s",     "source": "gpt-policy", "note": "largest retry delay"},
-    "retry_jitter_s":             {"value": 0.5,    "unit": "s",      "source": "guess",      "note": "up to this much random time is added to each retry delay"},
-    "recovery_timeout_s":         {"value": 300.0, "unit": "s",     "source": "gpt-policy", "note": "total time allowed for retries before the run fails"}
   }
 }

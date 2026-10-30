@@ -92,6 +92,10 @@ def joint_index(name: str) -> int:
 HEAD_CAMERA_POS = (0.0576235, 0.01753, 0.42987)   # m, in torso_link
 HEAD_CAMERA_PITCH = 0.8307767                     # rad, looking down
 HEAD_CAMERA_FOVY = 58.0                           # degrees, vertical
+# Where the right arm pivots: the URDF's right_shoulder_pitch_joint origin in the torso_link frame.
+# A pointing arm's line starts here, 12 cm right of and 19 cm below the camera.
+R_SHOULDER_POS = (0.0039563, -0.10021, 0.23778)   # m, in torso_link
+R_SHOULDER_FROM_CAMERA = tuple(s - c for s, c in zip(R_SHOULDER_POS, HEAD_CAMERA_POS))   # x fwd, y left, z up
 HEAD_CAMERA_SIZE = (int(limits.get("twin_camera_height_px")), int(limits.get("twin_camera_width_px")))   # sim render H, W
 # horizontal field of view of the sim render, from the vertical one and the aspect
 HEAD_CAMERA_FOV_H = 2 * math.degrees(math.atan(math.tan(math.radians(HEAD_CAMERA_FOVY / 2))
