@@ -11,6 +11,7 @@ dependencies = [
     "numpy",
     "jsonschema>=4",
     "pillow",
+    "av",           # sound files for the speaker (g1/core/sounds.py); also the camera's video
 ]
 
 [project.optional-dependencies]
@@ -20,7 +21,7 @@ dependencies = [
 sim = ["mujoco>=3.2", "onnxruntime"]
 # Camera feed. unitree_webrtc_connect is not on PyPI either; install it from
 # https://github.com/legion1581/go2_webrtc_connect for --env robot with the camera.
-camera = ["aiortc", "av"]
+camera = ["aiortc"]
 dev = ["pytest"]
 
 [project.scripts]
