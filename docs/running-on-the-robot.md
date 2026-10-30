@@ -73,6 +73,34 @@ volume set on the robot. The first time, hear it and correct the guesses in
 `tts_speaker_id` (which voice). A robot without the voice service, or a failed call, prints a
 warning and the run goes on.
 
+## The robot's audio, as measured (2026-10-30)
+
+Everything goes through the robot's `voice` service and its microphone, on the robot's
+network (`UNITREE_IFACE`), read with `unitree_sdk2py` (`g1.audio.AudioClient`):
+
+- **Speaker:** `PlayStream(app_name, stream_id, pcm)` plays raw **16 kHz mono 16-bit
+  little-endian PCM**: no header and no rate field, so any other rate plays at the wrong
+  speed. Files are converted on the host. The robot buffers and plays on its own: `TtsMaker`
+  returned in ~2 ms, `PlayStream` with 3-4 s of audio in ~0.1 s, `PlayStop` in ~2 ms, all with
+  code 0. Nothing waits for the sound to end.
+- **Speech recognition:** the robot transcribes what it hears and publishes it on DDS
+  `rt/audio_msg` (`std_msgs String`, JSON). An utterance arrives as
+  `{"text": "Hello, robot.", "language": "<|en|>", "index": 28, "timestamp": ..., "is_final": false, "confidence": 0.5, ...}`;
+  `is_final` and `confidence` did not vary. The same topic sends `{"play_state": 1}` and
+  `{"play_state": 0}` when the robot's speaker starts and stops. Short or noisy speech comes
+  back mislabelled as `<|zh|>` or `<|ja|>`.
+- **Raw microphone:** UDP multicast `239.168.123.161:5555`, 16 kHz mono 16-bit, 5120-byte
+  packets. The speaker's own output is mostly cancelled from it.
+- **Both need voice interaction switched on in the Unitree app.** Without it, `rt/audio_msg`
+  and the multicast stay silent, with no error. With it on, they keep working in dev mode
+  (motion service released). The robot's own assistant then also answers what it hears.
+- Leaving dev mode (`MotionSwitcherClient.SelectMode("ai")`) brings the robot back in FSM 0,
+  zero torque; `LocoClient.Damp()` puts it in damp.
+
+If the built-in assistant gets in the way (it answers, or plays over us), take the raw
+multicast stream and do our own speech-to-text instead of `rt/audio_msg`, as
+[unitree_converse](https://github.com/SaxionMechatronics/unitree_converse) does.
+
 ## What can and cannot move
 
 Only the waist and arms are commanded (arm_sdk, 50 Hz, the blend weight in
