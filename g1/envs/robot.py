@@ -327,7 +327,7 @@ class RobotEnv(Env):
         domain = dds_domain(self.args.iface, getattr(self.args, "domain", None))
         self._say(f"dds: ChannelFactoryInitialize({domain}, {self.args.iface!r})")
         link.init(domain, self.args.iface)
-        self.health = Health(clock=link.now)
+        self.link_health = Health(clock=link.now)     # the live link monitor (self.health is report()'s summary)
         self.loco = link.loco()
         self.loco.SetTimeout(limits.get("rpc_timeout_s"))
         self.loco.Init()
@@ -378,7 +378,7 @@ class RobotEnv(Env):
                                      f"{sdk.fsm_name(fsm)}): another controller may own the FSM, or it is in "
                                      "a protection state; check the app and the remote, run g1 status")
                 link.sleep(limits.get("fsm_poll_s"))
-        self.arm = ArmSdk(self.health, link=link)
+        self.arm = ArmSdk(self.link_health, link=link)
         self.monitor = self._make_monitor()
         self.base = None
         if self.can_walk:
@@ -492,7 +492,7 @@ class RobotEnv(Env):
     def reset(self) -> np.ndarray:
         self.arm.release()                    # drop any stale arm_sdk takeover
         q0 = self.arm.fresh_state(iface=self.args.iface)
-        self._say(f"lowstate: first message, age {self.health.age_ms():.0f} ms, {self.health.rate():.0f}/s")
+        self._say(f"lowstate: first message, age {self.link_health.age_ms():.0f} ms, {self.link_health.rate():.0f}/s")
         self.overruns = 0
         self.ticks = 0
         self._wall = self.link.now()
@@ -581,7 +581,7 @@ class RobotEnv(Env):
 
     def health_line(self) -> str:
         """One line a second with G1_VERBOSE=1: the link, the tick, the base, the camera."""
-        h = getattr(self, "health", None)
+        h = getattr(self, "link_health", None)
         parts = [f"t={self.ticks * CONTROL_DT:6.1f}"]
         if h is not None:
             parts.append(f"lowstate {h.rate():.0f}/s (age {h.age_ms():.0f} ms)")

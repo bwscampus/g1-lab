@@ -263,9 +263,10 @@ def run_once(task: dict, *, sim: bool, mode: Optional[str], view: bool = False, 
     if sim and truth and (folder / "trace.npz").exists():
         from g1.envs.trace import fill_base_true
         fill_base_true(folder / "trace.npz", truth)
-    update_summary(folder, health=env.health or None)
+    health = env.health if isinstance(env.health, dict) else {}   # report() did not run on an early exit
+    update_summary(folder, health=health or None)
     if sim and task.get("success"):
-        folder = twin_verdict(folder, env.health)
+        folder = twin_verdict(folder, health)
     if not sim:                                  # the robot: keep it? then the human's verdict
         from g1.agent import agent as prompts
         if not prompts.ask_save():

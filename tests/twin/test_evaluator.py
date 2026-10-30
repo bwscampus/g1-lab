@@ -96,3 +96,9 @@ def test_angles_pass_within_the_margin(error_deg, passed):
         twin.evaluator.tick(0.02)
     r = twin.evaluator.result()
     assert r["passed"] is passed and r["margin_deg"] == 1.0
+
+
+def test_a_run_cut_off_by_max_time_is_still_recorded(tmp_path):
+    # report() does not run on that early exit; the run's folder and row must still come back
+    code, folder, s = run_chain(tmp_path, "hold:5", success={"feet_drift_max_m": 0.05}, max_time_s=1)
+    assert code == 1 and folder.exists() and s["end_reason"] == "max_time"
