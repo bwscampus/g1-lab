@@ -73,6 +73,16 @@ volume set on the robot. The first time, hear it and correct the guesses in
 `tts_speaker_id` (which voice). A robot without the voice service, or a failed call, prints a
 warning and the run goes on.
 
+## A task that hears
+
+A task with `"hears": true` (`point_at_what_you_hear`) listens through the robot's own speech
+recognition: switch voice interaction on in the Unitree app first (then close the app, so the
+camera is free). At bring-up the run prints `microphone: listening on rt/audio_msg`, and at the end
+how many utterances it heard and dropped. Speak clearly, near the head, one request at a time:
+"point at the mug", then "now the laptop", then "stop". What you said is in each step's
+`query` (`heard`). The robot's own assistant may also answer you; if that gets in the way, see
+the note below.
+
 ## The robot's audio, as measured (2026-10-30)
 
 Everything goes through the robot's `voice` service and its microphone, on the robot's

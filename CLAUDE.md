@@ -67,26 +67,29 @@ pytest tests/tools/test_tools.py::test_every_tool_pair_is_continuous
 g1/cli.py          run | bench | status | twin | trace; run_settings() (every setting an env reads), run_task()/run_once(),
                    twin_verdict(), run(), safe_return
 g1/bench.py        g1 bench: load_suite, run_suite, totals (task | execution | infrastructure), table
-g1/core/           config (joint table, STAND_Q, UPPER_BODY, LOCO_METHODS, BASE_VEL_MAX), limits (configs/limits.json),
+g1/core/           config (joint table, STAND_Q, UPPER_BODY, LOCO_METHODS, BASE_VEL_MAX, the URDF's waist/arm chains),
+                   limits (configs/limits.json), aim (pixel+distance -> a point, the arm's line, the aim solve: point_to),
                    action (Action, Obs, Segment, Runnable, ease, EPS), poses, images (Pillow, RGB), worker
 g1/tools/          __init__: discovery (TOOLS), menu(), the three renderings, parse_tool/parse_chain, Chain
                    base: the Tool contract + the segment player + validate_args + num/integer/text/flag/limit
-                   move (move, walk_forward, turn) · arms (arm_path, look, point, lower_arm, tpose, sixseven) · gestures (wave_hand,
-                   shake_hand) · posture (sit: SetFsmId(3)) · speech (say: AudioClient.TtsMaker) · control (hold, check + dry_run, done,
-                   give_up, takeover, handback)
+                   move (move, walk_forward, turn) · arms (arm_path, look, point, point_to, lower_arm, tpose, sixseven) · gestures (wave_hand,
+                   shake_hand) · posture (sit: SetFsmId(3)) · speech (say: AudioClient.TtsMaker) · control (hold, listen, check +
+                   dry_run, done, give_up, takeover, handback)
 g1/envs/           base (Env, EnvAbort, shield_sigint, verbose, sdk_log), monitor (JointMonitor), scene (the room),
                    robot (RobotEnv, ArmSdk, BaseCommander, Health, probe/status_main), sdk (RPC_CODES, explain, call, FSM_NAMES),
                    link (DdsLink: the SDK seam), sim (SimEnv = RobotEnv on the in-process twin: the tests' env), trace
 g1/twin/           assets (g1 twin fetch), model (unitree_mujoco G1 + head camera), walker (GR00T: Balance + Walk),
                    onboard (the stand-in onboard controller: FSM, arm_sdk blend, stand/walk, gestures, falls),
                    services (sport/voice/motion_switcher/twin handlers), core (Twin), loopback (in-process link, lockstep),
-                   bridge (DDS servers + rt/lowstate + rt/arm_sdk), shm (camera frames), main (TwinProcess, serve, fetch)
+                   bridge (DDS servers + rt/lowstate + rt/arm_sdk + rt/audio_msg), shm (camera frames), main (TwinProcess, serve, fetch)
 g1/camera.py       Frame, Camera (+subscribe), DirCamera, WebRTCCamera, ShmCamera (the twin's), Viewer (--view)
+g1/microphone.py   Microphone (rt/audio_msg: the robot's speech recognition, an utterance log), heard_view; sounds in g1/core/sounds.py
 g1/vlm.py          VLMClient (Hugging Face or OpenRouter), load_dotenv
 g1/agent/          agent (Agent, build_agent), decider (AgentContext/AgentTurn/Decision, observation(), instructions(),
                    VLMDecider), episode (EpisodeWriter, load_episode), task (find, load_task, run_config, code_snapshot, record_result)
-suites/            stationary/ (point_at_the_laptop x 10); runs/ inside are git-ignored
-tasks/             tpose/ (a tools chain), find_the_mug/, point_at_the_laptop/, find_and_point_at_the_laptop/, sit_in_the_chair/ (instructions); runs and results.jsonl inside are git-ignored
+suites/            stationary/ (point_at_the_laptop x 10), point_on_request/ (point_at_what_you_hear x 5); runs/ inside are git-ignored
+tasks/             tpose/ (a tools chain), find_the_mug/, point_at_the_laptop/, find_and_point_at_the_laptop/, sit_in_the_chair/,
+                   point_at_what_you_hear/ (spoken requests, hears) (instructions); runs and results.jsonl inside are git-ignored
 docs/              architecture, writing-a-tool, writing-a-task, running-on-the-robot, vision-model
 tests/             mirrors g1/ (core, tools, envs, agent, twin) + test_camera, test_cli, test_vlm; doubles.py (RedBallDecider,
                    red_blob, sim_env(**settings), scripted_sim); conftest keeps tests away from the real .env
@@ -174,12 +177,22 @@ root via `pythonpath`. `limits.ROOT` is the repo root (configs/, tasks/, assets/
   furniture, wall or object positions or sizes) and never the twin's truth (true base pose, contacts), in sim
   or on the robot: `Obs.base_pose` reaches only the records. Task `safety_notes` are behaviour rules; world
   facts go in `notes` (never sent). `tests/agent/test_what_the_model_knows.py` guards it.
+- **Hearing is a sense like the camera.** A task with `hears` subscribes `rt/audio_msg` (the robot's own
+  speech recognition; voice interaction on in the app) through the link (`g1/microphone.py`), and each
+  observation carries `heard`: what was said since the last one, other languages and the robot's own speech
+  (`play_state`) dropped. `listen` is a hold the Agent ends when something is heard (it checks between ticks,
+  as the settle does; the tool reads nothing). In sim the twin speaks a task's `voices` on the same topic
+  after the takeover; the model hears each line when said, never the script. If the built-in assistant gets
+  in the way, read the raw microphone (multicast 239.168.123.161:5555) and do our own speech-to-text.
 
 ## The decision step (`g1/agent/agent.py`)
 
 takeover → settle (0.03 rad, 0.05 rad/s, 10 ticks, ≥ 0.5 s, 3 s timeout) → snapshot (a fresh frame) →
 think (background `Decider.request`; the loop holds) → act (the whole tool, one step file) → settle → feedback (`previous_result`: residuals, commanded base displacement, settle report | the
-error) → … `done`/`give_up` end it; `check` answers via `dry_run`, `locate_point` with a pixel's direction;
+error) → … `done`/`give_up` end it; `check` answers via `dry_run`, `locate_point` with a pixel's direction; `point_to` (a pixel and a distance) is
+bound to the turn's image and measured joints/IMU and aimed by `g1/core/aim.py`, and its result's `aim` is the
+measured miss (the first can miss by the pelvis twist the raised arm causes; the second lands);
+`listen` ends early on speech (a task that `hears` adds `heard` to every observation);
 turns older than `history_full_turns` are sent as one host-written line each; overload retried with backoff re-observing;
 quota or `step_timeout` fails the run; `max_decisions` ends as `budget_exhausted`; `close()` renames the
 run directory (`_success`/`_failed`/`_unreviewed`/`_interrupted`). The agent asks nothing: after a robot run

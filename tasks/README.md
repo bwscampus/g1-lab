@@ -10,6 +10,7 @@ g1 run find_the_mug --sim             # the model searches the room, in the MuJo
 g1 run find_the_mug --mode standing --view   # on the robot, its head camera in a browser
 g1 run point_at_the_laptop --sim      # demo: start beside the table, turn the waist to the laptop, point at it (gantry too)
 g1 run find_and_point_at_the_laptop --sim   # demo: explore the room, walk to the table, point at the laptop (standing only)
+g1 run point_at_what_you_hear --sim   # spoken requests: "point at the mug", then the next, until "stop" (hears; gantry too)
 g1 run sit_in_the_chair --sim         # demo: find the chair, line up, turn around, back up and sit (standing mode only on the robot)
 ```
 

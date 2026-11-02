@@ -110,3 +110,18 @@ def test_the_observations_carry_only_what_the_robot_measures():
     located = sent[2]["previous_result"]["result"]
     assert located["tool"] == "locate_point" and located["image_size"] == [o["images"][0]["width"], o["images"][0]["height"]]
     assert located["look_yaw_deg"] > -30                    # top-left of the image: left of where it looks
+
+
+def test_the_model_hears_a_voice_only_once_it_is_spoken_and_never_the_script():
+    # task.json voices are the twin's scripted person: the model gets each line through the
+    # microphone when it is said, never the script, its times or the scoring of the requests
+    from tests.agent.test_agent import check, observations
+    voices = [{"at_s": 6, "text": "Point at the mug."}, {"at_s": 500, "text": "Point at the zebra."}]
+    dec = Sequence([("listen", {"seconds": 30}), ("done", {"summary": "s", "hindsight": ""})])
+    agent = Agent("do as you are asked", dec, menu(False, True, hears=True), max_decisions=3)
+    assert run(agent, check(mode="gantry", hears=True, voices=voices), max_time=60) is True
+    agent.close()
+    sent = agent.context.instructions + "".join(t.observation for t in dec.turns)
+    assert "Point at the mug." not in dec.turns[0].observation and "Point at the mug." in dec.turns[1].observation
+    for secret in ("zebra", "at_s", "voices", "requests", "point_at\"", "within_deg"):
+        assert secret not in sent, secret

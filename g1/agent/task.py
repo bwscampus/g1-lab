@@ -48,12 +48,30 @@ SCHEMA = {
                     "description": "sim only: what counts as done, scored by the twin from its truth (g1/twin/core.py "
                                    "Evaluator); a run of the task with --sim is labelled from it. The model never sees it",
                     "properties": {"point_at": {"type": "string", "minLength": 1},
+                                   "requests": {"type": "array", "minItems": 1, "items": {
+                                       "type": "object", "additionalProperties": False, "required": ["voice", "point_at"],
+                                       "properties": {"voice": {"type": "integer", "minimum": 0},
+                                                      "point_at": {"type": ["string", "null"], "minLength": 1}}},
+                                       "description": "one per spoken request: the voice (its index in voices) and "
+                                                      "the object to point at before the next voice (null: not there)"},
                                    "within_deg": {"type": "number", "exclusiveMinimum": 0},
                                    "for_s": {"type": "number", "minimum": 0},
                                    "feet_drift_max_m": {"type": "number", "minimum": 0},
                                    "feet_yaw_drift_max_deg": {"type": "number", "minimum": 0},
                                    "no_contact": {"type": "array", "items": {"type": "string", "minLength": 1}}},
-                    "dependentRequired": {"point_at": ["within_deg", "for_s"]}},
+                    "dependentRequired": {"point_at": ["within_deg", "for_s"], "requests": ["within_deg", "for_s"]}},
+        "hears": {"type": "boolean", "default": False,
+                  "description": "the run listens: the robot's speech recognition (rt/audio_msg) reaches the model as "
+                                 "heard, and the listen tool is offered. On the robot, voice interaction must be on in "
+                                 "the Unitree app"},
+        "voices": {"type": "array", "default": [], "items": {
+                       "type": "object", "additionalProperties": False, "required": ["at_s", "text"],
+                       "properties": {"at_s": {"type": "number", "minimum": 0},
+                                      "text": {"type": "string", "minLength": 1},
+                                      "language": {"type": "string", "minLength": 1}}},
+                   "description": "sim only: a person speaking to the twin, at_s after the program takes over, heard "
+                                  "as the robot's speech recognition would publish it. The model hears it; it never "
+                                  "sees the script"},
         "notes": {"type": "string", "default": "", "description": "for people; the model never sees it"},
     },
 }
@@ -90,6 +108,14 @@ def load_task(directory: Path | str) -> dict:
     task.update(data)
     if task["objects"] and task["scene"] != "room":
         raise ValueError(f"{path}: objects need \"scene\": \"room\"")
+    if task["voices"] and task["instruction"] is not None and not task["hears"]:
+        raise ValueError(f"{path}: voices need \"hears\": true (the model would not hear them)")
+    if task["instruction"] is None and task["hears"]:
+        raise ValueError(f"{path}: hears needs an instruction (a tools chain does not listen)")
+    for i, r in enumerate((task["success"] or {}).get("requests") or []):
+        if r["voice"] >= len(task["voices"]):
+            raise ValueError(f"{path}: success.requests[{i}]: voice {r['voice']}, but there are "
+                             f"{len(task['voices'])} voices")
     task["dir"] = d
     task["name"] = d.name
     if task["camera_size"]:

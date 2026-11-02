@@ -6,7 +6,7 @@
         "openrouter":  "deepseek/deepseek-v4.1-flash-1017"
     },
     "routing": {},
-    "reasoning_effort": "high",
+    "reasoning_effort": "low",
     "max_tokens": null,
     "temperature": 0.0,
     "agent": {

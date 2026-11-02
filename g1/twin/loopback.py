@@ -65,6 +65,14 @@ class _Crc:
         return 0                  # the twin does not check it
 
 
+class StringMsg:
+    """What a ``std_msgs String_`` subscriber reads: ``data``."""
+    __slots__ = ("data",)
+
+    def __init__(self, data: str) -> None:
+        self.data = data
+
+
 class _Publisher:
     def __init__(self, twin) -> None:
         self.twin = twin
@@ -189,6 +197,7 @@ class LoopbackLink:
         self.camera = camera
         self.camera_every = max(1, int(camera_every))
         self._subscribers: list = []
+        self._listeners: list = []            # rt/audio_msg
         self._commanders: list = []
         self._ticks = 0
         self._wall0 = None
@@ -208,6 +217,10 @@ class LoopbackLink:
 
     def lowstate(self, callback):
         self._subscribers.append(callback)
+        return callback
+
+    def audio_msg(self, callback):
+        self._listeners.append(callback)
         return callback
 
     def arm_sdk(self) -> _Publisher:
@@ -240,6 +253,9 @@ class LoopbackLink:
             msg = LowStateMsg(self.twin.lowstate())
             for fn in self._subscribers:
                 fn(msg)
+        for data in self.twin.audio_out():
+            for fn in self._listeners:
+                fn(StringMsg(data))
         if self.renderer is not None and self._ticks % self.camera_every == 0:
             self.render()
         if self.viewer is not None:

@@ -86,7 +86,7 @@ def test_context_renders_rules_and_offers_the_tools():
     assert [t["function"]["name"] for t in c.tools] == [m.name for m in menu(True)]
     assert "output_schema" not in c.record() and c.record()["tools"] == c.tools
     check = next(t for t in c.tools if t["function"]["name"] == "check")["function"]["parameters"]
-    assert check["properties"]["tool"]["enum"] == ["move", "arm_path", "look", "point", "lower_arm", "hold", "say"]
+    assert check["properties"]["tool"]["enum"] == ["move", "arm_path", "look", "point_to", "point", "lower_arm", "hold", "say"]
     assert "move" not in [t["function"]["name"] for t in ctx(False).tools]
     assert instructions(menu(True), can_walk=True, max_decisions=5) == build_context(menu(True), can_walk=True, max_decisions=5).instructions
 

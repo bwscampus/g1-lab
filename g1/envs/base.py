@@ -54,6 +54,7 @@ def shield_sigint(message: str):
 class Env:
     name: ClassVar[str] = "env"
     use_camera: bool = False
+    microphone = None                  # a g1.microphone.Microphone when the task hears (RobotEnv opens it)
     verbose: bool = False              # G1_VERBOSE=1: print SDK calls and a health line every second
     sdk_log: list                      # every SDK call: {at_s, client, name, args, code, elapsed_s}
 
