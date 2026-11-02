@@ -19,9 +19,16 @@ A task's ``success`` (task.json) is scored here, every control tick, from the
 simulator's truth (``Evaluator``): the robot cannot say whether it pointed at the
 laptop, the twin can. The verdict reaches the records through the Summary call,
 never the model.
+
+A task's ``voices`` (task.json) are a person speaking to it: each line goes out on
+rt/audio_msg ``at_s`` after the program takes over (the first rt/arm_sdk message), in
+the robot's speech-recognition JSON, and its TtsMaker calls report play_state 1 then 0
+over the time the speech would take. ``audio_out()`` is what the transports deliver.
 """
 from __future__ import annotations
 
+import collections
+import json
 import math
 import threading
 import time
@@ -47,7 +54,8 @@ MARGIN_DEG = limits.get("success_margin_deg")      # an angle criterion passes t
 # the right arm's pointing ray: shoulder to wrist (the arm is straight when it points)
 ARM_RAY = ("right_shoulder_pitch_link", "right_wrist_yaw_link")
 FEET = ("left_ankle_roll_link", "right_ankle_roll_link")
-SUCCESS_KEYS = ("point_at", "within_deg", "for_s", "feet_drift_max_m", "feet_yaw_drift_max_deg", "no_contact")
+SUCCESS_KEYS = ("point_at", "requests", "within_deg", "for_s", "feet_drift_max_m", "feet_yaw_drift_max_deg",
+                "no_contact")
 
 
 @dataclass
@@ -68,6 +76,10 @@ class Evaluator:
         point_at                the object the right arm must point at (a body name, or its prefix: laptop)
         within_deg, for_s       ... the arm's ray (shoulder to wrist) within within_deg of the object's
                                 centre, for for_s seconds without a break
+        requests                spoken requests, one per task voice: [{"voice": 0, "point_at": "mug"}, ...].
+                                Each is met when, between that voice and the next one (or the end), the
+                                arm points at its object as point_at does; "point_at": null (the object is
+                                not there) is met when it points at none of the scene's objects that long
         feet_drift_max_m        how far the feet (their midpoint) may move from where they stood: did it
                                 walk or slide. Not the pelvis: it twists over planted feet when an arm
                                 swings out with the waist turned
@@ -81,8 +93,9 @@ class Evaluator:
         unknown = sorted(set(criteria) - set(SUCCESS_KEYS))
         if unknown:
             raise ValueError(f"success: unknown {unknown} (known: {', '.join(SUCCESS_KEYS)})")
-        if "point_at" in criteria and not {"within_deg", "for_s"} <= set(criteria):
-            raise ValueError("success: point_at needs within_deg and for_s")
+        for key in ("point_at", "requests"):
+            if key in criteria and not {"within_deg", "for_s"} <= set(criteria):
+                raise ValueError(f"success: {key} needs within_deg and for_s")
         self.twin = twin
         self.criteria = dict(criteria)
         m, mj = twin.model, twin.mujoco
@@ -90,12 +103,17 @@ class Evaluator:
         self.ray = tuple(body(n) for n in ARM_RAY)
         self.target_geoms: list[int] = []
         if "point_at" in criteria:
-            name = criteria["point_at"]
-            bodies = [b for b in range(m.nbody) if m.body(b).name == name] or \
-                     [b for b in range(m.nbody) if m.body(b).name.startswith(name)]
-            if not bodies:
-                raise ValueError(f"success: point_at {name!r}: no such object in the scene")
-            self.target_geoms = [g for g in range(m.ngeom) if m.geom_bodyid[g] == bodies[0]]
+            self.target_geoms = self._geoms(criteria["point_at"], "point_at")
+        self.requests: list[dict] = []
+        for i, r in enumerate(criteria.get("requests") or []):
+            voice = int(r["voice"])
+            if not 0 <= voice < len(twin.voices):
+                raise ValueError(f"success: requests[{i}]: voice {voice}, but the task has {len(twin.voices)} voices")
+            name = r.get("point_at")
+            self.requests.append({"voice": voice, "point_at": name,
+                                  "geoms": None if name is None else self._geoms(name, f"requests[{i}]")})
+        # what "points at none of the scene's objects" means for a request whose object is not there
+        self.objects = [self._geoms(n, "objects") for n in twin.object_names] if self.requests else []
         self.feet = tuple(body(n) for n in FEET)
         robot_root = body("pelvis")
         self.robot = np.array([m.body_rootid[m.geom_bodyid[g]] == robot_root for g in range(m.ngeom)])
@@ -109,11 +127,22 @@ class Evaluator:
         self.forbidden = np.array([bool(names) and not self.robot[g] and matches(g) for g in range(m.ngeom)])
         self.reset()
 
+    def _geoms(self, name: str, where: str) -> list[int]:
+        """The geoms of the body called ``name`` (or the first whose name starts with it)."""
+        m = self.twin.model
+        bodies = [b for b in range(m.nbody) if m.body(b).name == name] or \
+                 [b for b in range(m.nbody) if m.body(b).name.startswith(name)]
+        if not bodies:
+            raise ValueError(f"success: {where} {name!r}: no such object in the scene")
+        return [g for g in range(m.ngeom) if m.geom_bodyid[g] == bodies[0]]
+
     def reset(self) -> None:
         self.error_min = math.inf
         self.within_s = 0.0           # the current unbroken stretch within within_deg
         self.within_best_s = 0.0
         self.error_at_best = math.nan
+        for r in self.requests:       # per request: its stretch on target (or, for null, on any object)
+            r.update(within_s=0.0, best_s=0.0, error_min=math.inf, any_s=[0.0] * len(self.objects), any_best_s=0.0)
         self.drift_max = 0.0
         self.yaw_drift_max = 0.0
         self.feet0 = self._feet()
@@ -124,14 +153,14 @@ class Evaluator:
         left, right = (self.twin.data.xpos[b][:2].copy() for b in self.feet)
         return (left + right) / 2, math.atan2(left[1] - right[1], left[0] - right[0])
 
-    def target(self) -> np.ndarray:
+    def target(self, geoms: list[int] | None = None) -> np.ndarray:
         d = self.twin.data
-        return d.geom_xpos[self.target_geoms].mean(axis=0)
+        return d.geom_xpos[self.target_geoms if geoms is None else geoms].mean(axis=0)
 
-    def pointing_error_deg(self) -> float:
+    def pointing_error_deg(self, geoms: list[int] | None = None) -> float:
         d = self.twin.data
         shoulder, wrist = (d.xpos[b] for b in self.ray)
-        arm, to = wrist - shoulder, self.target() - shoulder
+        arm, to = wrist - shoulder, self.target(geoms) - shoulder
         c = float(np.dot(arm, to) / (np.linalg.norm(arm) * np.linalg.norm(to) + 1e-12))
         return math.degrees(math.acos(max(-1.0, min(1.0, c))))
 
@@ -143,6 +172,8 @@ class Evaluator:
             self.within_s = self.within_s + dt if err <= c["within_deg"] + MARGIN_DEG else 0.0
             if self.within_s > self.within_best_s:
                 self.within_best_s, self.error_at_best = self.within_s, err
+        if self.requests and self.twin.voiced_at:
+            self._tick_request(len(self.twin.voiced_at) - 1, dt)
         (mid0, yaw0), (mid, yaw) = self.feet0, self._feet()
         self.drift_max = max(self.drift_max, float(np.linalg.norm(mid - mid0)))
         self.yaw_drift_max = max(self.yaw_drift_max, abs(math.degrees(math.remainder(yaw - yaw0, 2 * math.pi))))
@@ -154,6 +185,37 @@ class Evaluator:
                     if self.robot[r] and self.forbidden[o]:
                         self.contacts.setdefault(f"{m.geom(r).name or m.body(m.geom_bodyid[r]).name}/{m.geom(o).name}",
                                                  round(self.twin.time, 3))
+
+    def _tick_request(self, voice: int, dt: float) -> None:
+        """The request of the voice spoken last (its window runs until the next voice)."""
+        tol = self.criteria["within_deg"] + MARGIN_DEG
+        for r in self.requests:
+            if r["voice"] != voice:
+                continue
+            if r["geoms"] is not None:
+                err = self.pointing_error_deg(r["geoms"])
+                r["error_min"] = min(r["error_min"], err)
+                r["within_s"] = r["within_s"] + dt if err <= tol else 0.0
+                r["best_s"] = max(r["best_s"], r["within_s"])
+            for k, geoms in enumerate(self.objects):
+                r["any_s"][k] = r["any_s"][k] + dt if self.pointing_error_deg(geoms) <= tol else 0.0
+                r["any_best_s"] = max(r["any_best_s"], r["any_s"][k])
+
+    def request_results(self) -> list[dict]:
+        """Each request: was it spoken, and was it met."""
+        out = []
+        for r in self.requests:
+            spoken = r["voice"] < len(self.twin.voiced_at)
+            if r["geoms"] is not None:
+                met = spoken and r["best_s"] + 1e-9 >= self.criteria["for_s"]
+                extra = {"pointing_within_s": round(r["best_s"], 3),
+                         "pointing_error_min_deg": round(r["error_min"], 2) if math.isfinite(r["error_min"]) else None}
+            else:
+                met = spoken and r["any_best_s"] + 1e-9 < self.criteria["for_s"]
+                extra = {"pointed_at_an_object_s": round(r["any_best_s"], 3)}
+            out.append({"voice": r["voice"], "text": self.twin.voices[r["voice"]]["text"], "point_at": r["point_at"],
+                        "spoken": spoken, "met": bool(met), **extra})
+        return out
 
     def result(self) -> dict:
         c = self.criteria
@@ -170,6 +232,10 @@ class Evaluator:
                             else round(self.error_at_best, 2))
             if self.within_best_s + 1e-9 < c["for_s"]:
                 failed.append("point_at")
+        if self.requests:
+            measured["requests"] = self.request_results()
+            if not all(r["met"] for r in measured["requests"]):
+                failed.append("requests")
         if "feet_drift_max_m" in c and self.drift_max > c["feet_drift_max_m"]:
             failed.append("feet_drift_max_m")
         if "feet_yaw_drift_max_deg" in c and self.yaw_drift_max > c["feet_yaw_drift_max_deg"] + MARGIN_DEG:
@@ -184,7 +250,7 @@ class Evaluator:
 class Twin:
     def __init__(self, *, scene: str = "none", objects=(), obstacle=None, camera_size=None,
                  fsm: int = FSM_MAIN, band: bool = False, voice: str = "sim", start=None,
-                 success: dict | None = None) -> None:
+                 success: dict | None = None, voices=()) -> None:
         import mujoco
         self.mujoco = mujoco
         self.model = twin_model.load_model(obstacle, scene=scene, objects=objects, camera_size=camera_size)
@@ -193,8 +259,13 @@ class Twin:
         self.band = band
         self.start_pose = tuple(float(v) for v in start) if start else (0.0, 0.0, 0.0)   # x, y, yaw_deg
         self.start_fsm = fsm
+        self.object_names = list(dict.fromkeys(o[0] for o in objects))
+        self.voices = [{"at_s": float(v["at_s"]), "text": str(v["text"]), "language": str(v.get("language", "en"))}
+                       for v in voices]
+        self._audio: collections.deque[str] = collections.deque()   # rt/audio_msg, for the transports
         self.onboard = Onboard(self.model, fsm)
-        self.services = Services(self.onboard, lambda: float(self.data.time), voice, summary=self.report)
+        self.services = Services(self.onboard, lambda: float(self.data.time), voice, summary=self.report,
+                                 on_tts=self._speak)
         self.torso = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "torso_link")
         self._sensor = {n: (self.model.sensor(n).adr[0], self.model.sensor(n).dim[0])
                         for n in ("imu_quat", "imu_gyro", "imu_acc")}
@@ -227,6 +298,10 @@ class Twin:
             self.steps = 0
             self.truth_log: list[list[float]] = []    # [monotonic s, x, y, yaw]: the host's trace lines up on it
             self._truth_at = -math.inf
+            self._voices_t0: float | None = None      # the first rt/arm_sdk: the voices' at_s count from here
+            self.voiced_at: list[float] = []          # when each voice was spoken (sim s)
+            self._speaking_until: float | None = None
+            self._audio.clear()
             self.mark_start()
 
     # -- the SDK's side ---------------------------------------------------------------------------
@@ -236,7 +311,38 @@ class Twin:
 
     def on_arm_sdk(self, cmd: ArmSdkCommand) -> None:
         with self.lock:
+            if self._voices_t0 is None:
+                self._voices_t0 = self.time
             self.onboard.on_arm_sdk(cmd)
+
+    # -- rt/audio_msg: what it hears, and its speaker ---------------------------------------------
+    def audio_out(self) -> list[str]:
+        """The rt/audio_msg messages since the last call (the transports publish them)."""
+        out = []
+        while self._audio:
+            out.append(self._audio.popleft())
+        return out
+
+    def _speak(self, text: str) -> None:
+        """TtsMaker: the speaker plays for as long as the speech would take."""
+        if self._speaking_until is None:
+            self._audio.append(json.dumps({"play_state": 1}))
+        seconds = max(limits.get("say_min_s"), len(text) / limits.get("speech_chars_per_s"))
+        self._speaking_until = max(self._speaking_until or 0.0, self.time) + seconds
+
+    def _tick_audio(self) -> None:
+        if self._speaking_until is not None and self.time >= self._speaking_until:
+            self._speaking_until = None
+            self._audio.append(json.dumps({"play_state": 0}))
+        while self._voices_t0 is not None and len(self.voiced_at) < len(self.voices) \
+                and self.time - self._voices_t0 >= self.voices[len(self.voiced_at)]["at_s"] - 1e-9:
+            v, k = self.voices[len(self.voiced_at)], len(self.voiced_at)
+            self.voiced_at.append(self.time)
+            print(f"{self.services.voice}: a person says {v['text']!r}")
+            self._audio.append(json.dumps({"index": k + 1, "timestamp": int(self.time * 1000), "type": 0,
+                                           "text": v["text"], "angle": 0, "speaker_id": 0,
+                                           "emotion": "<|EMO_UNKNOWN|>", "confidence": 0.5,
+                                           "language": f"<|{v['language']}|>", "is_final": False}))
 
     def lowstate(self) -> LowState:
         d = self.data
@@ -257,6 +363,7 @@ class Twin:
             for _ in range(SUBSTEPS):
                 self._substep()
             self.steps += 1
+            self._tick_audio()
             if self.evaluator is not None:
                 self.evaluator.tick(CONTROL_DT)
             if self.time - self._truth_at >= TRUTH_PERIOD - 1e-9:
@@ -323,6 +430,7 @@ class Twin:
                 "torque_limit_s": {JOINT_NAMES[i]: round(int(n) * twin_model.PHYSICS_DT, 4)
                                    for i, n in enumerate(self.onboard.saturated) if n},
                 "evaluation": None if self.evaluator is None else self.evaluator.result(),
+                "voiced_at": [round(t - (self._voices_t0 or 0.0), 3) for t in self.voiced_at],
                 "truth": self.truth_log, "summary": self.summary()}
 
     def summary(self) -> str:

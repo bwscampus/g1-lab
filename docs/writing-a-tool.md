@@ -29,6 +29,7 @@ class Bow(Tool):
     # visible = True      False keeps it out of the model's menu (tools chains only)
     # needs_base = False  True if it drives the base; hidden where the env cannot walk
     # needs_loco = False  True for an onboard gesture (the twin plays a stand-in)
+    # needs_hearing = False  True if it is about the microphone (listen); offered only when the task hears
     # joints = UPPER_BODY the joints it may command (waist + arms; the legs are never ours)
 
     def segments(self) -> tuple[Segment, ...]:

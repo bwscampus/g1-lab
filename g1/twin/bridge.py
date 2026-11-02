@@ -9,6 +9,8 @@ SDK's examples, ``g1 status``) talks to it as it would to the G1.
                (the CRC is left 0: the SDK's Python CRC is too slow for 500 Hz, and
                nothing on the receiving side checks it)
   rt/arm_sdk   unitree_hg LowCmd_, applied by the onboard controller's blend
+  rt/audio_msg std_msgs String_: what the twin "hears" (a task's scripted voices) and its
+               speaker's play_state, as the robot's speech recognition publishes them
   rt/lowcmd    ignored, with a warning: g1-lab never drives the legs, and the twin's
                legs belong to its walker
 
@@ -34,6 +36,7 @@ class DdsBridge:
                              f"{iface!r}: its LowState must never reach a network the robot is on")
         from unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelPublisher, ChannelSubscriber
         from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowState_
+        from unitree_sdk2py.idl.std_msgs.msg.dds_ import String_
         from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_, LowState_
         from unitree_sdk2py.rpc.server import Server
 
@@ -51,6 +54,9 @@ class DdsBridge:
         self.pub = ChannelPublisher("rt/lowstate", LowState_)
         self.pub.Init()
         self.msg = unitree_hg_msg_dds__LowState_()
+        self._string = String_
+        self.audio_pub = ChannelPublisher("rt/audio_msg", String_)
+        self.audio_pub.Init()
         self.arm_sub = ChannelSubscriber("rt/arm_sdk", LowCmd_)
         self.arm_sub.Init(self._on_arm_sdk, 10)
         self._lowcmd_warned = False
@@ -87,6 +93,8 @@ class DdsBridge:
         m.imu_state.accelerometer = [float(v) for v in s.acc]
         self.pub.Write(m)
         self.published += 1
+        for data in self.twin.audio_out():
+            self.audio_pub.Write(self._string(data=data))
 
     def start(self, hz: float = limits.get("twin_lowstate_hz")) -> None:
         def run():

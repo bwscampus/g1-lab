@@ -6,6 +6,7 @@ in-process on sim time (``g1/twin/loopback.py:LoopbackLink``).
     loco() / audio()          LocoClient / AudioClient
     twin_client()             the twin's own service (Summary), only when talking to a twin
     lowstate(callback)        subscribe rt/lowstate
+    audio_msg(callback)       subscribe rt/audio_msg: the robot's speech recognition (g1/microphone.py)
     arm_sdk() / lowcmd()      the rt/arm_sdk publisher and a LowCmd_ buffer to fill
     crc()                     the LowCmd_ CRC
     now() / sleep(dt)         the clock robot code paces itself on
@@ -77,6 +78,13 @@ class DdsLink:
         from unitree_sdk2py.core.channel import ChannelSubscriber
         from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowState_
         sub = ChannelSubscriber("rt/lowstate", LowState_)
+        sub.Init(callback, 10)
+        return sub
+
+    def audio_msg(self, callback):
+        from unitree_sdk2py.core.channel import ChannelSubscriber
+        from unitree_sdk2py.idl.std_msgs.msg.dds_ import String_
+        sub = ChannelSubscriber("rt/audio_msg", String_)
         sub.Init(callback, 10)
         return sub
 

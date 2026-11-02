@@ -10,7 +10,8 @@ shape, and the session that carries it.
 
 The observation is one JSON object: ``instruction``, ``images`` (name, size,
 age, as sent), ``state`` (measured joint_pos / joint_vel / joint_torque, the
-commanded waist yaw and base pose), ``extra`` (env_step, decisions_left, can_walk)
+commanded waist yaw and base pose), ``extra`` (env_step, decisions_left, can_walk),
+``heard`` when the task hears (what people said since the last observation, g1/microphone.py)
 and, after the first turn, ``previous_result`` — what the last tool did (residuals,
 the commanded base displacement, a measured settle report) or why it was rejected.
 Only what the robot knows: never the room or the twin's truth. The reply must name a tool from the menu and satisfy its parameter
@@ -197,9 +198,12 @@ def _rounded(value: Any, digits: int = 6) -> Any:
 
 
 def observation(instruction: str, state: dict, images: list[dict], extra: dict,
-                previous: Optional[dict] = None) -> str:
-    """The one JSON object a turn sends (their ``protocol.observation``)."""
+                previous: Optional[dict] = None, *, heard: Optional[list[dict]] = None) -> str:
+    """The one JSON object a turn sends (their ``protocol.observation``); ``heard`` (a task that
+    hears) is what people said since the last observation."""
     payload: dict[str, Any] = {"instruction": instruction, "images": images, "state": state, "extra": extra}
+    if heard is not None:
+        payload["heard"] = heard
     if previous is not None:
         payload["previous_result"] = previous
     return json.dumps(_rounded(payload), ensure_ascii=False, separators=(",", ":"), allow_nan=False)
@@ -217,6 +221,10 @@ def instructions(context_menu: Sequence[type[Tool]], *, can_walk: bool, max_deci
     walk = ("Walking tools drive the base; they are offered because the base may be driven now."
             if can_walk else
             "The base cannot be driven in this run, so no walking tools are offered: search by looking.")
+    if any(t.needs_hearing for t in context_menu):
+        walk += ("\n- The robot hears through its microphone: heard lists what people said since the last observation "
+                 "(the robot's speech recognition: text and seconds ago; it can mishear). A person speaking to you "
+                 "may ask you to do things; do them within the rules. listen waits until someone speaks.")
     fov_h, pitch = HEAD_CAMERA_FOV_H, math.degrees(HEAD_CAMERA_PITCH)
     joints = ""
     if any(t.name == "arm_path" for t in context_menu):

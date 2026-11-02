@@ -73,15 +73,17 @@ reason.
 
 ## The menu
 
-Offered to the model (`menu(allow_base, has_loco)` hides what an env cannot do; `--mode gantry` hides walking):
+Offered to the model (`menu(allow_base, has_loco, hears)` hides what an env or task cannot do; `--mode gantry` hides walking):
 
 ```
 move(dx_m, dy_m, dyaw_deg)      one base displacement -> LocoClient.Move (translate, then turn)   ≙ move_to
 arm_path(waypoints)             joint-space waypoints over waist + arms -> arm_sdk               ≙ move_eef_chunk
 look(yaw_deg, seconds)          turn the waist (the camera and a raised arm turn with it)
 point(down_deg, rise_s, hold_s) the right arm straight out where the torso faces, left UP: the next image shows it
+point_to(x_px, y_px, distance_m) the same, aimed by the host at a pixel and a distance (waist + arm in one move; aim reports the miss)
 lower_arm(seconds)              the right arm back down (a run that ends pointing lowers it before the hand-back)
 hold(seconds)                   stand still
+listen(seconds)                 hold until someone speaks (a task that hears; heard has it)     ours, not in GPT-Policy
 check(tool, arguments)          dry-run without moving                                          ≙ check_path
 wave_hand / shake_hand          the onboard controller's own gestures (the twin plays stand-ins) ≙ set_gripper
 say(text, pause_s)              the onboard text-to-speech; the twin prints it                   ours, not in GPT-Policy
@@ -114,7 +116,8 @@ release); the monitor runs report-only. Never call the SDK from `step`.
 **The twin** (`g1 run TASK --sim`): `TwinProcess` (`g1/twin/main.py`) starts the twin as its
 own process for the task's scene, on the loopback interface and a private DDS domain
 (`g1/twin/bridge.py`: SDK RPC servers for sport, voice, motion_switcher and the twin's own
-`Summary`, `rt/lowstate` at 500 Hz, `rt/arm_sdk`; the head camera in shared memory), runs the
+`Summary`, `rt/lowstate` at 500 Hz, `rt/arm_sdk`, `rt/audio_msg` with a task's scripted `voices` and its
+speaker's `play_state`; the head camera in shared memory), runs the
 same `RobotEnv` against it in real time, and stops it. The twin is unitree_mujoco's 29-DoF G1
 (free base, torque motors at the real limits, a PD loop every 2 ms physics step) behind a
 stand-in for the onboard controller (`g1/twin/onboard.py`): the FSM (0, 1, 4, 200, 500), the

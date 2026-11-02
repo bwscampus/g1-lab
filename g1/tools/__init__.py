@@ -96,11 +96,12 @@ discover()
 # The menu and its three renderings
 # --------------------------------------------------------------------------
 
-def menu(allow_base: bool = True, has_loco: bool = False) -> list[type[Tool]]:
+def menu(allow_base: bool = True, has_loco: bool = False, hears: bool = False) -> list[type[Tool]]:
     """The tools a decider may choose from: visible, no walking where the env
-    cannot walk, no onboard gestures without a LocoClient."""
+    cannot walk, no onboard gestures without a LocoClient, no listening unless the task hears."""
     return [t for t in TOOLS.values() if t.visible
-            and (allow_base or not t.needs_base) and (has_loco or not t.needs_loco)]
+            and (allow_base or not t.needs_base) and (has_loco or not t.needs_loco)
+            and (hears or not t.needs_hearing)]
 
 
 def _template(name: str, context: Sequence[type[Tool]]) -> dict:

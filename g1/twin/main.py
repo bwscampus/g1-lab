@@ -46,6 +46,8 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--no-camera", action="store_true", help="do not render the head camera")
     p.add_argument("--success", type=json.loads, default=None, metavar="JSON",
                    help="the task's success criteria, scored on the twin (task.json success)")
+    p.add_argument("--voices", type=json.loads, default=[], metavar="JSON",
+                   help="a person speaking to it: [{at_s, text}], heard on rt/audio_msg (task.json voices)")
     p.add_argument("--seconds", type=float, default=None, help="stop after this long (default: until Ctrl-C)")
     return p
 
@@ -64,7 +66,7 @@ def run(args: argparse.Namespace) -> int:
     fsm = args.fsm if args.fsm is not None else (FSM_DAMP if args.gantry else FSM_MAIN)
     twin = Twin(scene=args.scene, objects=args.sim_objects, obstacle=args.sim_obstacle,
                 camera_size=args.camera_size, fsm=fsm, band=args.gantry, voice="twin", start=args.start,
-                success=args.success)
+                success=args.success, voices=args.voices)
     viewer = None
     if not args.headless:
         if sys.platform == "darwin" and not getattr(mujoco.viewer, "_MJPYTHON", None):
@@ -174,6 +176,8 @@ class TwinProcess:
             self.cmd += ["--camera-size", "x".join(str(v) for v in task["camera_size"])]
         if task.get("success"):
             self.cmd += ["--success", json.dumps(task["success"])]
+        if task.get("voices"):
+            self.cmd += ["--voices", json.dumps(task["voices"])]
         if mode == "gantry":
             self.cmd.append("--gantry")
         if not viewer:
