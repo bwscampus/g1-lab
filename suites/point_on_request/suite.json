@@ -1,0 +1,5 @@
+{
+  "tasks": ["point_at_what_you_hear"],
+  "repeat": 5,
+  "notes": "Spoken requests: a person asks the twin, by voice, for one object on the table after another (and one that is not there), and the twin scores each request (point_at_what_you_hear's success.requests). The report's twin evaluation lists which requests were met."
+}

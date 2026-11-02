@@ -23,7 +23,7 @@ def run_chain(tmp_path, chain, success=SUCCESS, **spec):
     (d / "task.json").write_text(json.dumps({**LAPTOP, "tools": chain, "success": success, **spec}))
     task = load_task(d)
     env = sim_env(scene=task["scene"], sim_objects=[scene.parse_object(o) for o in task["objects"]],
-                  sim_start=task["start"], success=task["success"])
+                  sim_start=task["start"], success=task["success"], voices=task["voices"])
     code, folder = run_once(task, sim=True, mode=None, env=env)
     return code, folder, json.loads((folder / "summary.json").read_text())
 
@@ -102,3 +102,37 @@ def test_a_run_cut_off_by_max_time_is_still_recorded(tmp_path):
     # report() does not run on that early exit; the run's folder and row must still come back
     code, folder, s = run_chain(tmp_path, "hold:5", success={"feet_drift_max_m": 0.05}, max_time_s=1)
     assert code == 1 and folder.exists() and s["end_reason"] == "max_time"
+
+
+# -- spoken requests: one object per voice, scored before the next voice --------------------------
+
+REQUESTS = {"within_deg": 10, "for_s": 1.0}
+TWO_VOICES = [{"at_s": 0.2, "text": "Point at the laptop."}, {"at_s": 14, "text": "Point at the banana."}]
+
+
+def test_each_request_is_scored_in_its_own_window(tmp_path):
+    # the laptop asked first is pointed at; the banana (not there) gets no point: both met
+    code, folder, s = run_chain(tmp_path, "look:-20,point:18,lower_arm,hold:14", voices=TWO_VOICES,
+                                success={"requests": [{"voice": 0, "point_at": "laptop"},
+                                                      {"voice": 1, "point_at": None}], **REQUESTS})
+    e = evaluation(s)
+    assert e["passed"], e
+    r = e["measured"]["requests"]
+    assert [x["met"] for x in r] == [True, True] and r[0]["pointing_within_s"] >= 1.0
+    assert r[1]["pointed_at_an_object_s"] < 1.0 and s["health"]["twin"]["evaluation"]["passed"]
+
+
+def test_pointing_at_something_that_is_not_there_fails_its_request(tmp_path):
+    # asked for the banana first, it points at the laptop: that request is not met
+    code, folder, s = run_chain(tmp_path, "look:-20,point:18,hold:3",
+                                voices=[{"at_s": 0.2, "text": "Point at the banana."}],
+                                success={"requests": [{"voice": 0, "point_at": None}], **REQUESTS})
+    e = evaluation(s)
+    assert e["failed"] == ["requests"] and e["measured"]["requests"][0]["pointed_at_an_object_s"] >= 1.0, e
+
+
+def test_a_request_never_spoken_is_not_met(tmp_path):
+    code, folder, s = run_chain(tmp_path, "look:-20,point:18", voices=[{"at_s": 600, "text": "Point at the laptop."}],
+                                success={"requests": [{"voice": 0, "point_at": "laptop"}], **REQUESTS})
+    r = evaluation(s)["measured"]["requests"][0]
+    assert r["spoken"] is False and r["met"] is False

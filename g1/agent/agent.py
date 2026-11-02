@@ -39,6 +39,7 @@ from g1.core import limits
 from g1.core.action import EPS, Action, Obs, Runnable
 from g1.core.images import sent_size
 from g1.core.config import CONTROL_DT, LOCO_FSM, UPPER_BODY, joint_index
+from g1.microphone import heard_view
 from g1.tools import Tool, menu, prefixed
 from g1.tools.arms import R_ARM, raises_arm
 
@@ -94,6 +95,7 @@ class Agent(Runnable):
         self.name = name
         self.retry_delays = tuple(retry_delays)
         self.recovery_timeout = recovery_timeout
+        self.hears = any(t.needs_hearing for t in tools)   # the task listens: heard in every observation
         self.context: AgentContext = build_context(list(tools), can_walk=can_walk, max_decisions=max_decisions,
                                                    safety_notes=self.safety_notes)
         self.result: Optional[str] = None         # runtime status: completed | give_up | budget_exhausted | failed
@@ -134,6 +136,7 @@ class Agent(Runnable):
         self._wait_until = 0.0
         self._seated = False                      # a sit finished: nothing may walk or call onboard again
         self._arm_up = False                      # the right arm is left pointing (point; lower_arm ends it)
+        self._heard_seq = 0                       # the microphone's utterances already sent to the model
         self.decider.start(self.context)
         self._enter_sub("takeover", 0.0, Takeover())
 
@@ -207,6 +210,14 @@ class Agent(Runnable):
         """The env whose SDK calls the record should carry (set by the runner)."""
         self._env = env
         self._sdk_seen = 0
+
+    def _microphone(self):
+        return getattr(getattr(self, "_env", None), "microphone", None)
+
+    def _heard_new(self) -> bool:
+        """Something was heard that the model has not been sent yet."""
+        mic = self._microphone()
+        return mic is not None and mic.seq > self._heard_seq
 
     def _record_sdk(self) -> None:
         """New SDK calls go to the step they happened in (its action and settle); before the
@@ -312,7 +323,8 @@ class Agent(Runnable):
         """Build the turn from this snapshot and ask the decider."""
         t0 = time.perf_counter()
         images_meta, images, w, h = [], {}, 0, 0
-        self._view = {"frame_size": None, "q": obs.q.copy(), "imu_quat": obs.imu_quat}   # as measured now
+        self._view = {"frame_size": None, "q": obs.q.copy(), "imu_quat": obs.imu_quat,   # as measured now
+                      "cmd": self._cmd.copy()}                                       # and as commanded
         if frame is not None:
             # the size the model sees: pixels it names (locate_point) are in this image
             w, h = sent_size(frame.image.shape[1], frame.image.shape[0], getattr(self.decider, "max_width", IMAGE_WIDTH))
@@ -324,7 +336,13 @@ class Agent(Runnable):
                  "can_walk": self.can_walk}
         if self._attempt:
             extra["attempt"] = self._attempt
-        text = observation(self.instruction, self._state_payload(obs), images_meta, extra, self._previous)
+        heard = None
+        if self.hears:
+            mic = self._microphone()
+            heard = [] if mic is None else heard_view(mic.since(self._heard_seq), mic.clock())
+            if mic is not None:
+                self._heard_seq = mic.seq
+        text = observation(self.instruction, self._state_payload(obs), images_meta, extra, self._previous, heard=heard)
         self._request_id += 1
         self._turn = AgentTurn(text, images, request_id=self._request_id, step=self._env_step,
                                frame_seq=None if frame is None else frame.seq,
@@ -366,6 +384,10 @@ class Agent(Runnable):
                                   "remaining_delta": [a - b for a, b in zip(target, meas)]},
               "settle": settle}
         result = {"status": "completed", "duration_s": p["duration"], "execution_feedback": fb}
+        if "heard" in p:                         # listen: why it ended
+            result["ended"] = "speech heard (see heard)" if p["heard"] else f"nothing heard in {p['duration']:.0f} s"
+        if hasattr(self._tool, "aim_report") and self._tool.name == p["name"]:
+            result["aim"] = self._tool.aim_report(obs.q, obs.imu_quat)    # point_to: the measured miss
         self._finish(self._t, result)
         # their compact model view: no motion_progress, no settle bookkeeping once settled, and only what
         # the robot can measure: the base as commanded, never the simulator's truth
@@ -472,7 +494,8 @@ class Agent(Runnable):
             return self._hold()
 
         if st == "act":
-            a = self._sub.step(t - self._t0, obs)
+            heard = self._tool.needs_hearing and self._heard_new()      # listen ends when someone speaks
+            a = None if heard else self._sub.step(t - self._t0, obs)
             if a is not None:
                 return self._emit(a)
             self._seated = self._seated or self._tool.command in LOCO_FSM
@@ -482,7 +505,8 @@ class Agent(Runnable):
             self._write()
             self._decision_used(self._tool.name)
             self._pending = {"name": self._tool.name, "env_step": self._env_step, "duration": t - self._act_t0,
-                             "base_cmd_start": self._act_base_cmd, "base_env_start": self._act_base_env}
+                             "base_cmd_start": self._act_base_cmd, "base_env_start": self._act_base_env,
+                             **({"heard": heard} if self._tool.needs_hearing else {})}
             return self._spent(t, obs)
 
         raise RuntimeError(f"unknown state {st!r}")
@@ -536,6 +560,8 @@ class Agent(Runnable):
         self._say(f"decision {self._env_step}: {d.name}({args}) — {d.note}")
         try:
             tool = self.tools[d.name](**d.arguments)
+            if hasattr(tool, "bind"):            # aimed from this turn's image (point_to)
+                tool.bind(self._view)
         except (KeyError, ValueError) as e:
             return self._reject(t, obs, d.name, f"tool_rejected: {e}", raw=d.raw, arguments=d.arguments)
         if tool.kind == "terminal":
@@ -635,7 +661,7 @@ def build_agent(task: dict, *, env_name: str, can_walk: bool, has_loco: bool, ru
     is the run's setup (``task.run_config``), completed here with the model, tools and prompt.
     It asks nothing at the end: ``g1 run`` asks, on the robot only (save it? then the verdict)."""
     decider = VLMDecider.from_env()
-    tools = menu(can_walk, has_loco)
+    tools = menu(can_walk, has_loco, hears=bool(task.get("hears")))
     notes = list(task["safety_notes"])          # rules only: the room's layout is never told
     agent = Agent(task["instruction"], decider, tools, max_decisions=task["max_decisions"],
                   step_timeout=AGENT_SETTINGS["step_timeout_s"], can_walk=can_walk, has_loco=has_loco,

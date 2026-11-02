@@ -152,7 +152,8 @@ class Tool(Runnable):
     visible: bool = True                # in the model's menu; False: tools chains only
     needs_base: bool = False            # hidden where the env cannot walk
     needs_loco: bool = False            # hidden where the env has no onboard LocoClient
-    order: int = 50                     # menu position (lower first; terminal tools go last)
+    needs_hearing: bool = False         # hidden unless the task hears (task.json hears)
+    order: int = 50                    # menu position (lower first; terminal tools go last)
     # -- what the robot runs -----------------------------------------------------------
     joints: list[int] = UPPER_BODY
     command: Optional[str] = None       # the onboard method a tool calls, once (config.LOCO_METHODS | AUDIO_METHODS)

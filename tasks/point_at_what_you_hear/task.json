@@ -1,0 +1,22 @@
+{
+  "instruction": "Listen for requests. When someone asks you to point at something, find it by turning your waist, point at it with your right arm, then lower your arm and listen for the next request. If you cannot find it or did not understand, say so and keep listening. When you are told to stop (for example \"stop\" or \"that's all\"), lower your arm if it is raised and finish with done.",
+  "scene": "room",
+  "objects": ["mustard@2.0,-1.17,0.77", "mug@1.75,-1.36,0.77", "cracker_box@1.7,-1.55,0.77"],
+  "start": [1.2, -0.95, 0],
+  "hears": true,
+  "safety_notes": ["Do not walk in this task: search with the waist and point with the right arm only."],
+  "max_decisions": 120,
+  "max_time_s": 750,
+  "voices": [
+    {"at_s": 5, "text": "Point at the mug."},
+    {"at_s": 155, "text": "Now point at the mustard bottle."},
+    {"at_s": 305, "text": "Point at the banana."},
+    {"at_s": 455, "text": "Point at the cracker box."},
+    {"at_s": 605, "text": "Stop, that's all."}
+  ],
+  "success": {"requests": [{"voice": 0, "point_at": "mug"}, {"voice": 1, "point_at": "mustard"},
+                           {"voice": 2, "point_at": null}, {"voice": 3, "point_at": "cracker_box"}],
+              "within_deg": 10, "for_s": 1.0, "feet_drift_max_m": 0.05, "feet_yaw_drift_max_deg": 10,
+              "no_contact": ["table_top", "table_leg", "mug", "mustard", "cracker_box"]},
+  "notes": "Point on request: a session. The twin starts beside the table (as in point_at_the_laptop) with three objects on it, all within 0.85 m, so the camera sees their whole height (from farther, things on the table are above the top of the image), and 16 to 32 degrees apart seen from the right shoulder, so a point at one never counts for another (10 + 1 degrees): a mustard bottle 16 degrees right of the start's heading, a mug 37 degrees right and a cracker box 50 degrees right. The first image shows the mustard and the mug; a 25 degree waist turn shows all three. The model is told none of this. A person asks, by voice (the twin publishes each line on rt/audio_msg exactly as the robot's speech recognition does), for one object every 150 s: the mug, the mustard, a banana that is not there (it should say so and keep listening), the cracker box, then stop (it should lower its arm and end with done). The twin scores each request (the arm on that object for 1 s before the next voice; for the banana, on no object for 1 s). The budget is a guess: point_at_the_laptop's largest run (20 decisions) x 1.5 for each of 4 requests, and 150 s each; adjust once runs are measured. Twin: g1 run point_at_what_you_hear --sim (--mode gantry too). Robot: objects on a table about 0.8 m away to its right, voice interaction on in the Unitree app, g1 run point_at_what_you_hear --mode gantry --view, then say 'point at the mug', 'now the laptop', ..., 'stop'."
+}

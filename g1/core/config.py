@@ -96,6 +96,21 @@ HEAD_CAMERA_FOVY = 58.0                           # degrees, vertical
 # A pointing arm's line starts here, 12 cm right of and 19 cm below the camera.
 R_SHOULDER_POS = (0.0039563, -0.10021, 0.23778)   # m, in torso_link
 R_SHOULDER_FROM_CAMERA = tuple(s - c for s, c in zip(R_SHOULDER_POS, HEAD_CAMERA_POS))   # x fwd, y left, z up
+# The kinematic chains g1/core/aim.py needs, from the URDF (unitree_mujoco's g1_29dof): per link,
+# its origin in the parent (m), its orientation in the parent (w, x, y, z) and its joint's axis.
+# The waist: pelvis -> waist_yaw -> waist_roll -> torso_link. The right arm: torso_link ->
+# shoulder_pitch -> ... -> wrist_yaw; the shoulder pitch frame is rolled 16 degrees, so a straight
+# arm drifts sideways as it tips down (3 deg left level, 9 deg right at 40 deg down).
+WAIST_CHAIN = (((0.0, 0.0, 0.0), (1.0, 0.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
+               ((-0.0039635, 0.0, 0.035), (1.0, 0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
+               ((0.0, 0.0, 0.019), (1.0, 0.0, 0.0, 0.0), (0.0, 1.0, 0.0)))
+R_ARM_CHAIN = ((R_SHOULDER_POS, (0.9902641, -0.139201, 1.39e-05, 9.87e-05), (0.0, 1.0, 0.0)),
+               ((0.0, -0.038, -0.013831), (0.9902682, 0.139172, 0.0, 0.0), (1.0, 0.0, 0.0)),
+               ((0.0, -0.00624, -0.1032), (1.0, 0.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
+               ((0.015783, 0.0, -0.080518), (1.0, 0.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+               ((0.1, -0.0018879, -0.01), (1.0, 0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
+               ((0.038, 0.0, 0.0), (1.0, 0.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+               ((0.046, 0.0, 0.0), (1.0, 0.0, 0.0, 0.0), (0.0, 0.0, 1.0)))
 HEAD_CAMERA_SIZE = (int(limits.get("twin_camera_height_px")), int(limits.get("twin_camera_width_px")))   # sim render H, W
 # horizontal field of view of the sim render, from the vertical one and the aspect
 HEAD_CAMERA_FOV_H = 2 * math.degrees(math.atan(math.tan(math.radians(HEAD_CAMERA_FOVY / 2))

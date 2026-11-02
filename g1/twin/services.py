@@ -4,7 +4,8 @@ loopback and the DDS servers of ``g1 twin``.
 
   sport            7001 GetFsmId, 7101 SetFsmId, 7105 SetVelocity (Move / StopMove),
                    7106 SetArmTask (WaveHand / ShakeHand)
-  voice            1001 TtsMaker (printed and logged), 1005 GetVolume, 1006 SetVolume,
+  voice            1001 TtsMaker (printed and logged; the twin's speaker "plays" it, so
+                   rt/audio_msg reports play_state 1 then 0), 1005 GetVolume, 1006 SetVolume,
                    1010 LED (logged)
   motion_switcher  1001 CheckMode ("ai"), 1003 ReleaseMode
   twin             9001 Summary: the twin's own verdict, which no robot can give (did it
@@ -31,9 +32,10 @@ TWIN_SUMMARY = 9001
 
 
 class Services:
-    def __init__(self, onboard, clock, voice: str = "sim", summary=None) -> None:
+    def __init__(self, onboard, clock, voice: str = "sim", summary=None, on_tts=None) -> None:
         self.onboard = onboard
         self.summary = summary                 # () -> dict, the twin's own report
+        self.on_tts = on_tts                   # (text) -> None: the twin's speaker starts playing
         self.clock = clock                     # sim seconds
         self.voice = voice                     # the prefix spoken text is printed with
         self.volume = int(limits.get("twin_volume"))
@@ -76,6 +78,8 @@ class Services:
             text = str(p["text"])
             self.spoken.append(text)
             print(f"{self.voice}: says {text!r}")    # no speaker here: the text is the record
+            if self.on_tts is not None:
+                self.on_tts(text)
             return 0, ""
         if api == 1005:
             return 0, json.dumps({"volume": self.volume})

@@ -347,6 +347,14 @@ class RobotEnv(Env):
         except Exception as e:                  # a robot without the voice service still runs
             print(f"warning: audio service unavailable ({e}); say will be skipped")
             self.audio = None
+        self.microphone = None
+        if getattr(self.args, "hears", False):  # the task listens: the robot's speech recognition
+            from g1.microphone import TOPIC, subscribe
+            self.microphone = subscribe(link, self.clock)
+            if self.microphone is not None:
+                print(f"microphone: listening on {TOPIC} (the robot's speech recognition"
+                      + ("" if getattr(self.args, "sim", False) else "; voice interaction must be on in the Unitree app")
+                      + ")")
 
         if self.args.mode == "gantry":
             self._require(self._call(self.loco, "Damp")[0], "Damp")
@@ -424,6 +432,10 @@ class RobotEnv(Env):
                 camera = getattr(self, "camera", None)
                 if camera is not None:
                     camera.stop()
+                mic = getattr(self, "microphone", None)
+                close = getattr(getattr(mic, "subscription", None), "Close", None)
+                if close is not None:
+                    close()
                 trace = getattr(self, "trace", None)
                 if trace is not None:
                     trace.save()
@@ -658,6 +670,11 @@ class RobotEnv(Env):
             print(base.summary())
         if getattr(self, "audio_calls", 0):
             print(f"audio: {self.audio_calls} call(s)")
+        mic = getattr(self, "microphone", None)
+        if mic is not None:
+            c = mic.counts
+            print(f"microphone: {c['heard']} utterance(s) heard; dropped {c['other_language']} in another language, "
+                  f"{c['while_speaking']} while the robot spoke")
         failed = [e for e in self.sdk_log if e["code"] != 0]
         health["sdk_failed_codes"] = sorted({e["code"] for e in failed})
         overruns, ticks = getattr(self, "overruns", 0), getattr(self, "ticks", 0)

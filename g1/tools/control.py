@@ -31,6 +31,22 @@ class Hold(Tool):
         return (Segment({}, self.seconds, label=f"hold {self.seconds:.1f} s"),)
 
 
+class Listen(Tool):
+    """``hold`` that the Agent ends early when the microphone hears someone (it checks the
+    utterance log between ticks, as it checks the settle; the tool itself reads nothing)."""
+    name = "listen"
+    order = 31
+    needs_hearing = True
+    prompt = ("Keep the current pose and wait for someone to speak, up to seconds (at most {limit:listen_seconds_max}, "
+              "default {limit:listen_seconds_default}). It ends as soon as something is heard; the next "
+              "observation's heard has it. Use it to wait for a request instead of hold. It moves nothing.")
+    params = {"seconds": num(limit("listen_seconds_min"), limit("listen_seconds_max"), limit("listen_seconds_default"),
+                             "the longest to wait for speech")}
+
+    def segments(self) -> tuple[Segment, ...]:
+        return (Segment({}, self.seconds, label=f"listen up to {self.seconds:.1f} s"),)
+
+
 def dry_run(tool: Tool, cmd: np.ndarray, joints: Sequence[int]) -> dict:
     """Plan a tool from the commanded pose through a JointMonitor without
     physics — joint limits, command speed, base limits, duration and the base
