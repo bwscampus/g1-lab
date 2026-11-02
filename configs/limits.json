@@ -84,6 +84,7 @@
     "say_min_s":                  {"value": 1.0,   "unit": "s",     "source": "guess",      "note": "shortest wait for a say, so a one-word text still lets the TTS start"},
     "say_pause_max_s":            {"value": 10.0,  "unit": "s",     "source": "guess",      "note": "longest extra pause the model may ask for after speaking"},
     "tts_speaker_id":             {"value": 0,     "unit": "id",    "source": "guess",      "note": "the SDK's TTS voice (TtsMaker speaker_id); note which voices exist once heard"},
+    "sound_max_s":                {"value": 60.0,  "unit": "s",     "source": "guess",      "note": "longest sound file a task may give the speaker; a longer one is refused when the task loads"},
 
     "bookend_ramp_s":             {"value": 2.0,   "unit": "s",     "source": "repo",       "note": "takeover and handback: the arm_sdk weight ramp, holding the pose the arms are in"},
     "bookend_ramp_max_s":         {"value": 10.0,   "unit": "s",      "source": "repo",       "note": "takeover and handback: longest weight ramp a chain may ask for"},

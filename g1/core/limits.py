@@ -34,7 +34,7 @@ NAMES = (
     "point_down_deg_max", "point_down_deg_default", "point_sag_deg", "point_rise_s_min", "point_rise_s_max", "point_rise_s_default", "point_hold_s_min", "point_hold_s_max", "point_hold_s_default",
     "arm_path_max_waypoints", "arm_path_seconds_min", "arm_path_seconds_max", "arm_path_seconds_default", "tpose_hold_s_min", "tpose_hold_s_default", "tpose_rise_s_min", "tpose_rise_s_max", "tpose_rise_s_default", "sixseven_reps_max", "sixseven_reps_default", "sixseven_swing_s_min", "sixseven_swing_s_max", "sixseven_swing_s_default", "sixseven_settle_s_min", "sixseven_settle_s_max", "sixseven_settle_s_default", "sixseven_hold_s_min", "sixseven_hold_s_max", "sixseven_hold_s_default", "sixseven_lower_s",
     "hold_seconds_max", "hold_seconds_min", "hold_seconds_default", "wave_hand_seconds", "shake_hand_seconds", "gesture_seconds_max", "gesture_seconds_min", "gesture_ramp_s", "sit_seconds", "sit_seconds_min", "sit_seconds_max", "sit_line_up_m", "sit_back_m",
-    "say_max_chars", "speech_chars_per_s", "say_min_s", "say_pause_max_s", "tts_speaker_id",
+    "say_max_chars", "speech_chars_per_s", "say_min_s", "say_pause_max_s", "tts_speaker_id", "sound_max_s",
     "bookend_ramp_s", "bookend_ramp_max_s", "return_to_stand_s", "return_ramp_s", "return_released_s", "rpc_timeout_s", "lowstate_timeout_s", "lowstate_settle_s", "lowstate_poll_s", "release_s", "base_send_period_s", "fsm_enter_timeout_s", "fsm_poll_s", "gantry_damp_s", "gantry_lock_stand_s", "restore_fsm_s", "sit_stand_timeout_s", "status_probe_s", "health_period_s",
     "twin_physics_dt_s", "twin_fsm_delay_s", "twin_lock_stand_s", "twin_mask_arms_out_rad", "twin_sit_s", "twin_seated_fall_z_m", "twin_sit_kp", "twin_sit_kd", "twin_damp_kd", "twin_fall_z_m",
     "twin_fall_tilt_deg", "twin_band_kp", "twin_band_kd", "twin_waist_kp", "twin_waist_kd", "twin_waist_hold_s", "twin_arm_kp",
@@ -107,7 +107,7 @@ def _check_consistency(limits: dict, p: Path) -> None:
         if v[low] > v[high]:
             raise ValueError(f"limits file {p}: {low} ({v[low]}) must not exceed {high} ({v[high]})")
     for name in ("control_dt_s", "walk_speed", "side_speed", "turn_rate",
-                 "settle_samples", "say_max_chars", "speech_chars_per_s",
+                 "settle_samples", "say_max_chars", "speech_chars_per_s", "sound_max_s",
                  "twin_physics_dt_s", "twin_lowstate_hz", "twin_camera_fps"):
         if v[name] <= 0:
             raise ValueError(f"limits file {p}: {name} must be positive")

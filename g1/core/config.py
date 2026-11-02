@@ -111,6 +111,10 @@ FSM_SIT, FSM_SIT_TO_STAND = 3, 801
 # The only call a tool may make on the audio service ("voice"): text-to-speech. PlayStream
 # (arbitrary bytes), SetVolume and LedControl are not reachable from a reply; volume is a flag.
 AUDIO_METHODS = frozenset({"TtsMaker"})
+# What AudioClient.PlayStream plays: raw 16 kHz mono 16-bit little-endian PCM, no header and no
+# rate field (measured 2026-10-30; docs/running-on-the-robot.md). g1/core/sounds.py converts to it.
+SPEAKER_RATE_HZ = 16000
+SPEAKER_SAMPLE_BYTES = 2
 
 # Base velocity limits for Action.base: |vx| m/s forward, |vy| m/s left, |vyaw| rad/s.
 # Values and their provenance: configs/limits.json.
