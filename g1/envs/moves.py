@@ -4,6 +4,7 @@
     g1 moves check MOVE ...     read-only: is each installed, how long it takes, what it needs
     g1 moves fsm TARGET         switch the FSM along its allowed order (damp, stand, main, walk, sit, up)
     g1 moves play MOVE ...      play stored moves one after another (asks first)
+    g1 moves walk|side|turn N   walk N m (negative: back), sidestep N m (positive: left), turn N deg (positive: left)
 
 A MOVE is a mimic motion by id or name (``516``, ``bow``; FSM ``550<id>``, whole body),
 ``arm:<id or name>`` (the arm service's preset actions: ``arm:20``, ``arm:high_five``) or
@@ -19,6 +20,7 @@ and that stop runs to completion.
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import time
 from collections import deque
@@ -47,6 +49,7 @@ FSM_WARN = {1: "damp: every joint goes limp; a standing robot falls. Only with i
 # Moves play only from standing under the onboard controller. A stored move runs in 550 and
 # ends in 802 (our G1, 2026-11-03: 501 -> 550 -> 802), from which the next one plays.
 PLAY_FSMS = frozenset({200, 500, 501, 801, 802})
+WALK_FSMS = frozenset({200, 500, 501})          # walk in these; from 802 (after a stored move) it is untested, so switch first
 
 # English for the stored motions' pinyin names (the robot lists them as below).
 GLOSS = {"lie_down": "lie down", "yingbin": "welcome the guests (long)", "chayao": "hands on hips", "feiwen": "flying kiss",
@@ -295,6 +298,44 @@ class Moves:
             code, _ = self._call(self.arm, "StopCustomAction")
             print(f"stop: StopCustomAction -> {sdk.explain(code)}")
 
+    # -- walking -----------------------------------------------------------------------------------
+    def walk(self, forward_m: float = 0.0, side_m: float = 0.0, turn_deg: float = 0.0) -> int:
+        """Turn, then walk forward (negative: back), then sidestep (positive: left), at the repo's
+        speeds (walk_speed, side_speed, turn_rate), each within the base's hard ceilings. The
+        velocity (SetVelocity with a 1 s duration: the robot's own dead-man) is re-sent every
+        base_send_period_s and zeroed at the end, so the robot stops by itself within 1 s if this
+        process dies. From after a stored move (802) it switches to walk mode (501) first.
+        Ctrl-C stops it at once. 0, or 130 when stopped."""
+        legs = [((0.0, 0.0, 1.0), math.radians(turn_deg), min(limits.get("turn_rate"), limits.get("base_vyaw_max"))),
+                ((1.0, 0.0, 0.0), forward_m, min(limits.get("walk_speed"), limits.get("base_vx_max"))),
+                ((0.0, 1.0, 0.0), side_m, min(limits.get("side_speed"), limits.get("base_vy_max")))]
+        legs = [(axis, amount, speed) for axis, amount, speed in legs if abs(amount) > 1e-6]
+        if not legs:
+            return 0
+        fsm = self.fsm()
+        if fsm not in WALK_FSMS:
+            print(f"walking needs walk mode; the robot is in FSM {sdk.fsm_name(fsm)}")
+            self.switch(FSM_TARGETS["walk"])
+        try:
+            for axis, amount, speed in legs:
+                vel = [a * speed * (1 if amount > 0 else -1) for a in axis]
+                seconds = abs(amount) / speed
+                what = (f"turn {math.degrees(amount):+.0f} deg" if axis[2] else
+                        f"{'forward' if axis[0] else 'sideways'} {amount:+.2f} m")
+                print(f"walk: {what} ({seconds:.1f} s)")
+                t0 = self.now()
+                while self.now() - t0 < seconds:
+                    self._require(self._call(self.loco, "SetVelocity", *vel, 1.0)[0], "SetVelocity")
+                    self.sleep(min(limits.get("base_send_period_s"), max(0.0, seconds - (self.now() - t0))))
+                self._call(self.loco, "SetVelocity", 0.0, 0.0, 0.0, 1.0)
+                self.sleep(limits.get("moves_settle_s"))
+        except KeyboardInterrupt:
+            with shield_sigint("stopping; this finishes on its own"):
+                code, _ = self._call(self.loco, "SetVelocity", 0.0, 0.0, 0.0, 1.0)
+                print(f"stop: SetVelocity(0) -> {sdk.explain(code)}")
+            return 130
+        return 0
+
 
 def _order() -> str:
     return "; ".join(f"{a} -> {'/'.join(map(str, b))}" for a, b in FSM_NEXT.items())
@@ -330,8 +371,9 @@ def connect(iface: str, verbose: bool = False, link=None) -> tuple[Moves, Any]:
 
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(prog="g1 moves", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("action", nargs="?", default="list", choices=("list", "check", "fsm", "play"))
-    p.add_argument("args", nargs="*", help="check/play: MOVEs; fsm: one of " + ", ".join(FSM_TARGETS))
+    p.add_argument("action", nargs="?", default="list", choices=("list", "check", "fsm", "play", "walk", "side", "turn"))
+    p.add_argument("args", nargs="*", help="check/play: MOVEs; fsm: one of " + ", ".join(FSM_TARGETS)
+                   + "; walk: metres (negative: back); side: metres (positive: left); turn: degrees (positive: left)")
     a = p.parse_args(argv)
     iface = os.environ.get("UNITREE_IFACE")
     if not iface:
@@ -340,6 +382,13 @@ def main(argv: list[str]) -> int:
         p.error("g1 moves is the robot's stored moves; the twin has none (UNITREE_IFACE is loopback)")
     if a.action in ("check", "play") and not a.args:
         p.error(f"{a.action}: name at least one MOVE (g1 moves list shows them)")
+    if a.action in ("walk", "side", "turn"):
+        try:
+            amount = float(a.args[0]) if len(a.args) == 1 else None
+        except ValueError:
+            amount = None
+        if amount is None:
+            p.error(f"{a.action}: one number (walk 0.5, side -0.3, turn 90)")
     if a.action == "fsm" and (len(a.args) != 1 or a.args[0] not in FSM_TARGETS):
         p.error("fsm: one of " + ", ".join(f"{k} ({v})" for k, v in FSM_TARGETS.items()))
     try:
@@ -349,6 +398,10 @@ def main(argv: list[str]) -> int:
     if a.action == "fsm":
         moves.switch(FSM_TARGETS[a.args[0]])
         return 0
+    if a.action in ("walk", "side", "turn"):
+        if not moves.confirm(f"{a.action} {amount:g}{' deg' if a.action == 'turn' else ' m'}: clear path, spotter and remote ready?"):
+            raise SystemExit("not walked")
+        return moves.walk(**{{"walk": "forward_m", "side": "side_m", "turn": "turn_deg"}[a.action]: amount})
     fsm = moves.fsm()
     inv = moves.inventory()
     if a.action == "list":

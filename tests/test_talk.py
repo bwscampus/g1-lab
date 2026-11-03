@@ -62,7 +62,7 @@ def test_only_gestures_and_dances_are_offered():
     assert t.menu[604]["name"] == "mechanical dance" and t.menu[553]["name"] == "greet with both hands"
     move = next(x for x in tools(t.menu) if x["function"]["name"] == "move")["function"]
     assert move["parameters"]["properties"]["move_id"]["enum"] == [516, 553, 604]
-    assert {x["function"]["name"] for x in t.tools} == {"say", "move", "ignore"}
+    assert {x["function"]["name"] for x in t.tools} == {"say", "move", "walk", "ignore"}
 
 
 def test_listen_joins_what_is_said_until_a_pause():
@@ -89,7 +89,7 @@ def test_say_move_ignore_and_a_model_error():
     assert t.moves.loco.calls == [550604]
     assert t.audio.said == ["I am about one point three metres tall.", "Here is my robot dance!",
                             "Sorry, I could not think of an answer just now."]
-    assert t.counts == {"heard": 0, "said": 3, "moves": 1, "ignored": 2, "errors": 1}
+    assert t.counts == {"heard": 0, "said": 3, "moves": 1, "walks": 0, "ignored": 2, "errors": 1}
     last = t.model.asked[-1]
     assert last[0]["role"] == "system" and last[-1] == {"role": "user", "content": "what is your name"}
     assert {"role": "assistant", "content": "[played move 604: mechanical dance]"} in last   # it remembers
@@ -108,3 +108,16 @@ def test_talk_never_reaches_tasks_tools_or_the_arms():
     calls = {n.args[1].value for n in ast.walk(tree) if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "call"
              and len(n.args) > 1 and isinstance(n.args[1], ast.Constant)}
     assert calls == {"TtsMaker"}, calls
+
+
+def test_walk_is_capped_and_said_first():
+    t, _, _ = make(("walk", {"turn_deg": 0, "forward_m": 5.0, "side_m": 0, "say": "Stepping forward!"}),
+                   ("walk", {"turn_deg": 0, "forward_m": 0, "side_m": 0}))
+    t.answer("come forward")
+    vel = [c for c in t.moves.loco.calls if isinstance(c, tuple) and c[1] > 0]
+    speed, poll = talk.limits.get("walk_speed"), talk.limits.get("base_send_period_s")
+    assert len(vel) <= talk.limits.get("talk_walk_max_m") / speed / poll + 2             # 5 m asked, the cap walked
+    assert t.audio.said == ["Stepping forward!"] and t.counts["walks"] == 1
+    t.answer("walk")                                                                     # nothing to walk: ignored
+    assert t.counts["walks"] == 1 and t.counts["ignored"] == 1
+    assert "1 m" in talk.system_prompt() and "180 degrees" in talk.system_prompt()

@@ -6,9 +6,10 @@ or plays one of Unitree's stored moves when asked for one. Nothing else.
 Each turn: what was said (the robot's own speech recognition on ``rt/audio_msg``, through
 ``g1/microphone.py``) goes to the model (``configs/model.json``), which answers with exactly
 one call: ``say`` (spoken with the robot's text-to-speech, ``TtsMaker``), ``move`` (a stored
-move from the allow-list below, played by ``g1 moves``'s player) or ``ignore`` (chatter not
-meant for it). It never runs a task, never takes the arms (no arm_sdk), never walks and never
-switches the FSM after the start: its only effects are speech and the allow-listed moves.
+move from the allow-list below, played by ``g1 moves``'s player), ``walk`` (a short turn, walk
+or sidestep, each capped by a ``talk_*_max`` limit, walked by ``Moves.walk``) or ``ignore``
+(chatter not meant for it). It never runs a task and never takes the arms (no arm_sdk): its
+only effects are speech, the allow-listed moves and the capped walks (which switch to walk mode).
 
 At the start it brings the robot to standing (``g1 moves fsm walk``'s order) if it is not,
 and asks once before any move may play. Ctrl-C ends it; during a move, the move is stopped first.
@@ -37,11 +38,19 @@ most likely meaning). Answer with exactly one tool call:
   no lists, no emoji, no markdown, no stage directions. Numbers as words when short.
 - move: when someone asks you to dance, wave, bow, clap, greet, or do a move. Pick the best fit from the moves
   listed in the tool; you may give a short line to say first. If they ask for a dance without saying which, pick one.
+- walk: when someone asks you to walk, step, come forward, back up, step aside or turn around. Short moves only:
+  forward or back up to {walk_max:g} m, sideways up to {side_max:g} m, turning up to {turn_max:g} degrees. Say a short
+  warning first ("Stepping forward!"). You cannot see, so never walk unless asked, and never toward people.
 - ignore: when what you heard is not meant for you (side conversations, noise, half a word).
-You can only talk and play those moves. You cannot walk, see, pick things up or change anything else; if asked,
-say so kindly. Keep everything school-appropriate and decline anything unsafe or unkind politely.
+You can only talk, play those moves and take those short walks. You cannot see, sit, lie down, pick things up or
+change anything else; if asked, say so kindly. Keep everything school-appropriate and decline anything unsafe or unkind politely.
 You are about 1.3 m tall and made by Unitree Robotics; you run on your own onboard computer.
 Always answer in English, whatever language you hear or are asked to speak."""
+
+
+def system_prompt() -> str:
+    return SYSTEM.format(walk_max=limits.get("talk_walk_max_m"), side_max=limits.get("talk_side_max_m"),
+                         turn_max=limits.get("talk_turn_max_deg"))
 
 
 def move_name(m: dict) -> str:
@@ -73,11 +82,30 @@ def tools(menu: dict[int, dict]) -> list[dict]:
                 "say": {"type": "string", "description": "optional: a short line to say before the move"}},
                 "required": ["move_id"]}}},
         {"type": "function", "function": {
+            "name": "walk", "description": "Take a short walk: turn first, then walk forward or back, then sidestep. "
+                                           "Leave the parts you do not need at 0.",
+            "parameters": {"type": "object", "properties": {
+                "turn_deg": {"type": "number", "minimum": -limits.get("talk_turn_max_deg"),
+                             "maximum": limits.get("talk_turn_max_deg"), "description": "turn: positive left, negative right"},
+                "forward_m": {"type": "number", "minimum": -limits.get("talk_walk_max_m"),
+                              "maximum": limits.get("talk_walk_max_m"), "description": "walk: positive forward, negative back"},
+                "side_m": {"type": "number", "minimum": -limits.get("talk_side_max_m"),
+                           "maximum": limits.get("talk_side_max_m"), "description": "sidestep: positive left, negative right"},
+                "say": {"type": "string", "description": "a short warning to say before walking"}},
+                "required": ["turn_deg", "forward_m", "side_m"]}}},
+        {"type": "function", "function": {
             "name": "ignore", "description": "Say nothing: what was heard was not meant for you.",
             "parameters": {"type": "object", "properties": {
                 "reason": {"type": "string", "description": "a few words, for the log"}},
                 "required": ["reason"]}}},
     ]
+
+
+def _clamp(value, cap: float) -> float:
+    try:
+        return max(-cap, min(cap, float(value or 0.0)))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 class Talk:
@@ -90,7 +118,7 @@ class Talk:
         self.verbose, self.sleep, self.now = verbose, sleep, now
         self.tools = tools(menu)
         self.history: list[dict] = []           # user / assistant text turns, newest last
-        self.counts = {"heard": 0, "said": 0, "moves": 0, "ignored": 0, "errors": 0}
+        self.counts = {"heard": 0, "said": 0, "moves": 0, "walks": 0, "ignored": 0, "errors": 0}
 
     # -- hearing ---------------------------------------------------------------------------------
     def listen(self, seq: int) -> tuple[str, int]:
@@ -123,7 +151,7 @@ class Talk:
     def answer(self, heard: str) -> Optional[int]:
         """One turn: ask the model about ``heard`` and do what it chose. A Ctrl-C during a move
         returns 130 (the move was stopped); otherwise None."""
-        messages = ([{"role": "system", "content": SYSTEM}]
+        messages = ([{"role": "system", "content": system_prompt()}]
                     + self.history[-2 * int(limits.get("talk_history_turns")):]
                     + [{"role": "user", "content": heard}])
         t0 = self.now()
@@ -147,6 +175,16 @@ class Talk:
                         "duration": self.menu[mid]["duration"]}
             code = self.moves.play([inv_move])
             return 130 if code == 130 else None
+        if call.name == "walk":
+            amounts = {k: _clamp(args.get(k), limits.get(cap)) for k, cap in
+                       (("turn_deg", "talk_turn_max_deg"), ("forward_m", "talk_walk_max_m"), ("side_m", "talk_side_max_m"))}
+            if any(amounts.values()):
+                what = ", ".join(f"{k} {v:+g}" for k, v in amounts.items() if v)
+                self.history += [{"role": "user", "content": heard}, {"role": "assistant", "content": f"[walked: {what}]"}]
+                if args.get("say"):
+                    self.speak(str(args["say"]))
+                self.counts["walks"] += 1
+                return 130 if self.moves.walk(**amounts) == 130 else None
         if call.name == "say" and str(args.get("text", "")).strip():
             self.history += [{"role": "user", "content": heard}, {"role": "assistant", "content": args["text"]}]
             self.speak(str(args["text"]))
@@ -208,7 +246,8 @@ def main(argv: list[str]) -> int:
         moves.switch(FSM_TARGETS["walk"])
     else:
         print(f"ready: FSM {sdk.fsm_name(fsm)}")
-    if not moves.confirm("talk mode plays moves when asked, without asking again: area clear, spotter and remote ready?"):
+    if not moves.confirm("talk mode plays moves and takes short walks when asked, without asking again: "
+                         "area clear, spotter and remote ready?"):
         raise SystemExit("not started")
     moves.confirm = lambda question: True
     return Talk(mic, audio, moves, model, menu, verbose=verbose).run()

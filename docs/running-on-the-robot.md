@@ -140,6 +140,7 @@ g1 moves                       # read-only: the FSM and everything stored, with 
 g1 moves check bow arm:hug     # read-only: installed or not (exit 1 when one is missing)
 g1 moves fsm walk              # FSM switches along their order, shown and confirmed first
 g1 moves play bow 504 arm:20   # from standing (FSM 200/500/501/801/802), in order, confirmed first
+g1 moves walk 0.5              # also: side 0.3 (left), turn -90 (right); walk mode first, confirmed first
 ```
 
 - **Mimic motions** (whole body): `SetFsmId(550<id>)`, e.g. 516 bow = `SetFsmId(550516)`. Played on our G1: 570, 516, 531-533, 502. The list
@@ -170,10 +171,12 @@ services page, support.unitree.com/home/en/G1_developer/sport_services_interface
 
 `g1 talk` stands the robot ready (the `g1 moves fsm walk` order, if it is not standing), asks once
 whether moves may play, then listens. Each time someone speaks and pauses (`talk_quiet_s`), what the
-robot's speech recognition heard goes to the model (`configs/model.json`), which picks one of three
-tools: `say` (spoken with `TtsMaker`), `move` (a stored gesture or dance, ids 5xx/6xx only: never a
-get-up or lie-down) or `ignore` (not meant for it). It never runs a task, takes the arms, walks or
-switches the FSM after the start. Needs voice interaction on in the app (or `rt/audio_msg` stays
+robot's speech recognition heard goes to the model (`configs/model.json`), which picks one of four
+tools: `say` (spoken with `TtsMaker`, English voice: `tts_speaker_id` 1), `move` (a stored gesture or
+dance, ids 5xx/6xx only: never a get-up or lie-down), `walk` (turn, then walk, then sidestep, each
+capped by `talk_turn_max_deg`, `talk_walk_max_m`, `talk_side_max_m`; it switches to walk mode, 501,
+first) or `ignore` (not meant for it). It never runs a task or takes the arms. It cannot see: it walks
+only when asked, and the cap is the only thing between a request and a wall. Needs voice interaction on in the app (or `rt/audio_msg` stays
 silent) and the model's key in `.env` on the machine that runs it. Ctrl-C ends it (a move playing is
 stopped first). What it heard, its choice, the model's time and what it said are printed.
 

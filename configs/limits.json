@@ -120,6 +120,9 @@
     "talk_poll_s":                {"value": 0.05,   "unit": "s",      "source": "repo",       "note": "g1 talk: how often the microphone log and the speaker state are checked"},
     "talk_history_turns":         {"value": 6,      "unit": "count",  "source": "guess",      "note": "g1 talk: the model sees this many earlier exchanges (what was said and its answer)"},
     "talk_speech_timeout_s":      {"value": 15.0,   "unit": "s",      "source": "guess",      "note": "g1 talk: after the words' estimated time, wait at most this long more for the robot's speaker to report quiet"},
+    "talk_walk_max_m":            {"value": 1.0,    "unit": "m",      "source": "guess",      "note": "g1 talk: the longest walk forward or back one request may take (the robot cannot see where it goes)"},
+    "talk_side_max_m":            {"value": 0.5,    "unit": "m",      "source": "guess",      "note": "g1 talk: the longest sidestep one request may take"},
+    "talk_turn_max_deg":          {"value": 180.0,  "unit": "deg",    "source": "guess",      "note": "g1 talk: the largest turn one request may take"},
     "status_probe_s":             {"value": 3.0,    "unit": "s",      "source": "repo",       "note": "g1 status counts LowState and asks the FSM for this long"},
     "health_period_s":            {"value": 1.0,    "unit": "s",      "source": "repo",       "note": "G1_VERBOSE=1: the health line is printed this often"},
 
