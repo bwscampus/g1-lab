@@ -116,6 +116,10 @@
     "moves_settle_s":             {"value": 2.0,    "unit": "s",      "source": "guess",      "note": "g1 moves play: wait this long past a stored move's own duration before the next (or before reporting the FSM it ended in)"},
     "moves_overrun_s":            {"value": 20.0,   "unit": "s",      "source": "guess",      "note": "g1 moves play: a stored move is over when the robot leaves FSM 550; wait at most this long past its duration and settle (the boxing moves 531/532 ran past theirs, 2026-11-03)"},
     "arm_action_s":               {"value": 6.0,    "unit": "s",      "source": "guess",      "note": "g1 moves play: an arm action reports no duration; wait this long, then release it (id 99); time the longest you use"},
+    "talk_quiet_s":               {"value": 0.8,    "unit": "s",      "source": "guess",      "note": "g1 talk: answer once someone has been quiet this long after speaking (joins an utterance the speech recognition split)"},
+    "talk_poll_s":                {"value": 0.05,   "unit": "s",      "source": "repo",       "note": "g1 talk: how often the microphone log and the speaker state are checked"},
+    "talk_history_turns":         {"value": 6,      "unit": "count",  "source": "guess",      "note": "g1 talk: the model sees this many earlier exchanges (what was said and its answer)"},
+    "talk_speech_timeout_s":      {"value": 15.0,   "unit": "s",      "source": "guess",      "note": "g1 talk: after the words' estimated time, wait at most this long more for the robot's speaker to report quiet"},
     "status_probe_s":             {"value": 3.0,    "unit": "s",      "source": "repo",       "note": "g1 status counts LowState and asks the FSM for this long"},
     "health_period_s":            {"value": 1.0,    "unit": "s",      "source": "repo",       "note": "G1_VERBOSE=1: the health line is printed this often"},
 

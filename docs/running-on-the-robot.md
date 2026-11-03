@@ -166,6 +166,17 @@ Unitree's reference: unitree_sdk2 `include/unitree/robot/g1/loco/g1_loco_client.
 (GetMimicMotion) and `include/unitree/robot/g1/arm/g1_arm_action_client.hpp`; the G1 sport
 services page, support.unitree.com/home/en/G1_developer/sport_services_interface.
 
+## Conversation demo (`g1 talk`)
+
+`g1 talk` stands the robot ready (the `g1 moves fsm walk` order, if it is not standing), asks once
+whether moves may play, then listens. Each time someone speaks and pauses (`talk_quiet_s`), what the
+robot's speech recognition heard goes to the model (`configs/model.json`), which picks one of three
+tools: `say` (spoken with `TtsMaker`), `move` (a stored gesture or dance, ids 5xx/6xx only: never a
+get-up or lie-down) or `ignore` (not meant for it). It never runs a task, takes the arms, walks or
+switches the FSM after the start. Needs voice interaction on in the app (or `rt/audio_msg` stays
+silent) and the model's key in `.env` on the machine that runs it. Ctrl-C ends it (a move playing is
+stopped first). What it heard, its choice, the model's time and what it said are printed.
+
 ## Ctrl-C
 
 An interrupted run (Ctrl-C, the task's `max_time_s`, any exception) never drops the arms where
