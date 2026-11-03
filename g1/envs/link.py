@@ -4,6 +4,8 @@ in-process on sim time (``g1/twin/loopback.py:LoopbackLink``).
 
     init(domain, iface)       ChannelFactoryInitialize
     loco() / audio()          LocoClient / AudioClient
+    mimic(loco)               LocoClient + GetMimicMotion (the robot's stored motions; g1 moves)
+    arm_action()              the arm service: preset and taught upper-body actions (g1 moves)
     twin_client()             the twin's own service (Summary), only when talking to a twin
     lowstate(callback)        subscribe rt/lowstate
     audio_msg(callback)       subscribe rt/audio_msg: the robot's speech recognition (g1/microphone.py)
@@ -52,6 +54,49 @@ class DdsLink:
     def loco(self):
         from unitree_sdk2py.g1.loco.g1_loco_client import LocoClient
         return LocoClient()
+
+    def mimic(self, loco):
+        """``loco`` + GetMimicMotion, the C++ SDK's (unitree_sdk2 g1_loco_client.hpp) that the Python
+        SDK lacks: the FSM API (7100) asked for FSM 550's motions. Play one with SetFsmId(550<id>).
+        Call after ``loco.Init()``."""
+        loco._RegistApi(7100, 0)
+
+        class Mimic:
+            def __getattr__(self, name):
+                return getattr(loco, name)
+
+            def GetMimicMotion(self):
+                code, data = loco._Call(7100, json.dumps({"fsm_id": 550, "api_id": 1}))
+                return (code, json.loads(data)) if code == 0 and data else (code, None)
+        return Mimic()
+
+    def arm_action(self):
+        from unitree_sdk2py.rpc.client import Client
+
+        class ArmActionClient(Client):
+            """The ``arm`` service: Unitree's preset upper-body actions (by id; 99 releases one that
+            holds) and the app's taught ones (by name). The C++ SDK's parameters (g1_arm_action_client.hpp)."""
+            def __init__(self):
+                super().__init__("arm", False)
+
+            def Init(self):
+                self._SetApiVerson("1.0.0.14")
+                for api in (7106, 7107, 7108, 7113):
+                    self._RegistApi(api, 0)
+
+            def ExecuteAction(self, action_id: int):
+                return self._Call(7106, json.dumps({"action_id": int(action_id)}))
+
+            def ExecuteCustomAction(self, name: str):
+                return self._Call(7108, json.dumps({"action_name": name}))
+
+            def StopCustomAction(self):
+                return self._Call(7113, "{}")
+
+            def GetActionList(self):
+                code, data = self._Call(7107, "{}")
+                return (code, json.loads(data)) if code == 0 and data else (code, None)
+        return ArmActionClient()
 
     def audio(self):
         from unitree_sdk2py.g1.audio.g1_audio_client import AudioClient

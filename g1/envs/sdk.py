@@ -37,9 +37,10 @@ TRANSPORT = frozenset({3102, 3104})              # the request did not make the 
 
 # From Unitree's G1 documentation; verify against your firmware (`g1 status` prints the raw id).
 FSM_NAMES = {0: "zero torque", 1: "damp", 2: "squat", 3: "sit", 4: "locked stand",
-             200: "main operation", 500: "start", 501: "squat to stand", 702: "lie to stand",
-             706: "stand to squat", 801: "sit to stand"}
-STANDING_FSMS = frozenset({4, 200, 500})        # states a standing run may start in and return to
+             200: "main operation", 500: "walk, 1-DoF waist", 501: "walk, 3-DoF waist", 702: "lie to stand",
+             706: "stand to squat", 801: "sit to stand", 550: "playing a stored move",
+             802: "after a stored move"}
+STANDING_FSMS = frozenset({4, 200, 500, 501})        # states a standing run may start in and return to
 
 
 def fsm_name(fsm: Any) -> str:

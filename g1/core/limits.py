@@ -37,7 +37,7 @@ NAMES = (
     "say_max_chars", "speech_chars_per_s", "say_min_s", "say_pause_max_s", "tts_speaker_id", "sound_max_s",
     "heard_languages", "heard_max_chars", "heard_max_age_s", "mic_echo_guard_s",
     "listen_seconds_min", "listen_seconds_max", "listen_seconds_default",
-    "bookend_ramp_s", "bookend_ramp_max_s", "return_to_stand_s", "return_ramp_s", "return_released_s", "rpc_timeout_s", "lowstate_timeout_s", "lowstate_settle_s", "lowstate_poll_s", "release_s", "base_send_period_s", "fsm_enter_timeout_s", "fsm_poll_s", "gantry_damp_s", "gantry_lock_stand_s", "restore_fsm_s", "sit_stand_timeout_s", "status_probe_s", "health_period_s",
+    "bookend_ramp_s", "bookend_ramp_max_s", "return_to_stand_s", "return_ramp_s", "return_released_s", "rpc_timeout_s", "lowstate_timeout_s", "lowstate_settle_s", "lowstate_poll_s", "release_s", "base_send_period_s", "fsm_enter_timeout_s", "fsm_poll_s", "gantry_damp_s", "gantry_lock_stand_s", "restore_fsm_s", "moves_settle_s", "moves_overrun_s", "arm_action_s", "sit_stand_timeout_s", "status_probe_s", "health_period_s",
     "twin_physics_dt_s", "twin_fsm_delay_s", "twin_lock_stand_s", "twin_mask_arms_out_rad", "twin_sit_s", "twin_seated_fall_z_m", "twin_sit_kp", "twin_sit_kd", "twin_damp_kd", "twin_fall_z_m",
     "twin_fall_tilt_deg", "twin_band_kp", "twin_band_kd", "twin_waist_kp", "twin_waist_kd", "twin_waist_hold_s", "twin_arm_kp",
     "twin_arm_kd", "twin_vel_feedback", "twin_vel_integral", "twin_walk_blend_s",
