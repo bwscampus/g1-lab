@@ -90,7 +90,8 @@ g1/twin/           assets (g1 twin fetch), model (unitree_mujoco G1 + head camer
                    onboard (the stand-in onboard controller: FSM, arm_sdk blend, stand/walk, gestures, falls),
                    services (sport/voice/motion_switcher/twin handlers), core (Twin), loopback (in-process link, lockstep),
                    bridge (DDS servers + rt/lowstate + rt/arm_sdk + rt/audio_msg), shm (camera frames), main (TwinProcess, serve, fetch)
-g1/camera.py       Frame, Camera (+subscribe), DirCamera, WebRTCCamera, ShmCamera (the twin's), Viewer (--view)
+g1/camera.py       Frame, Camera (+subscribe), DirCamera, WebRTCCamera (from a laptop), DirectCamera (on the robot's
+                   Jetson: the video hub's multicast, hardware decode), ShmCamera (the twin's), Viewer (--view)
 g1/microphone.py   Microphone (rt/audio_msg: the robot's speech recognition, an utterance log), heard_view; sounds in g1/core/sounds.py
 g1/vlm.py          VLMClient (Hugging Face or OpenRouter), load_dotenv
 g1/talk.py         g1 talk: the conversation demo (Talk: listen, ask the model, say | move | walk | ignore)
@@ -150,6 +151,9 @@ root via `pythonpath`. `limits.ROOT` is the repo root (configs/, tasks/, assets/
   in `RobotEnv._command`; a failed speech warns and continues, a failed gesture raises.
   `PlayStream`/`SetVolume`/`LedControl` are never reachable from a reply. `g1 moves` (a person at the
   keyboard, never the model) is the one place that plays Unitree's stored moves and switches other FSMs.
+- **The camera on the Jetson is direct.** On the robot's Jetson `RobotEnv` reads the video hub's RTP multicast
+  with a GStreamer child process (`DirectCamera`, chosen when `on_the_jetson()`); a laptop uses WebRTC. Never
+  decode video in the run's own Python process on the Jetson: next to rt/lowstate it starves for the GIL.
 - **Frames are RGB everywhere**; image I/O only through `g1/core/images.py` (Pillow). OpenCV is not
   used and must not be imported (its bundled ffmpeg collides with PyAV's, which decodes the robot's video).
 - **The view never touches the tick.** `--view` (live runs) serves the env's camera slot (`Env.source()`)

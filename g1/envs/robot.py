@@ -275,8 +275,9 @@ class RobotEnv(Env):
                              "gantry damps the robot at the end, standing does not)")
 
     def _open_camera(self):
-        """The head camera, connected before any FSM change: the robot's WebRTC stream,
-        or the shared-memory frames of a ``g1 twin`` on this machine."""
+        """The head camera, connected before any FSM change: the shared-memory frames of a
+        ``g1 twin`` on this machine; on the robot's own Jetson, the video hub's multicast
+        decoded in hardware (DirectCamera); from any other machine, the robot's WebRTC stream."""
         source = getattr(self.args, "camera_source", "auto")
         if source == "shm" or (source == "auto" and is_loopback(self.args.iface)):
             from g1.camera import ShmCamera
@@ -284,6 +285,14 @@ class RobotEnv(Env):
             camera = ShmCamera(domain, timeout=self.args.camera_timeout)
             print(f"camera: g1 twin's head camera (shared memory, domain {domain})")
             camera.start()
+            return camera
+        from g1.camera import DirectCamera, on_the_jetson
+        if source == "direct" or (source == "auto" and on_the_jetson()):
+            camera = DirectCamera(self.args.iface, timeout=self.args.camera_timeout)
+            print(f"camera: direct on the Jetson (the video hub's multicast on {self.args.iface}, hardware decode)")
+            t0 = time.monotonic()
+            camera.start()
+            print(f"camera: first frame {camera.latest().image.shape} after {time.monotonic() - t0:.1f}s")
             return camera
         if not self.args.camera_ip:
             raise SystemExit("this run uses the camera: pass --camera-ip or set "

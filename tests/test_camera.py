@@ -169,3 +169,100 @@ def test_viewer_serves_a_frame_a_page_and_a_stream():
         t0 = time.monotonic()
         v.stop()
         assert time.monotonic() - t0 < 2.0 and v.server is None
+
+
+# -- DirectCamera (the Jetson: the video hub's multicast, decoded by a GStreamer child) --------
+
+def rgba_writer(frames, h=6, w=8, hang=False, say=""):
+    """A child that stands in for gst-launch-1.0: ``frames`` RGBA frames (pixel value i+1, alpha 255)
+    written to the fd it is given, then exits (or sleeps, as a live stream would)."""
+    import sys
+
+    def command(fd):
+        script = (f"import os, sys, time\nsys.stderr.write({say!r})\n"
+                  f"for i in range({frames}):\n"
+                  f"    px = bytes([i + 1, i + 1, i + 1, 255])\n"
+                  f"    os.write({fd}, px * ({h} * {w})); time.sleep(0.02)\n"
+                  f"time.sleep(60 if {hang} else 0)\n")
+        return [sys.executable, "-c", script]
+    return command
+
+
+def test_direct_camera_publishes_rgb_frames_from_the_decoder():
+    from g1.camera import DirectCamera
+    cam = DirectCamera("eth0", timeout=5.0, size=(6, 8), command=rgba_writer(3, hang=True))
+    cam.start()
+    try:
+        t0 = time.monotonic()
+        while cam.count < 3 and time.monotonic() - t0 < 5.0:
+            time.sleep(0.01)
+        frame = cam.latest()
+        assert frame.image.shape == (6, 8, 3) and (frame.image == 3).all()     # alpha dropped, RGB kept
+        assert cam.count == 3 and cam.error is None
+        proc = cam.proc
+    finally:
+        cam.stop()
+    assert proc.poll() is not None and cam.proc is None                        # the child is stopped with it
+
+
+def test_direct_camera_explains_a_decoder_that_stops_before_a_frame():
+    from g1.camera import DirectCamera
+    cam = DirectCamera("wlan0", timeout=5.0, size=(6, 8), command=rgba_writer(0, say="no element nvv4l2decoder"))
+    with pytest.raises(ConnectionError, match=r"no element nvv4l2decoder.*eth0, not 'wlan0'"):
+        cam.start()
+    assert cam.proc is None
+
+
+def test_direct_camera_says_when_the_stream_ends_mid_run(capsys):
+    from g1.camera import DirectCamera
+    cam = DirectCamera("eth0", timeout=5.0, size=(6, 8), command=rgba_writer(2))
+    cam.start()
+    try:
+        t0 = time.monotonic()
+        while cam.error is None and time.monotonic() - t0 < 5.0:
+            time.sleep(0.01)
+        assert isinstance(cam.error, EOFError) and "camera: stream ended" in capsys.readouterr().out
+    finally:
+        cam.stop()
+
+
+def test_the_video_hub_pipeline_reads_its_multicast_on_the_robot_interface():
+    from g1.camera import VIDEO_HUB_GROUP, VIDEO_HUB_PORT, video_hub_pipeline
+    argv = video_hub_pipeline("eth0", 7)
+    assert argv[0] == "gst-launch-1.0"
+    assert {f"address={VIDEO_HUB_GROUP}", f"port={VIDEO_HUB_PORT}", "multicast-iface=eth0",
+            "nvv4l2decoder", "fdsink", "fd=7"} <= set(argv)
+    assert "video/x-raw,format=RGBA,width=1280,height=720" in argv
+    # a slow reader drops decoded frames, never packets (a lost packet smears the picture)
+    assert argv.index("queue") == argv.index("rtph264depay") - 2
+    leaky = argv.index("leaky=downstream")
+    assert argv[leaky - 1] == "queue" and argv[leaky + 1] == "max-size-buffers=1" and leaky < argv.index("fdsink")
+
+
+@pytest.mark.parametrize("jetson, source, iface, expected", [
+    (True, "auto", "eth0", "DirectCamera"),       # on the Jetson: straight from the video hub
+    (False, "auto", "en7", "WebRTCCamera"),       # a laptop: the robot's WebRTC stream, as before
+    (True, "webrtc", "eth0", "WebRTCCamera"),     # asked for by name
+    (False, "direct", "eth0", "DirectCamera"),
+])
+def test_the_robot_env_takes_the_camera_direct_only_on_the_jetson(monkeypatch, jetson, source, iface, expected):
+    from types import SimpleNamespace
+
+    import g1.camera
+    import g1.envs.robot as robot
+
+    made = []
+
+    class Fake(Camera):
+        def __init__(self, name):
+            super().__init__()
+            made.append(name)
+
+        def start(self):
+            self.publish(solid((1, 2, 3)), 0.0)
+    monkeypatch.setattr(g1.camera, "on_the_jetson", lambda: jetson)
+    monkeypatch.setattr(g1.camera, "DirectCamera", lambda *a, **k: Fake("DirectCamera"))
+    monkeypatch.setattr(robot, "WebRTCCamera", lambda *a, **k: Fake("WebRTCCamera"))
+    args = SimpleNamespace(camera_source=source, iface=iface, camera_ip="192.168.123.161", camera_timeout=1.0)
+    robot.RobotEnv._open_camera(SimpleNamespace(args=args))
+    assert made == [expected]
