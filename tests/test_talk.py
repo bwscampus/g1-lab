@@ -38,7 +38,7 @@ class Audio:
         return 0
 
 
-def make(*replies, fsm=801):
+def make(*replies, fsm=802):
     clock = {"t": 0.0}
 
     def sleep(dt):
