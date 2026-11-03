@@ -156,7 +156,8 @@ class Talk:
         return None
 
     def run(self) -> int:
-        print(f"listening (say something to the robot; Ctrl-C ends). {len(self.menu)} moves allowed.")
+        print(f"listening until Ctrl-C: it answers and plays moves for as long as it runs "
+              f"({len(self.menu)} different moves to choose from)")
         seq = self.mic.seq
         try:
             while True:
