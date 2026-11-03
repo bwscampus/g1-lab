@@ -149,9 +149,9 @@ def test_a_move_that_runs_past_its_duration_is_waited_for():
 
 
 def test_walk_turns_walks_sidesteps_and_always_stops():
-    m = make(501)                                                     # another FSM: walk_fsm first
+    m = make(802)                                                     # after a stored move: walk_fsm first
     assert m.walk(forward_m=0.4, side_m=-0.15, turn_deg=90) == 0
-    assert m.loco.calls[0] == moves.limits.get("walk_fsm") == 802
+    assert m.loco.calls[0] == moves.limits.get("walk_fsm") == 501
     vel = [c for c in m.loco.calls if isinstance(c, tuple)]
     speed, side, rate = (moves.limits.get(k) for k in ("walk_speed", "side_speed", "turn_rate"))
     assert ("vel", 0.0, 0.0, round(rate, 3)) in vel and ("vel", round(speed, 3), 0.0, 0.0) in vel
@@ -159,11 +159,11 @@ def test_walk_turns_walks_sidesteps_and_always_stops():
     assert vel[-1] == ("vel", 0.0, 0.0, 0.0)                          # it ends stopped
     poll = moves.limits.get("base_send_period_s")
     assert len([v for v in vel if v[1] > 0]) == pytest.approx(0.4 / speed / poll, abs=2)   # re-sent: the 1 s dead-man
-    m = make(802, interrupt_after=0.5)
+    m = make(501, interrupt_after=0.5)
     assert m.walk(forward_m=1.0) == 130
     assert m.loco.calls[-1] == ("vel", 0.0, 0.0, 0.0)                 # Ctrl-C: stopped at once
     assert make(501).walk() == 0
-    m = make(802)
+    m = make(501)
     m.walk(turn_deg=10)
     assert isinstance(m.loco.calls[0], tuple)                         # already in walk_fsm: no switch
     assert fsm_path(0, 801) == [1, 4, 801] and fsm_path(802, 801) == [801]

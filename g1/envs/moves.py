@@ -305,7 +305,7 @@ class Moves:
         speeds (walk_speed, side_speed, turn_rate), each within the base's hard ceilings. The
         velocity (SetVelocity with a 1 s duration: the robot's own dead-man) is re-sent every
         base_send_period_s and zeroed at the end, so the robot stops by itself within 1 s if this
-        process dies. It switches to ``walk_fsm`` (802) first when the robot is in another FSM.
+        process dies. It switches to ``walk_fsm`` (walk mode, 501) first when the robot is in another FSM.
         Ctrl-C stops it at once. 0, or 130 when stopped."""
         legs = [((0.0, 0.0, 1.0), math.radians(turn_deg), min(limits.get("turn_rate"), limits.get("base_vyaw_max"))),
                 ((1.0, 0.0, 0.0), forward_m, min(limits.get("walk_speed"), limits.get("base_vx_max"))),
