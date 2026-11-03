@@ -48,8 +48,11 @@ g1 status                            # read-only: link ok / robot refuses / no l
 g1 moves [list] | check MOVE...      # read-only: Unitree's moves stored on the robot (mimic motions = FSM 550<id>,
                                      # arm:<id|name> arm actions, custom:<name> taught in the app), installed or not
 g1 moves play MOVE... | fsm TARGET   # the robot only, asks first: play stored moves in order from standing; switch the
-                                     # FSM along its order (damp, stand 4, main 200, walk 501, sit 3, up 801; never via damp);
+                                     # FSM along its order (damp, stand 4, main 200, walk 501, run 801, sit 3; never via damp);
                                      # a move runs in 550 and ends in 802, where the next plays
+g1 moves walk|side|turn N            # the robot only, asks first: a short walk (SetVelocity's 1 s dead-man, re-sent) in limit walk_fsm (walk mode, 501)
+g1 talk                              # the robot only: stands it ready, listens (rt/audio_msg), answers with TtsMaker,
+                                     # plays an allow-listed stored move (5xx/6xx) or takes a capped short walk; never a task or the arms
 g1 twin fetch|status
 g1 trace compare RUN_A RUN_B | show RUN   # two run dirs of the same task: tracking, sag, lag, A-B difference
 g1 limits [SOURCE]                   # every limit and default in configs/limits.json as one table, + the model in use
@@ -90,6 +93,7 @@ g1/twin/           assets (g1 twin fetch), model (unitree_mujoco G1 + head camer
 g1/camera.py       Frame, Camera (+subscribe), DirCamera, WebRTCCamera, ShmCamera (the twin's), Viewer (--view)
 g1/microphone.py   Microphone (rt/audio_msg: the robot's speech recognition, an utterance log), heard_view; sounds in g1/core/sounds.py
 g1/vlm.py          VLMClient (Hugging Face or OpenRouter), load_dotenv
+g1/talk.py         g1 talk: the conversation demo (Talk: listen, ask the model, say | move | walk | ignore)
 g1/agent/          agent (Agent, build_agent), decider (AgentContext/AgentTurn/Decision, observation(), instructions(),
                    VLMDecider), episode (EpisodeWriter, load_episode), task (find, load_task, run_config, code_snapshot, record_result)
 suites/            stationary/ (point_at_the_laptop x 10), point_on_request/ (point_at_what_you_hear x 5); runs/ inside are git-ignored
