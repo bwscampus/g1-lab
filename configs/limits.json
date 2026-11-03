@@ -4,7 +4,7 @@
   "limits": {
     "control_dt_s":               {"value": 0.02,  "unit": "s",     "source": "robot",      "note": "the control tick: arm_sdk is published at 50 Hz"},
     "chain_pause_s":              {"value": 1.0,   "unit": "s",     "source": "repo",       "note": "a tools task holds this long between chained tools"},
-    "camera_timeout_s":           {"value": 15.0,  "unit": "s",     "source": "repo",       "note": "longest wait for the first head camera frame (WebRTC on the robot, shared memory with --sim)"},
+    "camera_timeout_s":           {"value": 15.0,  "unit": "s",     "source": "repo",       "note": "longest wait for the first head camera frame (WebRTC from a laptop, the video hub's multicast on the Jetson, shared memory with --sim)"},
     "camera_poll_hz":             {"value": 60.0,   "unit": "Hz",     "source": "repo",       "note": "--sim: how often the twin's shared-memory camera is read for a new frame"},
     "view_port":                  {"value": 8765,   "unit": "port",   "source": "repo",       "note": "--view: the head camera at http://127.0.0.1:<port> (a free port when this one is taken)"},
     "view_width_px":              {"value": 960,    "unit": "px",     "source": "repo",       "note": "--view: frames are downscaled to this width for the browser"},

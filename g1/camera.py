@@ -6,7 +6,9 @@ producer overwrites the slot whenever a new frame exists and a consumer reads
 whatever is there, so nothing queues up behind a slow 20 ms tick, and
 ``Frame.stamp`` lets the agent tell a fresh frame from a stale one.
 
-  WebRTCCamera  the G1 head camera over unitree_webrtc_connect (robot env)
+  WebRTCCamera  the G1 head camera over unitree_webrtc_connect (robot env, from another machine)
+  DirectCamera  the G1 head camera on the robot's own Jetson: the video hub's multicast,
+                decoded in hardware by a GStreamer child process (robot env, on the Jetson)
   ShmCamera     the head camera g1 twin renders, from shared memory (robot env on lo0)
   DirCamera     replays image files from a directory on the env's clock (tests)
 
@@ -16,6 +18,10 @@ from __future__ import annotations
 
 import asyncio
 import math
+import os
+import shutil
+import subprocess
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -33,6 +39,18 @@ IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".bmp")
 # out as its tail only. The G1's keyframes (SPS + PPS + IDR) run ~150 packets in a
 # detailed scene, so with 128 every keyframe is cut and nothing ever decodes.
 VIDEO_JITTER_PACKETS = 1024     # a power of 2 (aiortc's requirement)
+
+# The head camera (a RealSense D435i) is plugged into the robot's Jetson. Unitree's video hub
+# there (VIDEO_HUB/videohub_pc4, a GStreamer pipeline) encodes its colour stream in hardware,
+# 1280x720 H.264 at 15 fps with a keyframe a second, and multicasts it as RTP on the robot's
+# network; the main board (.161) relays that same stream over WebRTC. On the Jetson we take
+# the multicast directly: no relay, no jitter buffer, no single-client limit, and the
+# Jetson's hardware decoder in its own process (a Python decoder next to rt/lowstate's
+# ~900 messages/s starved for the GIL there and fell to ~0 fps).
+VIDEO_HUB = Path("/unitree/module/video_hub_pc4")
+VIDEO_HUB_GROUP = "230.1.1.1"
+VIDEO_HUB_PORT = 1720
+VIDEO_HUB_SIZE = (720, 1280)    # (H, W) of the stream the hub multicasts
 
 
 @dataclass
@@ -243,6 +261,138 @@ def roomy_video_jitter_buffer(packets: int = VIDEO_JITTER_PACKETS) -> None:
             super().__init__(max(capacity, packets) if is_video else capacity, prefetch, is_video)
 
     rtcrtpreceiver.JitterBuffer = RoomyJitterBuffer
+
+
+def on_the_jetson() -> bool:
+    """True on the robot's own Jetson: Unitree's video hub is installed and GStreamer runs."""
+    return VIDEO_HUB.is_dir() and shutil.which("gst-launch-1.0") is not None
+
+
+def video_hub_pipeline(iface: str, fd: int) -> list[str]:
+    """gst-launch-1.0 arguments: the video hub's RTP multicast on ``iface``, decoded by the
+    Jetson's hardware decoder (nvv4l2decoder), as raw RGBA frames written to ``fd``.
+
+    A slow reader must cost whole frames, never packets: a lost packet smears the picture
+    until the next keyframe (up to a second). So the socket has its own thread (the queue
+    after udpsrc; the kernel's 212 KB buffer holds about one keyframe) and the decoded frames
+    wait in a leaky queue that drops the oldest when the reader falls behind."""
+    h, w = VIDEO_HUB_SIZE
+    return ["gst-launch-1.0", "-q",
+            "udpsrc", f"address={VIDEO_HUB_GROUP}", f"port={VIDEO_HUB_PORT}", f"multicast-iface={iface}",
+            "caps=application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000",
+            "!", "queue",
+            "!", "rtph264depay", "!", "h264parse", "!", "nvv4l2decoder",
+            "!", "nvvidconv", "!", f"video/x-raw,format=RGBA,width={w},height={h}",
+            "!", "queue", "leaky=downstream", "max-size-buffers=1", "max-size-bytes=0", "max-size-time=0",
+            "!", "fdsink", f"fd={fd}", "sync=false"]
+
+
+class DirectCamera(Camera):
+    """The G1 head camera on the robot's own Jetson: the video hub's multicast, decoded in
+    hardware by a ``gst-launch-1.0`` child process that writes raw RGBA frames to a pipe
+    (its own fd: the NVIDIA decoder prints to stdout). A thread reads whole frames and
+    publishes them stamped with ``time.monotonic()``. ``start`` blocks until the first frame
+    or raises, like WebRTCCamera. ``command(fd)`` builds the child's argv (tests swap it)."""
+
+    def __init__(self, iface: str, timeout: float = limits.get("camera_timeout_s"),
+                 size: tuple[int, int] = VIDEO_HUB_SIZE,
+                 command: Optional[Callable[[int], list[str]]] = None) -> None:
+        super().__init__()
+        self.iface = iface
+        self.timeout = timeout
+        self.size = size
+        self.command = command or (lambda fd: video_hub_pipeline(iface, fd))
+        self.proc: subprocess.Popen | None = None
+        self.pipe = None
+        self.log = None
+        self.thread: threading.Thread | None = None
+        self.error: BaseException | None = None
+        self._stopping = False
+
+    def start(self) -> None:
+        self._stopping = False
+        self.error = None
+        read_fd, write_fd = os.pipe()
+        self.log = tempfile.TemporaryFile()
+        try:
+            self.proc = subprocess.Popen(self.command(write_fd), pass_fds=(write_fd,), stdin=subprocess.DEVNULL,
+                                         stdout=subprocess.DEVNULL, stderr=self.log)
+        except OSError as e:
+            os.close(read_fd)
+            raise ConnectionError(f"camera: cannot start the decoder: {e}") from e
+        finally:
+            os.close(write_fd)
+        self.pipe = os.fdopen(read_fd, "rb", buffering=0)
+        self.thread = threading.Thread(target=self._run, name="direct-camera", daemon=True)
+        self.thread.start()
+        t0 = time.monotonic()
+        while self.latest() is None:
+            if self.error is not None or (self.thread is not None and not self.thread.is_alive()):
+                why = self.stderr_tail()
+                self.stop()
+                raise ConnectionError(f"camera: the video hub decoder stopped before a frame ({why or 'no output'}); "
+                                      f"is videohub_pc4 running, and is UNITREE_IFACE the Jetson's robot-network "
+                                      f"interface (eth0, not {self.iface!r})?")
+            if time.monotonic() - t0 > self.timeout:
+                self.stop()
+                raise TimeoutError(f"no frame from the video hub's multicast {VIDEO_HUB_GROUP}:{VIDEO_HUB_PORT} "
+                                   f"on {self.iface} within {self.timeout:.0f}s (is videohub_pc4 running?)")
+            time.sleep(0.02)
+
+    def _run(self) -> None:
+        h, w = self.size
+        size = h * w * 4
+        buf = bytearray(size)
+        view = memoryview(buf)
+        while True:
+            got = 0
+            while got < size:
+                try:
+                    n = self.pipe.readinto(view[got:])
+                except (OSError, ValueError) as e:     # the pipe closed under us by stop()
+                    n, err = 0, e
+                else:
+                    err = None
+                if not n:
+                    if not self._stopping:
+                        self.error = err or EOFError("the decoder exited")
+                        if self.latest() is not None:   # the stream died mid-run: say so, once
+                            print(f"camera: stream ended: {self.error} {self.stderr_tail()}".rstrip())
+                    return
+                got += n
+            rgb = np.frombuffer(buf, np.uint8).reshape(h, w, 4)[:, :, :3]
+            self.publish(rgb.copy(), time.monotonic())
+
+    def stderr_tail(self, lines: int = 3) -> str:
+        if self.log is None:
+            return ""
+        try:
+            self.log.seek(0)
+            text = self.log.read().decode(errors="replace").strip().splitlines()
+        except (OSError, ValueError):
+            return ""
+        return " | ".join(text[-lines:])
+
+    def stop(self) -> None:
+        self._stopping = True
+        if self.proc is not None:
+            if self.proc.poll() is None:
+                self.proc.terminate()
+                try:
+                    self.proc.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    self.proc.kill()
+                    self.proc.wait()
+            self.proc = None
+        if self.thread is not None:
+            self.thread.join(timeout=2.0)
+            self.thread = None
+        if self.pipe is not None:
+            self.pipe.close()
+            self.pipe = None
+        if self.log is not None:
+            self.log.close()
+            self.log = None
 
 
 class ShmCamera(Camera):

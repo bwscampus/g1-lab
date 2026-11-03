@@ -213,7 +213,7 @@ g1/
   envs/           base (Env), monitor (the per-tick safety check), robot (RobotEnv: the G1 or the twin),
                   link (the SDK seam), sim (the in-process twin the tests use), scene (the room), trace
   twin/           the twin: model, walker, onboard controller, services, loopback, DDS bridge, TwinProcess
-  camera.py       the robot's head camera over WebRTC; the twin's over shared memory; DirCamera replays frames
+  camera.py       the robot's head camera over WebRTC (a laptop) or straight from the video hub (on its Jetson); the twin's over shared memory; DirCamera replays frames
   vlm.py          the Hugging Face client
   agent/          agent (settle -> snapshot -> think -> act -> feedback), decider (the model I/O
                   contract), episode (the run record), task (task.json)

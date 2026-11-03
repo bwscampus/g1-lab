@@ -31,7 +31,7 @@ g1 trace compare tasks/tpose/runs/<robot run> tasks/tpose/runs/<twin run>
 ## Install
 
 `unitree_sdk2py` (from [unitree_sdk2_python](https://github.com/unitreerobotics/unitree_sdk2_python))
-for control (and for `--sim`); for the camera, `unitree_webrtc_connect` (from
+for control (and for `--sim`); for the camera from a laptop, `unitree_webrtc_connect` (from
 [go2_webrtc_connect](https://github.com/legion1581/go2_webrtc_connect)) plus `pip install -e
 ".[camera]"`. Neither is on PyPI.
 
@@ -42,12 +42,38 @@ for control (and for `--sim`); for the camera, `unitree_webrtc_connect` (from
 * `--mode standing` lets the tools and the model walk: on the floor, ~2 m clear in every
   direction, no tether to snag, the spotter's thumb on L2+B. In `--mode gantry` the walking
   tools are not offered to the model and a task that drives the base is refused up front.
-* the camera: close the Unitree app (the robot takes one WebRTC client). Expect
-  `(720, 1280, 3)` at ~15 fps.
+* the camera from a laptop: close the Unitree app (the robot takes one WebRTC client). Expect
+  `(720, 1280, 3)` at ~15 fps. On the robot's Jetson the app can stay open (see below).
 * the spotter's view: add `--view` and open `http://127.0.0.1:8765` (a free port if that one is
-  taken; the URL is printed). Because the robot takes one WebRTC client, this is the only live
-  picture there is. It reads the same latest-only frame slot the agent does, on its own thread,
+  taken; the URL is printed). From a laptop, because the robot takes one WebRTC client, this is
+  the only live picture there is. It reads the same latest-only frame slot the agent does, on its own thread,
   and adds no latency to control; the stream itself is ~100–200 ms behind reality.
+
+## Running on the robot's Jetson
+
+The head camera (a RealSense D435i) is plugged into the robot's Jetson (`192.168.123.164` on
+the robot's network; it is usually also on Wi-Fi). Unitree's video hub there
+(`/unitree/module/video_hub_pc4`) encodes it in hardware, 1280x720 H.264 at 15 fps, and
+multicasts it as RTP to `230.1.1.1:1720` on `eth0`; the main board (`.161`) relays the same
+stream over WebRTC to the app and to a laptop. On the Jetson, `g1 run` takes the multicast
+directly (`DirectCamera`: no relay hop, no jitter buffer, no one-client limit) and decodes it with
+the Jetson's hardware decoder in a `gst-launch-1.0` child process. It chooses this by itself when
+the video hub is installed and GStreamer is on the PATH, and prints
+`camera: direct on the Jetson (...)`; anywhere else it uses WebRTC as before.
+
+The WebRTC camera does not work in a run on the Jetson: its Python decoder shares the process
+with `rt/lowstate` (~900 messages/s), and on the Jetson's cores that starves it for the GIL
+(15 fps alone, ~0 fps in a run, `failed (no_frame)`).
+
+Set up the Jetson once: the repo and `pip install -e .` in a Python 3.10 env with
+`unitree_sdk2py`, and `.env` with `UNITREE_IFACE=eth0` (the interface name: GStreamer joins the
+multicast on it) and the model's key. `UNITREE_ROBOT_IP` and `UNITREE_AES_128_KEY` are not
+needed there. Run from a laptop over Wi-Fi and watch through a tunnel:
+
+```
+ssh -L 8765:127.0.0.1:8765 unitree@<the Jetson's Wi-Fi address>
+g1 run point_at_the_laptop --mode gantry --view      # then http://127.0.0.1:8765 on the laptop
+```
 
 ## `--mode` (required, no default)
 
