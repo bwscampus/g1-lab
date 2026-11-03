@@ -151,7 +151,7 @@ def test_standing_mode_enters_and_restores_another_fsm(monkeypatch, capsys):
     env, loco, out = bring_up(monkeypatch, 500, capsys)
     assert loco.calls == [("SetFsmId", 200)] and "entering control mode (FSM 200" in out and "FSM 500" in out
     env._teardown_robot()
-    assert loco.calls[-1] == ("SetFsmId", 500) and "FSM 500 (start) restored" in capsys.readouterr().out
+    assert loco.calls[-1] == ("SetFsmId", 500) and "FSM 500 (walk, 1-DoF waist) restored" in capsys.readouterr().out
 
 
 
@@ -189,7 +189,7 @@ def test_teardown_never_raises(monkeypatch, capsys):
 
 def test_verbose_prints_every_call_and_the_health_line(monkeypatch, capsys):
     env, loco, out = bring_up(monkeypatch, 500, capsys, verbose=True)
-    assert "sdk " in out and "LocoClient.GetFsmId() -> 0 (ok)" in out and "fsm at start: 500 (start)" in out
+    assert "sdk " in out and "LocoClient.GetFsmId() -> 0 (ok)" in out and "fsm at start: 500 (walk, 1-DoF waist)" in out
     assert "SetFsmId(200) -> 0 (ok)" in out and "dds: ChannelFactoryInitialize" in out
     env.arm, env.monitor, env.base = Arm(), None, None
     env.overruns, env.ticks = 0, 0

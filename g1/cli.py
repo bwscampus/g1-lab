@@ -336,6 +336,8 @@ COMMANDS = {
     "run": "run a task on the robot, or on the twin with --sim",
     "bench": "run a suite of tasks on the twin, headless, repeated, scored by the twin; one table (suites/)",
     "status": "is the robot reachable and what state is it in (read-only)",
+    "moves": "the robot's stored moves (Unitree's dances, gestures, arm actions): list | check | play, "
+             "and FSM switches in their order: fsm damp|stand|main|walk|sit|up",
     "twin": "fetch the twin's model, walker and room assets (fetch | status)",
     "trace": "compare two runs of a task, e.g. the twin's and the robot's (compare | show)",
     "limits": "print every limit and default in configs/limits.json as one table (or one source: g1 limits guess), "
@@ -364,6 +366,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     if command == "status":
         from g1.envs.robot import status_main
         return status_main(rest)
+    if command == "moves":
+        from g1.envs.moves import main as moves_main
+        return moves_main(rest)
     if command == "limits":
         code = limits.main(rest)
         if code == 0:

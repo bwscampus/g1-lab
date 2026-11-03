@@ -129,6 +129,43 @@ LED strip (`AUDIO_METHODS` allows only `TtsMaker`). The joint monitor runs repor
 the measured angles (teardown already releases the arms; stopping mid-run is its own risk) and
 `report()` counts tick overruns. With `--sim` the same monitor is strict and a fall fails the run.
 
+## Unitree's stored moves (`g1 moves`)
+
+The robot carries Unitree's own moves; `g1 moves` lists, checks and plays them, by hand (the
+model never reaches them). What is installed depends on the robot and its firmware, so the robot
+is asked every time (`GetMimicMotion`, `GetActionList`); the twin has none.
+
+```
+g1 moves                       # read-only: the FSM and everything stored, with durations
+g1 moves check bow arm:hug     # read-only: installed or not (exit 1 when one is missing)
+g1 moves fsm walk              # FSM switches along their order, shown and confirmed first
+g1 moves play bow 504 arm:20   # from standing (FSM 200/500/501/801/802), in order, confirmed first
+```
+
+- **Mimic motions** (whole body): `SetFsmId(550<id>)`, e.g. 516 bow = `SetFsmId(550516)`. Played on our G1: 570, 516, 531-533, 502. The list
+  comes from the FSM API (7100) with `{"fsm_id": 550, "api_id": 1}`, which unitree_sdk2 (C++)
+  wraps as `LocoClient::GetMimicMotion` and the Python SDK does not (`link.mimic`). Ids found on our
+  G1 (2026-11-02): 4xx get up / lie down, 5xx gestures (507-573) and dances (502-506, 574), 6xx dances (601-605).
+- **Arm actions** (upper body, the `arm` service): `ExecuteAction(id)`; 99 releases one that holds
+  its last keyframe (they let go after at most 20 s on their own). Some run only in FSM 500/501 or
+  only on some `mode_machine` (the LowState field; ours is 5): the list says so.
+- **Taught actions** (recorded in the app): `ExecuteCustomAction(name)`, `StopCustomAction`.
+- **FSM order**: 0 -> 1 (damp) -> 4 (locked stand, hanging) -> 501 (walk) or 200; 200 <-> 501;
+  200/501 -> 3 (sit) -> 801 (stand up) -> 200/501. Walking is **501** on our 29-DoF G1 (3-DoF waist):
+  it takes `SetFsmId(500)` with code 0 and stays in 4 (500 is the 1-DoF-waist G1's). Damp drops a
+  standing robot, so it is only ever the end of a switch, never a way through (200 -> 4 has no path:
+  use the remote). `g1 moves fsm walk` is 501.
+- **A move, as measured (2026-11-03)**: 501 -> 550 while it plays -> 802 when it ends; the next move
+  plays from 802, so a list chains with no FSM step between. The play waits for the robot to leave
+  550, not for the listed duration: the boxing moves (531-533, listed 2.6-3.9 s) hold their last
+  pose and stayed in 550 for about 23 s. 802 -> 501 (`g1 moves fsm walk`) is allowed but not yet tried.
+- Ctrl-C during a move stops it (a mimic motion: back to the FSM it started in; an arm action:
+  release) and that stop finishes. Times: `moves_settle_s`, `moves_overrun_s`, `arm_action_s` (guesses: time them).
+
+Unitree's reference: unitree_sdk2 `include/unitree/robot/g1/loco/g1_loco_client.hpp`
+(GetMimicMotion) and `include/unitree/robot/g1/arm/g1_arm_action_client.hpp`; the G1 sport
+services page, support.unitree.com/home/en/G1_developer/sport_services_interface.
+
 ## Ctrl-C
 
 An interrupted run (Ctrl-C, the task's `max_time_s`, any exception) never drops the arms where

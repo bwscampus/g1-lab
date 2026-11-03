@@ -45,6 +45,11 @@ g1 bench SUITE                       # suites/<name>/suite.json: its tasks on th
 g1 run TASK --mode standing|gantry [--view]   # the robot; --mode is required. standing may walk, gantry never does;
                                      # --view: its head camera at http://127.0.0.1:8765 (live only)
 g1 status                            # read-only: link ok / robot refuses / no link (UNITREE_IFACE)
+g1 moves [list] | check MOVE...      # read-only: Unitree's moves stored on the robot (mimic motions = FSM 550<id>,
+                                     # arm:<id|name> arm actions, custom:<name> taught in the app), installed or not
+g1 moves play MOVE... | fsm TARGET   # the robot only, asks first: play stored moves in order from standing; switch the
+                                     # FSM along its order (damp, stand 4, main 200, walk 501, sit 3, up 801; never via damp);
+                                     # a move runs in 550 and ends in 802, where the next plays
 g1 twin fetch|status
 g1 trace compare RUN_A RUN_B | show RUN   # two run dirs of the same task: tracking, sag, lag, A-B difference
 g1 limits [SOURCE]                   # every limit and default in configs/limits.json as one table, + the model in use
@@ -76,7 +81,7 @@ g1/tools/          __init__: discovery (TOOLS), menu(), the three renderings, pa
                    shake_hand) · posture (sit: SetFsmId(3)) · speech (say: AudioClient.TtsMaker) · control (hold, listen, check +
                    dry_run, done, give_up, takeover, handback)
 g1/envs/           base (Env, EnvAbort, shield_sigint, verbose, sdk_log), monitor (JointMonitor), scene (the room),
-                   robot (RobotEnv, ArmSdk, BaseCommander, Health, probe/status_main), sdk (RPC_CODES, explain, call, FSM_NAMES),
+                   robot (RobotEnv, ArmSdk, BaseCommander, Health, probe/status_main), moves (g1 moves), sdk (RPC_CODES, explain, call, FSM_NAMES),
                    link (DdsLink: the SDK seam), sim (SimEnv = RobotEnv on the in-process twin: the tests' env), trace
 g1/twin/           assets (g1 twin fetch), model (unitree_mujoco G1 + head camera), walker (GR00T: Balance + Walk),
                    onboard (the stand-in onboard controller: FSM, arm_sdk blend, stand/walk, gestures, falls),
@@ -139,7 +144,8 @@ root via `pythonpath`. `limits.ROOT` is the repo root (configs/, tasks/, assets/
   (`WaveHand`, `ShakeHand`; `needs_loco`; and `Sit`, the one FSM, `config.LOCO_FSM`: `sit`, sent as
   `SetFsmId(3)`, standing mode only, the teardown stands up with 801) and `config.AUDIO_METHODS` (`TtsMaker`; `say`) — routed by name
   in `RobotEnv._command`; a failed speech warns and continues, a failed gesture raises.
-  `PlayStream`/`SetVolume`/`LedControl` are never reachable from a reply.
+  `PlayStream`/`SetVolume`/`LedControl` are never reachable from a reply. `g1 moves` (a person at the
+  keyboard, never the model) is the one place that plays Unitree's stored moves and switches other FSMs.
 - **Frames are RGB everywhere**; image I/O only through `g1/core/images.py` (Pillow). OpenCV is not
   used and must not be imported (its bundled ffmpeg collides with PyAV's, which decodes the robot's video).
 - **The view never touches the tick.** `--view` (live runs) serves the env's camera slot (`Env.source()`)

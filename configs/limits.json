@@ -113,6 +113,9 @@
     "gantry_lock_stand_s":        {"value": 7.0,    "unit": "s",      "source": "guess",      "note": "gantry: wait after SetFsmId(4) for the locked stand to finish before FSM 200 (the twin needs about 2.5 s)"},
     "sit_stand_timeout_s":        {"value": 10.0,   "unit": "s",      "source": "guess",      "note": "teardown after a sit: longest wait for a standing FSM after SetFsmId(801); time the robot's stand-up"},
     "restore_fsm_s":              {"value": 3.0,    "unit": "s",      "source": "guess",      "note": "standing: wait after restoring the FSM the run started in"},
+    "moves_settle_s":             {"value": 2.0,    "unit": "s",      "source": "guess",      "note": "g1 moves play: wait this long past a stored move's own duration before the next (or before reporting the FSM it ended in)"},
+    "moves_overrun_s":            {"value": 20.0,   "unit": "s",      "source": "guess",      "note": "g1 moves play: a stored move is over when the robot leaves FSM 550; wait at most this long past its duration and settle (the boxing moves 531/532 ran past theirs, 2026-11-03)"},
+    "arm_action_s":               {"value": 6.0,    "unit": "s",      "source": "guess",      "note": "g1 moves play: an arm action reports no duration; wait this long, then release it (id 99); time the longest you use"},
     "status_probe_s":             {"value": 3.0,    "unit": "s",      "source": "repo",       "note": "g1 status counts LowState and asks the FSM for this long"},
     "health_period_s":            {"value": 1.0,    "unit": "s",      "source": "repo",       "note": "G1_VERBOSE=1: the health line is printed this often"},
 
