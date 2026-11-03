@@ -140,7 +140,7 @@ g1 moves                       # read-only: the FSM and everything stored, with 
 g1 moves check bow arm:hug     # read-only: installed or not (exit 1 when one is missing)
 g1 moves fsm walk              # FSM switches along their order, shown and confirmed first
 g1 moves play bow 504 arm:20   # from standing (FSM 200/500/501/801/802), in order, confirmed first
-g1 moves walk 0.5              # also: side 0.3 (left), turn -90 (right); walk mode first, confirmed first
+g1 moves walk 0.5              # also: side 0.3 (left), turn -90 (right); run mode (801) first, confirmed first
 ```
 
 - **Mimic motions** (whole body): `SetFsmId(550<id>)`, e.g. 516 bow = `SetFsmId(550516)`. Played on our G1: 570, 516, 531-533, 502. The list
@@ -152,7 +152,9 @@ g1 moves walk 0.5              # also: side 0.3 (left), turn -90 (right); walk m
   only on some `mode_machine` (the LowState field; ours is 5): the list says so.
 - **Taught actions** (recorded in the app): `ExecuteCustomAction(name)`, `StopCustomAction`.
 - **FSM order**: 0 -> 1 (damp) -> 4 (locked stand, hanging) -> 501 (walk) or 200; 200 <-> 501;
-  200/501 -> 3 (sit) -> 801 (stand up) -> 200/501. Walking is **501** on our 29-DoF G1 (3-DoF waist):
+  200/501 -> 3 (sit) -> 801 -> 200/501. **801 is run mode** (walk-run locomotion in Unitree's FSM table; the
+  sit teardown stands up into it), and `g1 moves walk` and `g1 talk` walk in it (limit `walk_fsm`).
+  `g1 moves fsm run` switches to it. Walk mode is **501** on our 29-DoF G1 (3-DoF waist):
   it takes `SetFsmId(500)` with code 0 and stays in 4 (500 is the 1-DoF-waist G1's). Damp drops a
   standing robot, so it is only ever the end of a switch, never a way through (200 -> 4 has no path:
   use the remote). `g1 moves fsm walk` is 501.
@@ -174,8 +176,8 @@ whether moves may play, then listens. Each time someone speaks and pauses (`talk
 robot's speech recognition heard goes to the model (`configs/model.json`), which picks one of four
 tools: `say` (spoken with `TtsMaker`, English voice: `tts_speaker_id` 1), `move` (a stored gesture or
 dance, ids 5xx/6xx only: never a get-up or lie-down), `walk` (turn, then walk, then sidestep, each
-capped by `talk_turn_max_deg`, `talk_walk_max_m`, `talk_side_max_m`; it switches to walk mode, 501,
-first) or `ignore` (not meant for it). It never runs a task or takes the arms. It cannot see: it walks
+capped by `talk_turn_max_deg`, `talk_walk_max_m`, `talk_side_max_m`; it switches to the walking FSM
+first; run mode, 801, by `walk_fsm`) or `ignore` (not meant for it). It never runs a task or takes the arms. It cannot see: it walks
 only when asked, and the cap is the only thing between a request and a wall. Needs voice interaction on in the app (or `rt/audio_msg` stays
 silent) and the model's key in `.env` on the machine that runs it. Ctrl-C ends it (a move playing is
 stopped first). What it heard, its choice, the model's time and what it said are printed.

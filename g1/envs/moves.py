@@ -2,7 +2,7 @@
 
     g1 moves [list]             read-only: the FSM and every stored move (mimic motions, arm actions, taught)
     g1 moves check MOVE ...     read-only: is each installed, how long it takes, what it needs
-    g1 moves fsm TARGET         switch the FSM along its allowed order (damp, stand, main, walk, sit, up)
+    g1 moves fsm TARGET         switch the FSM along its allowed order (damp, stand, main, walk, run, sit)
     g1 moves play MOVE ...      play stored moves one after another (asks first)
     g1 moves walk|side|turn N   walk N m (negative: back), sidestep N m (positive: left), turn N deg (positive: left)
 
@@ -39,9 +39,10 @@ ARM_RELEASE = 99                # ExecuteAction(99) releases an arm action that 
 # standing robot, so from standing it is only ever a final step, never a way through.
 # Walking is 501 on the 29-DoF G1 (3-DoF waist) and 500 on the 1-DoF-waist one: ours takes
 # SetFsmId(500) with code 0 and stays in 4 (2026-11-03).
-FSM_TARGETS = {"damp": 1, "stand": 4, "main": 200, "walk": 501, "sit": 3, "up": 801}
-FSM_NEXT = {0: (1,), 1: (4,), 4: (200, 501, 500, 1), 200: (501, 500, 3, 1), 500: (200, 3, 1), 501: (200, 3, 1),
-            3: (801,), 801: (200, 501, 500), 802: (501, 500, 200)}
+# Run mode is 801 (walk-run locomotion in Unitree's FSM table; it is also how the sit teardown stands up).
+FSM_TARGETS = {"damp": 1, "stand": 4, "main": 200, "walk": 501, "run": 801, "sit": 3}
+FSM_NEXT = {0: (1,), 1: (4,), 4: (200, 501, 500, 801, 1), 200: (501, 500, 801, 3, 1), 500: (200, 801, 3, 1),
+            501: (200, 801, 3, 1), 3: (801,), 801: (200, 501, 500, 1), 802: (501, 500, 200, 801)}
 FSM_WARN = {1: "damp: every joint goes limp; a standing robot falls. Only with it hanging in the gantry",
             4: "locked stand from damp: hang it in the gantry (feet just touching), or have it already standing",
             3: "sit: straight down where it stands; a chair must be right behind its heels",
@@ -49,7 +50,7 @@ FSM_WARN = {1: "damp: every joint goes limp; a standing robot falls. Only with i
 # Moves play only from standing under the onboard controller. A stored move runs in 550 and
 # ends in 802 (our G1, 2026-11-03: 501 -> 550 -> 802), from which the next one plays.
 PLAY_FSMS = frozenset({200, 500, 501, 801, 802})
-WALK_FSMS = frozenset({200, 500, 501})          # walk in these; from 802 (after a stored move) it is untested, so switch first
+WALK_FSMS = frozenset({200, 500, 501, 801})     # locomotion FSMs; Moves.walk walks in limit walk_fsm
 
 # English for the stored motions' pinyin names (the robot lists them as below).
 GLOSS = {"lie_down": "lie down", "yingbin": "welcome the guests (long)", "chayao": "hands on hips", "feiwen": "flying kiss",
@@ -304,7 +305,7 @@ class Moves:
         speeds (walk_speed, side_speed, turn_rate), each within the base's hard ceilings. The
         velocity (SetVelocity with a 1 s duration: the robot's own dead-man) is re-sent every
         base_send_period_s and zeroed at the end, so the robot stops by itself within 1 s if this
-        process dies. From after a stored move (802) it switches to walk mode (501) first.
+        process dies. It switches to ``walk_fsm`` (run mode, 801) first when the robot is in another FSM.
         Ctrl-C stops it at once. 0, or 130 when stopped."""
         legs = [((0.0, 0.0, 1.0), math.radians(turn_deg), min(limits.get("turn_rate"), limits.get("base_vyaw_max"))),
                 ((1.0, 0.0, 0.0), forward_m, min(limits.get("walk_speed"), limits.get("base_vx_max"))),
@@ -312,10 +313,10 @@ class Moves:
         legs = [(axis, amount, speed) for axis, amount, speed in legs if abs(amount) > 1e-6]
         if not legs:
             return 0
-        fsm = self.fsm()
-        if fsm not in WALK_FSMS:
-            print(f"walking needs walk mode; the robot is in FSM {sdk.fsm_name(fsm)}")
-            self.switch(FSM_TARGETS["walk"])
+        fsm, target = self.fsm(), int(limits.get("walk_fsm"))
+        if fsm != target:
+            print(f"walking in FSM {sdk.fsm_name(target)}; the robot is in {sdk.fsm_name(fsm)}")
+            self.switch(target)
         try:
             for axis, amount, speed in legs:
                 vel = [a * speed * (1 if amount > 0 else -1) for a in axis]

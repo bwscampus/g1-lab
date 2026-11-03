@@ -9,7 +9,7 @@ one call: ``say`` (spoken with the robot's text-to-speech, ``TtsMaker``), ``move
 move from the allow-list below, played by ``g1 moves``'s player), ``walk`` (a short turn, walk
 or sidestep, each capped by a ``talk_*_max`` limit, walked by ``Moves.walk``) or ``ignore``
 (chatter not meant for it). It never runs a task and never takes the arms (no arm_sdk): its
-only effects are speech, the allow-listed moves and the capped walks (which switch to walk mode).
+only effects are speech, the allow-listed moves and the capped walks (which switch to run mode, limit walk_fsm).
 
 At the start it brings the robot to standing (``g1 moves fsm walk``'s order) if it is not,
 and asks once before any move may play. Ctrl-C ends it; during a move, the move is stopped first.
@@ -25,7 +25,7 @@ from typing import Callable, Optional
 
 from g1.core import limits
 from g1.envs import sdk
-from g1.envs.moves import FSM_TARGETS, PLAY_FSMS, Moves, connect, gloss
+from g1.envs.moves import PLAY_FSMS, Moves, connect, gloss
 
 # The moves talk may play: the gestures and dances (mimic ids 5xx, 6xx). Never the get-up and
 # lie-down motions (4xx) or the stance (101), whatever the robot lists.
@@ -243,7 +243,7 @@ def main(argv: list[str]) -> int:
     fsm = moves.fsm()
     if fsm not in PLAY_FSMS:
         print(f"the robot is in FSM {sdk.fsm_name(fsm)}; standing it up for talk mode")
-        moves.switch(FSM_TARGETS["walk"])
+        moves.switch(int(limits.get("walk_fsm")))
     else:
         print(f"ready: FSM {sdk.fsm_name(fsm)}")
     if not moves.confirm("talk mode plays moves and takes short walks when asked, without asking again: "

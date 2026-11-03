@@ -48,9 +48,9 @@ g1 status                            # read-only: link ok / robot refuses / no l
 g1 moves [list] | check MOVE...      # read-only: Unitree's moves stored on the robot (mimic motions = FSM 550<id>,
                                      # arm:<id|name> arm actions, custom:<name> taught in the app), installed or not
 g1 moves play MOVE... | fsm TARGET   # the robot only, asks first: play stored moves in order from standing; switch the
-                                     # FSM along its order (damp, stand 4, main 200, walk 501, sit 3, up 801; never via damp);
+                                     # FSM along its order (damp, stand 4, main 200, walk 501, run 801, sit 3; never via damp);
                                      # a move runs in 550 and ends in 802, where the next plays
-g1 moves walk|side|turn N            # the robot only, asks first: a short walk (Move's 1 s dead-man, re-sent; walk mode first)
+g1 moves walk|side|turn N            # the robot only, asks first: a short walk (SetVelocity's 1 s dead-man, re-sent) in limit walk_fsm (run, 801)
 g1 talk                              # the robot only: stands it ready, listens (rt/audio_msg), answers with TtsMaker,
                                      # plays an allow-listed stored move (5xx/6xx) or takes a capped short walk; never a task or the arms
 g1 twin fetch|status
