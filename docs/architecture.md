@@ -4,15 +4,21 @@
 
 | word | meaning here |
 |---|---|
-| **tool** | what the model picks, one per turn, and the host executes: a fixed motion (or a query) computed from its arguments, checked, executed, settled and reported. One class: name, prompt, `params`, `segments()`. Ends by construction. Visible to the model by default; chains in a task's `tools`. |
+| **tool** | what the model picks, one per turn, and the host executes: a fixed motion (or a query) computed from its arguments, checked, executed, settled and reported. One class: name, prompt, `params`, `segments()`. Ends by construction. Visible to the model by default. |
 | **instruction** | the goal text the model is given (`task.json`'s `instruction`). |
-| **task** | a folder with an instruction (or a fixed `tools` chain) and its context (scene, safety notes, budget); no code. What `g1 run` runs. |
+| **task** | a folder with an instruction and its context (scene, safety notes, budget, demos); no code. What `g1 run` runs and `g1 talk` may choose. |
+| **routine** | ours, not GPT-Policy's: a reference motion (`routines/<name>/routine.json`), a timeline of tracks (upper body via arm_sdk, base via LocoClient, onboard gestures; full body kept, not played), compiled to segments and played start to finish with no model. |
+| **built-in** | ours: a motion that comes with the robot and runs on Unitree's controller (stored dances and gestures, walking); `g1 moves`, talk's `move`/`walk`. |
+| **demo** | ours: a successful earlier run of a task, promoted by a person, shown to the model at the head of every request of the next run (`g1/agent/demos.py`). |
 | **observation** | the one JSON object a turn sends: instruction, images, measured state, extra, `previous_result`. |
 | **decision** | the model's reply: `{"name": tool, "arguments": {...}}`, validated against the tool's schema. |
 | **execution result** | what the host reports after a tool: residuals, the commanded base displacement, a settle report — or why nothing ran. |
 | **verdict** | the success/failed label after the run: a human's on the robot, the twin's on `--sim` when the task has `success` criteria (`outcome_source` says which). `done` is the model's conclusion, not the label; `false_done` marks a `done` the twin did not confirm. |
 
-Retired words: skill, policy, primitive, routine, goal. Nothing in the repo is called a policy.
+Retired words: skill, policy, primitive, goal. Nothing in the repo is called a policy (that word comes
+back with the first trained closed-loop controller). `g1 talk` is the supervisor: for each thing it hears
+it answers or chooses a built-in, a routine or a task (never authoring one); Ctrl-C stops what runs to a
+safe neutral and talk goes on, `q` quits (`docs/running-on-the-robot.md`).
 
 ## The loop
 
@@ -26,7 +32,8 @@ Everything the envs run is a `Runnable` (`g1/core/action.py`): `reset(obs)` once
   pose the last tool ended in): **nothing moves the arms to a neutral pose**, at the start,
   at the end, or as a side effect of another tool. A tool touches only the joints it is
   about and leaves them where it ends; one that needs a starting pose makes it its own
-  first segment (`tpose` raises the arms itself).
+  first segment (`point` raises the arm itself).
+  A **routine** (`g1/routines.py`) is played as a Chain of one `RoutineTool`, dry-run whole first.
 * the **Agent** (`g1/agent/agent.py`) — the decision loop below, which runs one tool at a time
 
 ```
@@ -90,8 +97,8 @@ say(text, pause_s)              the onboard text-to-speech; the twin prints it  
 done(summary, hindsight) / give_up(reason, hindsight)
 ```
 
-Presets (`visible = False`: tools chains only): `walk_forward`, `turn`,
-`tpose`, `sixseven`; bookends `takeover`, `handback`. An onboard call a tool may make is
+Hidden (`visible = False`: code and chains only): `walk_forward`, `turn`, `routine` (any routine,
+whole); bookends `takeover`, `handback`. `play_routine(routine)` offers the upper-body routines to the model. An onboard call a tool may make is
 allow-listed by service: `config.LOCO_METHODS` (`WaveHand`, `ShakeHand`, `Sit`) and
 `config.AUDIO_METHODS` (`TtsMaker`); the robot env routes by name and refuses the rest.
 `Sit` is the one FSM switch (`config.LOCO_FSM`: sent as `SetFsmId(3)`; the teardown stands

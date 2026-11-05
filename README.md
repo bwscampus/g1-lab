@@ -5,17 +5,19 @@ GPT-Policy's shape ([arXiv:2609.19138](https://arxiv.org/abs/2609.19138), see
 [Acknowledgements](#acknowledgements)): the model looks at the head camera and the joint
 state, picks a tool from a menu and fills in its arguments; the host plans the motion,
 checks it against the joint and speed limits, runs it, waits for the joints to settle and
-reports what happened; the model looks again. The same tools chain without a model, on a
-MuJoCo twin of the robot and on the robot.
+reports what happened; the model looks again. `g1 talk` sits on top: it listens and, for each
+thing it hears, answers or chooses what the robot does: a built-in (Unitree's own dances and walking),
+a routine (our fixed joint motion) or a task. All of it runs on a MuJoCo twin of the robot and on the robot.
 
 ```
-g1 run tpose --sim                   # a task on the twin, in the MuJoCo window: the robot code, over DDS
+g1 run tpose --sim                   # a routine on the twin, in the MuJoCo window: the robot code, over DDS
 g1 run find_the_mug --sim            # the model searches a room (needs HF_TOKEN)
 g1 run point_at_the_laptop --sim     # demo: beside the table, the waist finds the laptop, the right arm points at it
 g1 run find_and_point_at_the_laptop --sim   # demo: explore the room, walk to the table, point at the laptop
 g1 run sit_in_the_chair --sim        # demo: find a chair, back up to it and sit (the twin does not stand up again)
-g1 run tpose --mode gantry           # the robot, hanging in a gantry (never walks)
+g1 run tpose --mode gantry           # the routine on the robot, hanging in a gantry (never walks)
 g1 run find_the_mug --mode standing --view   # the robot on its own feet (may walk); its camera in a browser
+g1 talk                              # the robot listens and chooses: answer, built-in, routine or task (Ctrl-C stops, q quits)
 g1 status                            # read-only: is it the link, or is the robot refusing?
 g1 lidar                             # the head lidar: live 3D view at :8766, map saved per run (robot only)
 g1 twin fetch                        # once: the twin's model, walker and room
@@ -28,18 +30,23 @@ That is the whole command line. Everything else lives in a file: what to do in t
 `configs/model.json`, and in
 `.env` only what is private to one machine: the model's key and the robot's address and key. `G1_VERBOSE=1` prints every SDK call and a health line a second.
 
-Two words to know, both GPT-Policy's:
+The words to know, the first two GPT-Policy's:
 
 * a **tool** is a bounded program with parameters — a name, a prompt, a JSON-schema
   `params` and a `segments()` method in one Python class. It ends by construction (a motion
   has a duration) and never watches the camera while it runs: the model is the closed loop.
   **Students write tools**: a file in `g1/tools/`.
 * a **task** is a folder under `tasks/` with a `task.json` and no code: an `instruction` the
-  model works on (with the scene, safety notes and the budget), or a fixed `tools` chain that
-  runs without a model. **Students write tasks.**
+  model works on (with the scene, safety notes and the budget), shown the **demos** a person
+  promoted from earlier successful runs. **Students write tasks.**
+* a **routine** is a folder under `routines/` with a `routine.json`: our reference motion as a
+  timeline (upper-body joint keyframes or recorded samples, base velocity windows, onboard
+  gestures), played start to finish with no model. **Students write routines.**
+* a **built-in** comes with the robot: Unitree's stored dances and gestures, and its walking.
 
 The menu the model gets: `move`, `arm_path`, `hold`, `check`, `say` (the onboard
-text-to-speech), `wave_hand`/`shake_hand` (onboard gestures), `done`, `give_up`.
+text-to-speech), `wave_hand`/`shake_hand` (onboard gestures), `play_routine` (an upper-body routine),
+`done`, `give_up`.
 
 ## Install
 
@@ -176,8 +183,8 @@ switch — so one tool serves every situation. A tool touches only the joints it
 leaves them where it ends: nothing moves the arms to a neutral pose at the start or end of a
 run, or while walking. `{limit:name}` in the prompt and `limit("name")` in a range come from
 `configs/limits.json`, so what the model is told never differs from what the host enforces.
-Try it with a task: `tasks/bow/task.json` = `{"tools": "bow:20:1:0.5:1,hold:1,bow:angle_deg=10"}`,
-then `g1 run bow --sim`.
+Try it on the twin: `python -c "from g1.cli import run; from g1.tools import parse_chain; from tests.doubles
+import sim_env; print(run(parse_chain('bow:20:1:0.5:1,hold:1,bow:angle_deg=10'), sim_env()))"`.
 
 `docs/writing-a-tool.md` has the rest: the joints and their conventions, base motion, the
 onboard gestures, what `check` and the monitor do with it, and why no tool watches the
@@ -210,20 +217,23 @@ g1/
   core/           config (joints, limits table, stand pose), limits (every tunable number), action
                   (Action, Obs, Segment, Runnable), poses, images (RGB, Pillow), worker
   tools/          STUDENTS WRITE: one file per tool, found by import; base.py is the contract,
-                  move / arms / gestures / speech / control are the built-ins
+                  move / arms / routines / gestures / speech / control are the shipped ones
   envs/           base (Env), monitor (the per-tick safety check), robot (RobotEnv: the G1 or the twin),
                   link (the SDK seam), sim (the in-process twin the tests use), scene (the room), trace
   twin/           the twin: model, walker, onboard controller, services, loopback, DDS bridge, TwinProcess
+  talk.py         g1 talk, the supervisor: answers, or chooses a built-in, a routine or a task; Ctrl-C stops, q quits
+  routines.py     routines: the timeline format, its checks, compiled to the segments tools play
   lidar.py        the head lidar through Unitree's SLAM: Scan (points + pose), MapAccumulator, write_pcd; g1 lidar
   lidar_view.py   g1 lidar's live 3D view in a browser
   camera.py       the robot's head camera over WebRTC (a laptop) or straight from the video hub (on its Jetson); the twin's over shared memory; DirCamera replays frames
   vlm.py          the Hugging Face client
   agent/          agent (settle -> snapshot -> think -> act -> feedback), decider (the model I/O
-                  contract), episode (the run record), task (task.json)
-tasks/            STUDENTS WRITE: one folder per task (task.json, runs/, results.jsonl)
+                  contract), episode (the run record), task (task.json), demos (in-context demos)
+tasks/            STUDENTS WRITE: one folder per task (task.json, demos/, runs/, results.jsonl)
+routines/         STUDENTS WRITE: one folder per routine (routine.json, motion.npz for recorded ones, runs/)
 configs/limits.json   every limit and default, with its unit and where the number came from
 configs/model.json    which model is asked (provider, model id per provider) and how
-docs/             architecture, writing-a-tool, writing-a-task, running-on-the-robot, vision-model
+docs/             architecture, writing-a-tool, writing-a-task, writing-a-routine, running-on-the-robot, vision-model
 tests/            pytest, mirroring g1/; everything runs on the twin in-process
 ```
 

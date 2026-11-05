@@ -1,8 +1,9 @@
 # Running on the robot
 
 ```
-g1 run tpose --mode standing           # a robot standing under its own controller; may walk
+g1 run tpose --mode standing           # a routine, on a robot standing under its own controller
 g1 run tpose --mode gantry             # a robot hanging in a gantry; never walks
+g1 talk                                # the supervisor: it listens and chooses (below)
 g1 run find_the_mug --mode standing --view   # the model decides; its camera in a browser
 ```
 
@@ -19,13 +20,13 @@ interface on the robot's network, or the robot's IP), `UNITREE_ROBOT_IP` (the he
 `UNITREE_AES_128_KEY` (the camera, firmware ≥ 1.5.1), and `UNITREE_DOMAIN` if your robot is
 not on DDS domain 0.
 
-To see how far the twin is from your robot, run the same task on both (in the gantry, arms
+To see how far the twin is from your robot, run the same routine on both (in the gantry, arms
 only) and compare the two run directories:
 
 ```
 g1 run tpose --mode gantry
 g1 run tpose --sim --mode gantry
-g1 trace compare tasks/tpose/runs/<robot run> tasks/tpose/runs/<twin run>
+g1 trace compare routines/tpose/runs/<robot run> routines/tpose/runs/<twin run>
 ```
 
 ## Install
@@ -148,14 +149,14 @@ tool may call are `WaveHand` and `ShakeHand`, and one FSM: `Sit` (the `sit` tool
 standing` only), sent as `SetFsmId(3)`; after it the agent refuses every walking and onboard tool,
 and the teardown sends `SetFsmId(801)` (sit to stand), waits up to `sit_stand_timeout_s` for a
 standing FSM and returns to 200, or warns that the robot is still seated. Try the sit by hand
-first (a `{"tools": "sit"}` task, a chair already behind the heels, a spotter, the remote ready)
+first (`g1 moves fsm sit`, a chair already behind the heels, a spotter, the remote ready)
 and time it into `sit_seconds`. Any other FSM, damp, torque and squat are unreachable from a
 tool or a model reply; so are raw audio playback, the volume and the
 LED strip (`AUDIO_METHODS` allows only `TtsMaker`). The joint monitor runs report-only over
 the measured angles (teardown already releases the arms; stopping mid-run is its own risk) and
 `report()` counts tick overruns. With `--sim` the same monitor is strict and a fall fails the run.
 
-## Unitree's stored moves (`g1 moves`)
+## Built-ins: Unitree's stored moves (`g1 moves`)
 
 The robot carries Unitree's own moves; `g1 moves` lists, checks and plays them, by hand (the
 model never reaches them). What is installed depends on the robot and its firmware, so the robot
@@ -240,18 +241,44 @@ X and Y (beyond it SLAM can load the onboard computer enough to affect locomotio
 motion (it loses localisation). Sources: Unitree's SLAM and navigation services interface, and the
 service list and lidar parameters read from this robot.
 
-## Conversation demo (`g1 talk`)
+## The supervisor (`g1 talk`)
 
 `g1 talk` stands the robot ready (the `g1 moves fsm walk` order, if it is not standing), asks once
-whether moves may play, then listens. Each time someone speaks and pauses (`talk_quiet_s`), what the
-robot's speech recognition heard goes to the model (`configs/model.json`), which picks one of four
-tools: `say` (spoken with `TtsMaker`, English voice: `tts_speaker_id` 1), `move` (a stored gesture or
-dance, ids 5xx/6xx only: never a get-up or lie-down), `walk` (turn, then walk, then sidestep, each
-capped by `talk_turn_max_deg`, `talk_walk_max_m`, `talk_side_max_m`; it switches to the walking FSM
-first: walk mode, 501, by `walk_fsm`) or `ignore` (not meant for it). It never runs a task or takes the arms. It cannot see: it walks
-only when asked, and the cap is the only thing between a request and a wall. Needs voice interaction on in the app (or `rt/audio_msg` stays
-silent) and the model's key in `.env` on the machine that runs it. Ctrl-C ends it (a move playing is
-stopped first). What it heard, its choice, the model's time and what it said are printed.
+whether built-ins may play, then listens. Each time someone speaks and pauses (`talk_quiet_s`), what
+the robot's speech recognition heard goes to the model (`configs/model.json`), which makes one choice:
+
+* `say`: an answer (spoken with `TtsMaker`, English voice: `tts_speaker_id` 1), and nothing else;
+* `move`: a **built-in** stored gesture or dance, ids 5xx/6xx only (never a get-up or lie-down);
+* `walk`: a built-in walk: turn, then walk, then sidestep, each capped by `talk_turn_max_deg`,
+  `talk_walk_max_m`, `talk_side_max_m`, in walk mode (501, `walk_fsm`). It cannot see while it
+  talks: it walks only when asked, and the cap is the only thing between a request and a wall;
+* `play_routine`: a **routine** from `routines/` (`tpose`, `sixseven`, ...);
+* `run_task`: a **task** from `tasks/`, with the camera, until the model says done;
+* `ignore`: not meant for it.
+
+It only chooses: it never writes a routine or a task. **Each routine and task is confirmed at the
+keyboard** (`y` then Enter; anything else is no). Then it goes back to walk mode if a built-in left
+it in 802, and runs it through `g1 run`'s own path in `--mode standing` (FSM 200 for the run, walk
+mode again after), sharing talk's microphone, kept as `_unreviewed` (no questions mid-conversation;
+label it later). A task's `done` summary is spoken. A refusal (the robot not standing, a routine's
+dry run) is said, printed and talk keeps listening.
+
+**Stopping and quitting:**
+
+| | what happens |
+|---|---|
+| **Ctrl-C** during a built-in move | back to the FSM it started from (a balanced stand); talk keeps listening |
+| **Ctrl-C** during a walk | zero velocity; talk keeps listening |
+| **Ctrl-C** during a routine or task | the safe return (below): base stopped, arms to the stand pose, weight to 0, walk mode again; talk keeps listening |
+| **Ctrl-C** with nothing running | it prints how to quit; it never quits |
+| **q** then Enter | quits; anything running is stopped first, the same way as Ctrl-C |
+| `kill` (SIGTERM), a dropped ssh (SIGHUP) | like q |
+| the remote's **L2+B** | damp: the emergency stop, whatever the code is doing |
+
+Every stop goes through SIGINT, the path the safe return is shielded on: a second Ctrl-C, a q or a
+kill during the return waits until the robot is back to neutral. Needs voice interaction on in the
+app (or `rt/audio_msg` stays silent) and the model's key in `.env` on the machine that runs it. What
+it heard, its choice, the model's time and what it said are printed.
 
 ## Ctrl-C
 
