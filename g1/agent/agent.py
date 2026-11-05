@@ -660,13 +660,17 @@ def build_agent(task: dict, *, env_name: str, can_walk: bool, has_loco: bool, ru
     this env allows, the scene's and the task's safety notes, recorded under ``runs``; ``config``
     is the run's setup (``task.run_config``), completed here with the model, tools and prompt.
     It asks nothing at the end: ``g1 run`` asks, on the robot only (save it? then the verdict)."""
-    decider = VLMDecider.from_env()
+    from g1.agent.demos import load_demos
+    demos = load_demos(task, env_name, AGENT_SETTINGS["demos_max"])
+    decider = VLMDecider.from_env(demos=demos)
+    if demos:
+        print(f"demos: {', '.join(d['run'] for d in demos)}")
     tools = menu(can_walk, has_loco, hears=bool(task.get("hears")))
     notes = list(task["safety_notes"])          # rules only: the room's layout is never told
     agent = Agent(task["instruction"], decider, tools, max_decisions=task["max_decisions"],
                   step_timeout=AGENT_SETTINGS["step_timeout_s"], can_walk=can_walk, has_loco=has_loco,
                   safety_notes=notes, verdict=None)
-    config = {**(config or {}), "model": decider.settings(), **agent.context.record()}
+    config = {**(config or {}), "model": decider.settings(), **agent.context.record(), "demos": decider.demos_record()}
     agent.recorder = EpisodeWriter(runs, env=env_name, instruction=task["instruction"], model=decider.model,
                                    config=config, task=task["name"], mode=mode, max_decisions=task["max_decisions"])
     print(f"recording to {agent.recorder.dir}")

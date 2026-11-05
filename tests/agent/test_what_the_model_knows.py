@@ -125,3 +125,23 @@ def test_the_model_hears_a_voice_only_once_it_is_spoken_and_never_the_script():
     assert "Point at the mug." not in dec.turns[0].observation and "Point at the mug." in dec.turns[1].observation
     for secret in ("zebra", "at_s", "voices", "requests", "point_at\"", "within_deg"):
         assert secret not in sent, secret
+
+
+def test_the_whole_request_carries_no_host_truth_even_with_demos(tmp_path, monkeypatch):
+    """Every request as sent (system prompt, history, observations, demos): no host measurement and
+    no twin truth anywhere. A demo may repeat the model's own words about what it saw (furniture
+    included); everything else follows the word rules above."""
+    from tests.agent.test_demos import as_twin_success, recorded_run
+    from g1.agent.demos import promote
+    task, first, _, _ = recorded_run(tmp_path, monkeypatch)
+    promote(as_twin_success(first))
+    _, _, client, decider = recorded_run(tmp_path, monkeypatch, task=task)
+    host = ("base_measured", "base_error", "base_pose_env", "simulator", "within_deg", "criteria", "evaluation")
+    demo_ids = {id(b) for b in decider._demo_blocks}
+    for msgs in client.sent:
+        everything = json.dumps(msgs)
+        assert not [w for w in host if w in everything]
+        outside = [m if not isinstance(m.get("content"), list) else
+                   {**m, "content": [b for b in m["content"] if id(b) not in demo_ids
+                                     and b not in decider._demo_blocks]} for m in msgs]
+        assert not leaks(json.dumps(outside)), leaks(json.dumps(outside))

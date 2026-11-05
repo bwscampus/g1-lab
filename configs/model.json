@@ -21,7 +21,10 @@
         "image_width_px": 640,
         "jpeg_quality": 80,
         "live_image_window": 8,
-        "history_full_turns": 8
+        "history_full_turns": 8,
+        "demos_max": 2,
+        "demo_images_max": 4,
+        "demo_image_width_px": 320
     },
 
     "notes": {
@@ -43,6 +46,9 @@
         "agent.image_width_px": "px; frames are downscaled to this width before they are sent (a limit until 2026-10-29)",
         "agent.jpeg_quality": "0-100; JPEG quality of frames sent to the model (records stay lossless PNG) (a limit until 2026-10-29)",
         "agent.live_image_window": "count; observation images kept in the conversation; older turns keep their text (a limit until 2026-10-29)",
+        "agent.demos_max": "count; in-context demos shown to a task's model, at most (tasks/<name>/demos/: successful runs a person promoted, same env only; g1/agent/demos.py); 0 turns them off. 2 since 2026-11-06, a first guess",
+        "agent.demo_images_max": "count; camera images per demo, spread over its steps; the rest of its steps are one text line each; 0 sends text only",
+        "agent.demo_image_width_px": "px; demo images are downscaled to this width (smaller than the live image: they are context, not the scene)",
         "agent.history_full_turns": "count; earlier turns sent in full (observation, image if still in live_image_window, reply); older ones are replaced by one host-written line each, as GPT-Policy's Claude adapter does (a limit until 2026-10-29)"
     }
 }

@@ -47,7 +47,9 @@ KEYS = ("version", "provider", "models", "routing", "reasoning_effort", "max_tok
 # the agent loop's settings (g1/agent/): whole numbers are counts, the rest seconds or sizes; all > 0 but jitter
 AGENT = {"max_decisions": int, "step_timeout_s": float, "request_timeout_s": float, "retry_max": int,
          "retry_delay_base_s": float, "retry_delay_cap_s": float, "retry_jitter_s": float, "recovery_timeout_s": float,
-         "image_width_px": int, "jpeg_quality": int, "live_image_window": int, "history_full_turns": int}
+         "image_width_px": int, "jpeg_quality": int, "live_image_window": int, "history_full_turns": int,
+         "demos_max": int, "demo_images_max": int, "demo_image_width_px": int}
+ZERO_OK = ("retry_jitter_s", "demos_max", "demo_images_max")     # 0 turns these off
 
 
 def load_model(path: Path | str | None = None) -> dict:
@@ -86,7 +88,7 @@ def load_model(path: Path | str | None = None) -> dict:
     for name, kind in AGENT.items():
         v = a[name]
         ok = not isinstance(v, bool) and (isinstance(v, int) if kind is int else isinstance(v, (int, float)))
-        if not ok or v < 0 or (v == 0 and name != "retry_jitter_s"):
+        if not ok or v < 0 or (v == 0 and name not in ZERO_OK):
             raise ValueError(f"model file {p}: agent.{name} must be a positive {'whole ' if kind is int else ''}number, "
                              f"got {v!r}")
     if a["retry_delay_base_s"] > a["retry_delay_cap_s"]:
