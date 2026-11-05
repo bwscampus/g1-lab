@@ -126,6 +126,10 @@ FSM_SIT, FSM_SIT_TO_STAND = 3, 801
 # The only call a tool may make on the audio service ("voice"): text-to-speech. PlayStream
 # (arbitrary bytes), SetVolume and LedControl are not reachable from a reply; volume is a flag.
 AUDIO_METHODS = frozenset({"TtsMaker"})
+# The only calls g1 lidar makes on Unitree's SLAM service (slam_operate, g1/envs/link.py:DdsLink.slam):
+# start mapping (1801), end it and save Unitree's .pcd on the robot (1802), close SLAM (1901). Navigation
+# and relocation are not reachable; services are only read (ServiceList), never switched.
+SLAM_METHODS = frozenset({"StartMapping", "EndMapping", "CloseSlam"})
 # What AudioClient.PlayStream plays: raw 16 kHz mono 16-bit little-endian PCM, no header and no
 # rate field (measured 2026-10-30; docs/running-on-the-robot.md). g1/core/sounds.py converts to it.
 SPEAKER_RATE_HZ = 16000

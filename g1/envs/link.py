@@ -119,6 +119,41 @@ class DdsLink:
                 return (code, json.loads(data)) if code == 0 else (code, None)
         return TwinClient()
 
+    def robot_state(self):
+        """The robot's service list (read-only here: g1 lidar never calls ServiceSwitch)."""
+        from unitree_sdk2py.go2.robot_state.robot_state_client import RobotStateClient
+        return RobotStateClient()
+
+    def slam(self):
+        from unitree_sdk2py.rpc.client import Client
+
+        class SlamClient(Client):
+            """Unitree's SLAM service (``slam_operate``): only the calls in config.SLAM_METHODS.
+            JSON in, ``(code, data)`` out. Navigation (1102, 1201/1202) and relocation (1804) are
+            not registered."""
+            API = {"StartMapping": 1801, "EndMapping": 1802, "CloseSlam": 1901}
+
+            def __init__(self):
+                super().__init__("slam_operate", False)
+
+            def Init(self):
+                self._SetApiVerson("1.0.0.1")
+                for api in self.API.values():
+                    self._RegistApi(api, 0)
+
+            def _json(self, name, data):
+                return self._Call(self.API[name], json.dumps({"data": data}))
+
+            def StartMapping(self, slam_type):
+                return self._json("StartMapping", {"slam_type": slam_type})
+
+            def EndMapping(self, address):
+                return self._json("EndMapping", {"address": address})
+
+            def CloseSlam(self):
+                return self._json("CloseSlam", {})
+        return SlamClient()
+
     def lowstate(self, callback):
         from unitree_sdk2py.core.channel import ChannelSubscriber
         from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowState_

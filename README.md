@@ -17,6 +17,7 @@ g1 run sit_in_the_chair --sim        # demo: find a chair, back up to it and sit
 g1 run tpose --mode gantry           # the robot, hanging in a gantry (never walks)
 g1 run find_the_mug --mode standing --view   # the robot on its own feet (may walk); its camera in a browser
 g1 status                            # read-only: is it the link, or is the robot refusing?
+g1 lidar                             # the head lidar: live 3D view at :8766, map saved per run (robot only)
 g1 twin fetch                        # once: the twin's model, walker and room
 g1 trace compare RUN_A RUN_B         # how far the twin is from the robot on the same task
 g1 limits [guess]                    # every number and default as one table (or only the guesses)
@@ -213,6 +214,8 @@ g1/
   envs/           base (Env), monitor (the per-tick safety check), robot (RobotEnv: the G1 or the twin),
                   link (the SDK seam), sim (the in-process twin the tests use), scene (the room), trace
   twin/           the twin: model, walker, onboard controller, services, loopback, DDS bridge, TwinProcess
+  lidar.py        the head lidar through Unitree's SLAM: Scan (points + pose), MapAccumulator, write_pcd; g1 lidar
+  lidar_view.py   g1 lidar's live 3D view in a browser
   camera.py       the robot's head camera over WebRTC (a laptop) or straight from the video hub (on its Jetson); the twin's over shared memory; DirCamera replays frames
   vlm.py          the Hugging Face client
   agent/          agent (settle -> snapshot -> think -> act -> feedback), decider (the model I/O
