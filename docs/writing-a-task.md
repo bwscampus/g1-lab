@@ -1,7 +1,7 @@
 # Writing a task
 
 A task is a folder under `tasks/` with a `task.json` and no code: an **instruction** the model
-reads, the tools doing the moving, one at a time. `g1 run` runs it, and `g1 talk` can choose it.
+reads, the tools doing the moving, one at a time. `g1 run` runs it, and `g1 start` can choose it (or you, with `/routine` or `/task`).
 A fixed motion with no model in it is a **routine** (`docs/writing-a-routine.md`), not a task.
 
 ```

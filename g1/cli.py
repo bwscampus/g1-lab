@@ -1,22 +1,23 @@
-"""``g1``: run a task, on the robot or on the twin.
+"""``g1``: the robot, a session at a time or a run at a time.
 
-    g1 run TASK --mode standing|gantry     # the robot (UNITREE_IFACE, UNITREE_ROBOT_IP from .env)
-    g1 run TASK --mode standing --view     # ... and its head camera live in a browser
-    g1 run TASK --sim [--mode gantry]      # the twin, in the MuJoCo window: the same robot code, over DDS
+    g1 start --mode standing|gantry        # the robot in one interactive session: it listens, you type
+                                           # (plain text is chat; /help); it answers or runs a built-in,
+                                           # routine or task. Esc stops it; Ctrl-C twice exits
+    g1 run NAME --mode standing|gantry     # one task (or routine) on the robot; --view: its camera in a browser
+    g1 run NAME --sim [--mode gantry]      # the twin, in the MuJoCo window: the same robot code, over DDS
     g1 bench SUITE                         # a suite of tasks on the twin, headless, repeated, one table
     g1 status                              # is the robot reachable, and what state is it in
-    g1 lidar                               # the head lidar through Unitree's SLAM: the live feed, printed
+    g1 moves ...                           # Unitree's built-ins: list, check, play; FSM switches; short walks
+    g1 lidar                               # the head lidar through SLAM: a live 3D view, the map saved
     g1 twin fetch | status                 # the twin's model, walker and room assets
-    g1 trace compare RUN_A RUN_B | show RUN   # how far the twin is from the robot on the same task
+    g1 trace compare RUN_A RUN_B | show RUN   # how far the twin is from the robot on the same task or routine
     g1 limits [SOURCE]                     # every number and default, from configs/limits.json (+ the model)
 
-TASK is a folder under tasks/ (or its path): an ``instruction`` the vision model
-works on, or a fixed ``tools`` chain (``g1/agent/task.py``). ``--mode standing``
-lets the base walk; ``gantry`` never does. Every other number and default is in
-configs/limits.json (``g1 limits``), configs/model.json (which model, how it is asked)
-or the task's task.json; .env holds only what is
-private to this machine (the token, the robot's address and key). ``G1_VERBOSE=1``
-prints every SDK call and a health line a second.
+NAME is a task under tasks/ (an ``instruction`` the vision model works through) or a routine under
+routines/ (a fixed motion, no model). ``--mode standing`` lets the base walk; ``gantry`` never does.
+Every other number and default is in configs/limits.json (``g1 limits``), configs/model.json (which
+model, how it is asked) or the task's task.json; .env holds only what is private to this machine
+(the token, the robot's address and key). ``G1_VERBOSE=1`` prints every SDK call and a health line a second.
 """
 from __future__ import annotations
 
@@ -174,7 +175,7 @@ def run_settings(task: Optional[dict] = None, *, sim: bool = False, mode: Option
         sim=sim, mode=mode, view=view,
         iface=os.environ.get("UNITREE_IFACE"), domain=None,
         camera_ip=os.environ.get("UNITREE_ROBOT_IP"), camera_timeout=limits.get("camera_timeout_s"),
-        camera_source="auto", camera="auto", trace=None, microphone=None,
+        camera_source="auto", camera="auto", trace=None, microphone=None, camera_shared=None,
         verbose=os.environ.get("G1_VERBOSE", "") not in ("", "0"),
         scene=task.get("scene") or "none", sim_objects=[parse_object(o) for o in task.get("objects") or []],
         camera_size=task.get("camera_size"), sim_start=task.get("start"), success=task.get("success"),
@@ -347,10 +348,11 @@ COMMANDS = {
     "run": "run a task on the robot, or on the twin with --sim",
     "bench": "run a suite of tasks on the twin, headless, repeated, scored by the twin; one table (suites/)",
     "status": "is the robot reachable and what state is it in (read-only)",
-    "lidar": "the head lidar through Unitree's SLAM: start mapping, print the live feed, end mapping (robot only)",
+    "lidar": "the head lidar through Unitree's SLAM: a live 3D view until Ctrl-C, the map saved (robot only)",
     "moves": "the robot's stored moves (Unitree's dances, gestures, arm actions): list | check | play, "
              "and FSM switches in their order: fsm damp|stand|main|walk|sit|up",
-    "talk": "conversation demo: the robot listens and answers, or plays a stored move when asked; nothing else",
+    "start": "the robot in one interactive session: it listens, you type (plain text is chat; /help), it answers or "
+             "runs a built-in, routine or task; /mode, /mic, /camera, /lidar; Esc stops, Ctrl-C twice exits",
     "twin": "fetch the twin's model, walker and room assets (fetch | status)",
     "trace": "compare two runs of a task, e.g. the twin's and the robot's (compare | show)",
     "limits": "print every limit and default in configs/limits.json as one table (or one source: g1 limits guess), "
@@ -385,9 +387,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     if command == "moves":
         from g1.envs.moves import main as moves_main
         return moves_main(rest)
-    if command == "talk":
-        from g1.talk import main as talk_main
-        return talk_main(rest)
+    if command == "start":
+        from g1.console import start_main
+        return start_main(rest)
     if command == "limits":
         code = limits.main(rest)
         if code == 0:

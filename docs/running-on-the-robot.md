@@ -3,7 +3,7 @@
 ```
 g1 run tpose --mode standing           # a routine, on a robot standing under its own controller
 g1 run tpose --mode gantry             # a robot hanging in a gantry; never walks
-g1 talk                                # the supervisor: it listens and chooses (below)
+g1 start --mode standing               # the session: it listens, you type, it chooses (below)
 g1 run find_the_mug --mode standing --view   # the model decides; its camera in a browser
 ```
 
@@ -180,7 +180,7 @@ g1 moves walk 0.5              # also: side 0.3 (left), turn -90 (right); walk m
 - **Taught actions** (recorded in the app): `ExecuteCustomAction(name)`, `StopCustomAction`.
 - **FSM order**: 0 -> 1 (damp) -> 4 (locked stand, hanging) -> 501 (walk) or 200; 200 <-> 501;
   200/501 -> 3 (sit) -> 801 -> 200/501. **801 is run mode** (walk-run locomotion in Unitree's FSM table; the
-  sit teardown stands up into it). `g1 moves walk` and `g1 talk` walk in limit `walk_fsm`, 501: in 801 and
+  sit teardown stands up into it). `g1 moves walk` and `g1 start` walk in limit `walk_fsm`, 501: in 801 and
   802 SetVelocity returned 0 and the robot did not move (2026-11-03).
   `g1 moves fsm run` switches to it. Walk mode is **501** on our 29-DoF G1 (3-DoF waist):
   it takes `SetFsmId(500)` with code 0 and stays in 4 (500 is the 1-DoF-waist G1's). Damp drops a
@@ -241,44 +241,63 @@ X and Y (beyond it SLAM can load the onboard computer enough to affect locomotio
 motion (it loses localisation). Sources: Unitree's SLAM and navigation services interface, and the
 service list and lidar parameters read from this robot.
 
-## The supervisor (`g1 talk`)
+## The session (`g1 start`)
 
-`g1 talk` stands the robot ready (the `g1 moves fsm walk` order, if it is not standing), asks once
-whether built-ins may play, then listens. Each time someone speaks and pauses (`talk_quiet_s`), what
-the robot's speech recognition heard goes to the model (`configs/model.json`), which makes one choice:
+```
+g1 start --mode gantry           # hanging: routines and tasks only (each damps at the end)
+g1 start --mode standing         # on its own feet: built-ins, walking, everything
+```
+
+A Claude-Code-style terminal: an input box at the bottom, output scrolling above it, a status line
+under it (mode, FSM, mic, camera and lidar with their URLs, what is running). The robot listens (its
+speech recognition) and you type: **plain text is chat**, exactly as if you had said it. For each
+thing said or typed the model (`configs/model.json`) makes one choice:
 
 * `say`: an answer (spoken with `TtsMaker`, English voice: `tts_speaker_id` 1), and nothing else;
-* `move`: a **built-in** stored gesture or dance, ids 5xx/6xx only (never a get-up or lie-down);
-* `walk`: a built-in walk: turn, then walk, then sidestep, each capped by `talk_turn_max_deg`,
-  `talk_walk_max_m`, `talk_side_max_m`, in walk mode (501, `walk_fsm`). It cannot see while it
-  talks: it walks only when asked, and the cap is the only thing between a request and a wall;
-* `play_routine`: a **routine** from `routines/` (`tpose`, `sixseven`, ...);
-* `run_task`: a **task** from `tasks/`, with the camera, until the model says done;
+* `move` / `walk`: a **built-in**, standing mode only: a stored gesture or dance (ids 5xx/6xx, never
+  a get-up or lie-down), or a turn, walk and sidestep capped by `talk_turn_max_deg`, `talk_walk_max_m`,
+  `talk_side_max_m` in walk mode (501, `walk_fsm`). It cannot see while it talks: it walks only when
+  asked, and the cap is the only thing between a request and a wall;
+* `play_routine`: a **routine** from `routines/`; `run_task`: a **task** from `tasks/`, with the camera;
 * `ignore`: not meant for it.
 
-It only chooses: it never writes a routine or a task. **Each routine and task is confirmed at the
-keyboard** (`y` then Enter; anything else is no). Then it goes back to walk mode if a built-in left
-it in 802, and runs it through `g1 run`'s own path in `--mode standing` (FSM 200 for the run, walk
-mode again after), sharing talk's microphone, kept as `_unreviewed` (no questions mid-conversation;
-label it later). A task's `done` summary is spoken. A refusal (the robot not standing, a routine's
-dry run) is said, printed and talk keeps listening.
+It only chooses: it never writes a routine or a task. A routine or task **the model** chooses is
+confirmed at the keyboard (`y` then Enter; anything else or Esc is no). **You** can call any skill
+directly, without the model and without the question:
 
-**Stopping and quitting:**
-
-| | what happens |
+| command | does |
 |---|---|
-| **Ctrl-C** during a built-in move | back to the FSM it started from (a balanced stand); talk keeps listening |
-| **Ctrl-C** during a walk | zero velocity; talk keeps listening |
-| **Ctrl-C** during a routine or task | the safe return (below): base stopped, arms to the stand pose, weight to 0, walk mode again; talk keeps listening |
-| **Ctrl-C** with nothing running | it prints how to quit; it never quits |
-| **q** then Enter | quits; anything running is stopped first, the same way as Ctrl-C |
-| `kill` (SIGTERM), a dropped ssh (SIGHUP) | like q |
-| the remote's **L2+B** | damp: the emergency stop, whatever the code is doing |
+| `do a T-pose`, `/chat ...` | chat: as if said |
+| `/skills` | everything, marked available or not in this mode, and why |
+| `/routine NAME` · `/task NAME` | run one now |
+| `/move ID\|NAME` · `/walk FWD [SIDE [TURN]]` · `/say TEXT` | a built-in now; the robot says it |
+| `/mode gantry\|standing` | switch mode: it **never moves the robot**; it asks you to confirm it is hanging / standing (standing also needs a standing FSM) |
+| `/mic on\|off` | handle what the robot hears like chat, or ignore it (a task that hears needs it on) |
+| `/camera on\|off` | the head camera, live at `http://127.0.0.1:8765` (`ssh -L 8765:...` from a laptop); tasks reuse it |
+| `/lidar on\|off` | SLAM mapping and its live 3D view at `:8766`; off (and exit) saves `runs/lidar/<time>/map.pcd` |
+| `/status` · `/stop` · `/help` · `/quit` | the `g1 status` probe; Esc; the list; exit |
 
-Every stop goes through SIGINT, the path the safe return is shielded on: a second Ctrl-C, a q or a
-kill during the return waits until the robot is back to neutral. Needs voice interaction on in the
-app (or `rt/audio_msg` stays silent) and the model's key in `.env` on the machine that runs it. What
-it heard, its choice, the model's time and what it said are printed.
+A routine or task runs through `g1 run`'s own path in the session's mode (standing: back to walk
+mode first if a built-in left it in 802; gantry: the gantry bring-up and damp), sharing the session's
+microphone and camera, kept as `_unreviewed` (no questions mid-session; label it later). A task's
+`done` summary is spoken; a refusal (the wrong mode, the robot not standing, a routine's dry run) is
+said, printed, and the session goes on. Settings and skills typed while one runs wait for it to end;
+`/mode` asks you to stop it first.
+
+**Stopping and exiting:**
+
+| | nothing running | a skill running |
+|---|---|---|
+| **Esc** | nothing | stop it to its neutral: a built-in move back to the FSM it started from, a walk to zero velocity, a routine or task through the safe return (below); the session goes on |
+| **Ctrl-C** | clears the line; on an empty line "press Ctrl-C again to exit", a second within 2 s (`console_ctrl_c_window_s`) exits | stops it like Esc (a reflex Ctrl-C never does nothing while the robot moves) |
+| `/quit`, Ctrl-D, `kill` (SIGTERM), a dropped ssh (SIGHUP) | exit | stop it first, then exit |
+| the remote's **L2+B** | damp: the emergency stop, whatever the code is doing | |
+
+Every stop is SIGINT to the process (the terminal runs in its own thread; skills run on the main
+thread), the path the safe return is shielded on: a stop or exit pressed during the return waits until
+the robot is back to neutral. On exit the lidar's mapping ends and its map is saved and the camera
+closes. Needs voice interaction on in the app for the mic, the model's key in `.env` for chat (without
+it, only direct commands work), and `prompt_toolkit` (in `pip install -e .`).
 
 ## Ctrl-C
 

@@ -6,9 +6,9 @@
 |---|---|
 | **tool** | what the model picks, one per turn, and the host executes: a fixed motion (or a query) computed from its arguments, checked, executed, settled and reported. One class: name, prompt, `params`, `segments()`. Ends by construction. Visible to the model by default. |
 | **instruction** | the goal text the model is given (`task.json`'s `instruction`). |
-| **task** | a folder with an instruction and its context (scene, safety notes, budget, demos); no code. What `g1 run` runs and `g1 talk` may choose. |
+| **task** | a folder with an instruction and its context (scene, safety notes, budget, demos); no code. What `g1 run` runs and `g1 start` may choose. |
 | **routine** | ours, not GPT-Policy's: a reference motion (`routines/<name>/routine.json`), a timeline of tracks (upper body via arm_sdk, base via LocoClient, onboard gestures; full body kept, not played), compiled to segments and played start to finish with no model. |
-| **built-in** | ours: a motion that comes with the robot and runs on Unitree's controller (stored dances and gestures, walking); `g1 moves`, talk's `move`/`walk`. |
+| **built-in** | ours: a motion that comes with the robot and runs on Unitree's controller (stored dances and gestures, walking); `g1 moves`, the session's `move`/`walk`. |
 | **demo** | ours: a successful earlier run of a task, promoted by a person, shown to the model at the head of every request of the next run (`g1/agent/demos.py`). |
 | **observation** | the one JSON object a turn sends: instruction, images, measured state, extra, `previous_result`. |
 | **decision** | the model's reply: `{"name": tool, "arguments": {...}}`, validated against the tool's schema. |
@@ -16,9 +16,9 @@
 | **verdict** | the success/failed label after the run: a human's on the robot, the twin's on `--sim` when the task has `success` criteria (`outcome_source` says which). `done` is the model's conclusion, not the label; `false_done` marks a `done` the twin did not confirm. |
 
 Retired words: skill, policy, primitive, goal. Nothing in the repo is called a policy (that word comes
-back with the first trained closed-loop controller). `g1 talk` is the supervisor: for each thing it hears
-it answers or chooses a built-in, a routine or a task (never authoring one); Ctrl-C stops what runs to a
-safe neutral and talk goes on, `q` quits (`docs/running-on-the-robot.md`).
+back with the first trained closed-loop controller). `g1 start` is the session: for each thing it hears or you
+type it answers or chooses a built-in, a routine or a task (never authoring one); you can also call any
+of them directly; Esc stops what runs to a safe neutral, Ctrl-C twice exits (`docs/running-on-the-robot.md`).
 
 ## The loop
 

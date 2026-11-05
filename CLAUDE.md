@@ -7,8 +7,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 A Unitree G1 (29-DoF) driven one **tool** at a time by a vision-language model, in
 GPT-Policy's shape (arXiv:2609.19138): the model picks a tool from a menu and fills in its
 arguments; the host plans a fixed motion from them, checks it, runs it, waits for the joints
-to settle and reports. `g1 talk` is the supervisor that chooses what the robot does from a fixed menu
-(a built-in, a routine, a task, or just an answer). `g1 run TASK` runs a task on the
+to settle and reports. `g1 start` is the one interactive session: the robot listens, you type (plain text is chat,
+`/` commands call skills and settings), and it chooses what to do from a fixed menu (a built-in, a
+routine, a task, or just an answer). `g1 run TASK` runs a task on the
 robot (`RobotEnv`, live via `unitree_sdk2py`); `--sim` runs the *same* `RobotEnv` code over DDS
 against the **twin** (`g1/twin/`): unitree_mujoco's 29-DoF G1 with a free base and torque
 motors, behind a stand-in onboard controller that answers LocoClient/AudioClient, blends
@@ -61,10 +62,12 @@ g1 moves play MOVE... | fsm TARGET   # the robot only, asks first: play stored m
                                      # FSM along its order (damp, stand 4, main 200, walk 501, run 801, sit 3; never via damp);
                                      # a move runs in 550 and ends in 802, where the next plays
 g1 moves walk|side|turn N            # the robot only, asks first: a short walk (SetVelocity's 1 s dead-man, re-sent) in limit walk_fsm (walk mode, 501)
-g1 talk                              # the robot only, the supervisor: stands it ready, listens (rt/audio_msg), and per thing
-                                     # heard answers (TtsMaker) or chooses a built-in (an allow-listed stored move 5xx/6xx, a
-                                     # capped short walk), a routine or a task (each confirmed y/N at the keyboard, run in
-                                     # standing mode). Ctrl-C stops what runs, to neutral, and talk goes on; q + Enter quits
+g1 start --mode standing|gantry      # the robot only: one interactive session (Claude-Code-style terminal). It listens
+                                     # (rt/audio_msg) and you type: plain text is chat (as if said); the model answers or
+                                     # chooses a built-in (5xx/6xx move, capped walk; standing only), a routine or a task
+                                     # (model-chosen ones confirmed y/N). /routine /task /move /walk /say call one directly;
+                                     # /skills /mode /mic /camera /lidar /status /help /quit. Esc stops what runs, to
+                                     # neutral; Ctrl-C clears the line (stops a running skill); Ctrl-C twice exits
 g1 twin fetch|status
 g1 trace compare RUN_A RUN_B | show RUN   # two run dirs of the same task: tracking, sag, lag, A-B difference
 g1 limits [SOURCE]                   # every limit and default in configs/limits.json as one table, + the model in use
@@ -110,8 +113,10 @@ g1/lidar.py        Scan (points N x 4 in m + the 4x4 pose), points_from_cloud2, 
                    lidar_view.py: LidarViewer (the live 3D view: a canvas page, state.json, scan.bin, map.bin)
 g1/microphone.py   Microphone (rt/audio_msg: the robot's speech recognition, an utterance log), heard_view; sounds in g1/core/sounds.py
 g1/vlm.py          VLMClient (Hugging Face or OpenRouter), load_dotenv
-g1/talk.py         g1 talk: the supervisor (Talk: listen, ask the model, say | move | walk | play_routine | run_task | ignore;
-                   Keys: y/N and q on a stdin thread; robot_runner: cli.run_once in standing mode, talk's microphone)
+g1/session.py      g1 start's engine (Session: mode, mic/camera/lidar, the events queue, chat -> the model's one choice,
+                   run_skill: the one executor; robot_runner: cli.run_once in the session's mode, its mic and camera)
+g1/console.py      g1 start's terminal (prompt_toolkit in its own thread: input box, status line, / completion;
+                   parse, Console: Esc/Ctrl-C/y-N/quit, start_main)
 g1/routines.py     routines: SCHEMA, load_routine, routine_names, compile_segments (the timeline as Segments), run_spec
 g1/agent/          agent (Agent, build_agent), decider (AgentContext/AgentTurn/Decision, observation(), instructions(),
                    VLMDecider), episode (EpisodeWriter, load_episode), task (find, load_task, run_config, code_snapshot, record_result),
@@ -164,9 +169,11 @@ root via `pythonpath`. `limits.ROOT` is the repo root (configs/, tasks/, assets/
   moves nothing. **Errors are feedback**: no re-ask loop.
 - **Ctrl-C runs the safe return to completion** (`cli.safe_return`: last commanded pose → STAND 3 s,
   weight → 0 over 2 s, base stopped, SIGINT shielded). Never add a second-Ctrl-C release or a keypress
-  that escapes a safe return. In talk, **Ctrl-C stops** the running built-in, routine or task to its neutral
-  and talk goes on (never quits); **q + Enter quits** (SIGTERM/SIGHUP too), stopping anything running first
-  by sending SIGINT, so every stop takes the one shielded path and nothing cuts a return short. The remote's
+  that escapes a safe return. In `g1 start`, **Esc stops** the running built-in, routine or task to its
+  neutral and the session goes on; Ctrl-C clears the line or, with a skill running, stops it like Esc; **Ctrl-C
+  twice** on an empty line exits (so do /quit, SIGTERM, SIGHUP), stopping anything running first. Every stop
+  is SIGINT to the process (the UI thread sends it; skills run on the main thread), so every stop takes the
+  one shielded path and nothing cuts a return short. Switching mode never moves the robot. The remote's
   L2+B (damp) is the emergency stop. Never call the SDK from `step`. Walking is `LocoClient.Move` in `--mode standing` only; no
   low-level leg control. Onboard calls are allow-listed per service — `config.LOCO_METHODS`
   (`WaveHand`, `ShakeHand`; `needs_loco`; and `Sit`, the one FSM, `config.LOCO_FSM`: `sit`, sent as
@@ -174,9 +181,9 @@ root via `pythonpath`. `limits.ROOT` is the repo root (configs/, tasks/, assets/
   in `RobotEnv._command`; a failed speech warns and continues, a failed gesture raises.
   `PlayStream`/`SetVolume`/`LedControl` are never reachable from a reply. Built-ins (Unitree's stored
   moves) play only from `g1 moves` (a person at the keyboard, any move) and talk (the model, ids 5xx/6xx
-  only); only `g1 moves` and talk's walk-mode handover switch other FSMs.
-  Talk runs a routine or task only through `cli.run_once` (never arm_sdk, the FSM or a tool itself;
-  `tests/test_talk.py` guards it), each confirmed at the keyboard.
+  only, standing mode); only `g1 moves` and the session's walk-mode handover switch other FSMs.
+  The session runs a routine or task only through `cli.run_once` (never arm_sdk, the FSM or a tool itself;
+  `tests/test_session.py` guards it); one the model chooses is confirmed y/N, one you type is not.
   `g1 lidar` makes only `config.SLAM_METHODS` (start mapping 1801, end mapping 1802, close SLAM 1901) and
   only reads the service list: it never switches a service (the app does) and never navigates.
 - **Routines compile to segments and are dry-run first.** A routine's timeline (upper body, base windows,

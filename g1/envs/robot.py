@@ -330,7 +330,12 @@ class RobotEnv(Env):
             from g1.envs.trace import Trace
             self.trace = Trace(self.args.trace, "sim" if self.args.sim else self.name)
         self.camera = None
-        if self.use_camera:
+        shared_camera = getattr(self.args, "camera_shared", None)
+        self._camera_shared = False
+        if self.use_camera and shared_camera is not None:
+            self.camera, self._camera_shared = shared_camera, True   # g1 start's: it stays open after the run
+            print("camera: the session's (shared with this run)")
+        elif self.use_camera:
             self.camera = self._open_camera()          # before any FSM change
 
         domain = dds_domain(self.args.iface, getattr(self.args, "domain", None))
@@ -445,7 +450,8 @@ class RobotEnv(Env):
             finally:
                 camera = getattr(self, "camera", None)
                 if camera is not None:
-                    camera.stop()
+                    if not getattr(self, "_camera_shared", False):
+                        camera.stop()
                 mic = getattr(self, "microphone", None)
                 close = getattr(getattr(mic, "subscription", None), "Close", None)
                 if close is not None and not getattr(self, "_microphone_shared", False):

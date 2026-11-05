@@ -12,6 +12,7 @@ dependencies = [
     "jsonschema>=4",
     "pillow",
     "av",           # sound files for the speaker (g1/core/sounds.py); also the camera's video
+    "prompt_toolkit>=3.0.40",   # g1 start's terminal (g1/console.py)
 ]
 
 [project.optional-dependencies]

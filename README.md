@@ -5,8 +5,8 @@ GPT-Policy's shape ([arXiv:2609.19138](https://arxiv.org/abs/2609.19138), see
 [Acknowledgements](#acknowledgements)): the model looks at the head camera and the joint
 state, picks a tool from a menu and fills in its arguments; the host plans the motion,
 checks it against the joint and speed limits, runs it, waits for the joints to settle and
-reports what happened; the model looks again. `g1 talk` sits on top: it listens and, for each
-thing it hears, answers or chooses what the robot does: a built-in (Unitree's own dances and walking),
+reports what happened; the model looks again. `g1 start` sits on top, a Claude-Code-style session:
+the robot listens and you type, and for each thing said it answers or chooses what the robot does: a built-in (Unitree's own dances and walking),
 a routine (our fixed joint motion) or a task. All of it runs on a MuJoCo twin of the robot and on the robot.
 
 ```
@@ -17,7 +17,7 @@ g1 run find_and_point_at_the_laptop --sim   # demo: explore the room, walk to th
 g1 run sit_in_the_chair --sim        # demo: find a chair, back up to it and sit (the twin does not stand up again)
 g1 run tpose --mode gantry           # the routine on the robot, hanging in a gantry (never walks)
 g1 run find_the_mug --mode standing --view   # the robot on its own feet (may walk); its camera in a browser
-g1 talk                              # the robot listens and chooses: answer, built-in, routine or task (Ctrl-C stops, q quits)
+g1 start --mode standing             # the session: it listens, you type (/help); Esc stops a skill, Ctrl-C twice exits
 g1 status                            # read-only: is it the link, or is the robot refusing?
 g1 lidar                             # the head lidar: live 3D view at :8766, map saved per run (robot only)
 g1 twin fetch                        # once: the twin's model, walker and room
@@ -221,7 +221,8 @@ g1/
   envs/           base (Env), monitor (the per-tick safety check), robot (RobotEnv: the G1 or the twin),
                   link (the SDK seam), sim (the in-process twin the tests use), scene (the room), trace
   twin/           the twin: model, walker, onboard controller, services, loopback, DDS bridge, TwinProcess
-  talk.py         g1 talk, the supervisor: answers, or chooses a built-in, a routine or a task; Ctrl-C stops, q quits
+  session.py      g1 start's engine: answers, or chooses a built-in, a routine or a task; mode, mic, camera, lidar
+  console.py      g1 start's terminal: the input box, status line, / commands; Esc stops, Ctrl-C twice exits
   routines.py     routines: the timeline format, its checks, compiled to the segments tools play
   lidar.py        the head lidar through Unitree's SLAM: Scan (points + pose), MapAccumulator, write_pcd; g1 lidar
   lidar_view.py   g1 lidar's live 3D view in a browser

@@ -2,7 +2,7 @@
 
 A routine is our reference motion: a folder under `routines/` with a `routine.json` (and, for a
 recorded motion, a `motion.npz`), no code. It plays start to finish with no model in the loop:
-`g1 run NAME` plays it, `g1 talk` can choose it, and a task's model can play an upper-body one as
+`g1 run NAME` plays it, `g1 start` can choose it (or you, with `/routine` or `/task`), and a task's model can play an upper-body one as
 a single step (`play_routine`).
 
 ```

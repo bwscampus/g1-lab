@@ -157,9 +157,10 @@ def routine_spec(tmp_path, name="r", **tracks):
 
 
 def test_g1_has_its_commands_and_run_three_flags(capsys):
-    assert main([]) == 0 and "g1 run TASK --sim" in capsys.readouterr().out
+    out = (main([]), capsys.readouterr().out)
+    assert out[0] == 0 and "g1 run NAME --sim" in out[1] and "g1 start --mode" in out[1]
     from g1.cli import COMMANDS
-    assert sorted(COMMANDS) == ["bench", "lidar", "limits", "moves", "run", "status", "talk", "trace", "twin"]
+    assert sorted(COMMANDS) == ["bench", "lidar", "limits", "moves", "run", "start", "status", "trace", "twin"]
     with pytest.raises(SystemExit):
         main(["fly"])
     assert "unknown command" in capsys.readouterr().err
