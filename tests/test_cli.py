@@ -13,6 +13,7 @@ from g1.cli import RAMP, RELEASED, TO_STAND, main, run
 from g1.core.action import Runnable
 from g1.core.config import CONTROL_DT, STAND_Q, UPPER_BODY
 from g1.tools import TOOLS, Chain
+from g1.tools.routines import RoutineTool
 from tests.agent.test_agent import Scripted, Sequence
 from tests.doubles import scripted_sim, sim_env
 
@@ -61,7 +62,7 @@ def returned(env, n_before):
 
 
 def test_ctrl_c_returns_to_stand_and_hands_back():
-    pol = Interrupting(Chain(TOOLS["tpose"](hold_s=2.0, rise_s=2.0)), at=3.5)   # mid-raise, weight 1
+    pol = Interrupting(Chain(RoutineTool(routine="tpose")), at=3.5)              # mid-raise, weight 1
     env, ok = env_with(pol)
     assert ok is False
     after = returned(env, pol.n_before)
@@ -81,7 +82,7 @@ def test_interrupt_mid_takeover_never_raises_the_weight():
 
 
 def test_sigint_during_the_return_is_ignored(capsys):
-    pol = Interrupting(Chain(TOOLS["tpose"](hold_s=2.0, rise_s=2.0)), at=3.5)
+    pol = Interrupting(Chain(RoutineTool(routine="tpose")), at=3.5)
     env = scripted_sim(Scripted())
     fired = []
     original = env.step
@@ -145,6 +146,16 @@ def task_dir(tmp_path, name="t", **spec):
     return d
 
 
+def routine_spec(tmp_path, name="r", **tracks):
+    """A routine folder and its run spec (what g1 run plays for a routine)."""
+    from g1.routines import run_spec
+    d = tmp_path / "routines" / name
+    d.mkdir(parents=True)
+    (d / "routine.json").write_text(json.dumps({"tracks": tracks or {"upper_body": {"keyframes": [
+        {"t": 0.3, "joints": {"waist_yaw": 0.0}}]}}}))
+    return run_spec(d)
+
+
 def test_g1_has_its_commands_and_run_three_flags(capsys):
     assert main([]) == 0 and "g1 run TASK --sim" in capsys.readouterr().out
     from g1.cli import COMMANDS
@@ -173,19 +184,18 @@ def test_the_robot_needs_a_mode_and_view_is_the_robots_camera(capsys):
     assert "tasks: " in capsys.readouterr().err
 
 
-def test_a_tools_task_runs_records_and_traces(tmp_path, capsys):
-    from g1.agent.task import load_task
+def test_a_routine_runs_records_and_traces(tmp_path, capsys):
     from g1.cli import run_task
-    task = load_task(task_dir(tmp_path, tools="hold:0.3"))
+    task = routine_spec(tmp_path)
     assert run_task(task, sim=True, mode=None, env=sim_env()) == 0
     (run_dir,) = (task["dir"] / "runs").iterdir()
-    assert {p.name for p in run_dir.iterdir()} == {"summary.json", "config.json", "trace.npz"}   # all a tools run saves
+    assert {p.name for p in run_dir.iterdir()} == {"summary.json", "config.json", "trace.npz"}   # all a routine run saves
     summary = json.loads((run_dir / "summary.json").read_text())
     assert (run_dir / "trace.npz").stat().st_size > 0 and summary["outcome"] == "success" and summary["env"] == "sim"
     assert summary["end_reason"] == "completed" and summary["mode"] == "standing" and summary["run"] == run_dir.name
     assert summary["health"]["joint_check"] == "pass" and summary["health"]["violations"] == 0
     config = json.loads((run_dir / "config.json").read_text())
-    assert config["task"]["tools"] == "hold:0.3" and config["mode"] == "standing" and config["code"]["snapshot"]
+    assert config["task"]["routine"] == "r" and config["mode"] == "standing" and config["code"]["snapshot"]
     assert config["limits"]["control_dt_s"] == CONTROL_DT and config["versions"]["python"]
     row = json.loads((task["dir"] / "results.jsonl").read_text())
     assert row["run"] == run_dir.name and row["outcome_source"] == "checks" and row["joint_check"] == "pass"
@@ -193,9 +203,8 @@ def test_a_tools_task_runs_records_and_traces(tmp_path, capsys):
 
 
 def test_gantry_never_walks(tmp_path, capsys):
-    from g1.agent.task import load_task
     from g1.cli import run_task
-    task = load_task(task_dir(tmp_path, tools="walk_forward:0.3"))
+    task = routine_spec(tmp_path, base=[{"t0": 0.0, "t1": 1.5, "vx": 0.2}])
     with pytest.raises(SystemExit, match="never walks"):
         run_task(task, sim=True, mode="gantry", env=sim_env(mode="gantry"))
     assert not (task["dir"] / "runs").exists() or not any((task["dir"] / "runs").iterdir())
@@ -287,9 +296,8 @@ def test_view_serves_the_head_camera_while_the_run_lasts(capsys):
 
 def test_a_robot_run_asks_to_save_then_for_the_verdict(tmp_path, monkeypatch, capsys):
     from g1.agent import agent as agent_module
-    from g1.agent.task import load_task
     from g1.cli import run_task
-    task = load_task(task_dir(tmp_path, tools="hold:0.3"))
+    task = routine_spec(tmp_path, "hold")
     asked = []
     monkeypatch.setattr(agent_module, "ask_save", lambda: asked.append("save") or False)
     monkeypatch.setattr(agent_module, "ask_verdict", lambda: asked.append("verdict") or "success")
@@ -301,7 +309,7 @@ def test_a_robot_run_asks_to_save_then_for_the_verdict(tmp_path, monkeypatch, ca
     monkeypatch.setattr(agent_module, "ask_verdict", lambda: asked.append("verdict") or "failed")
     assert run_task(task, sim=False, mode="standing", env=sim_env(mode="standing")) == 0
     (run_dir,) = (task["dir"] / "runs").iterdir()
-    assert asked[1:] == ["save", "verdict"] and run_dir.name.endswith("_robot_hold-0-3_failed")
+    assert asked[1:] == ["save", "verdict"] and run_dir.name.endswith("_robot_hold_failed")
     status = json.loads((run_dir / "summary.json").read_text())
     assert status["outcome"] == "failed" and status["outcome_source"] == "human"     # the human, not the checks
     assert status["run"] == run_dir.name

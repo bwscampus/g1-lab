@@ -176,17 +176,17 @@ def test_observation_and_feedback_follow_the_contract():
 def test_a_long_tool_is_one_step(tmp_path):
     """One model call, one continuous motion, one step; the ticks in between are trace.npz."""
     env = check()
-    dec = Sequence([("tpose", {}), ("done", {"summary": "s", "hindsight": ""})])     # tpose is 11 s
+    dec = Sequence([("play_routine", {"routine": "tpose"}), ("done", {"summary": "s", "hindsight": ""})])  # 11 s
     rec = recorder(tmp_path, dec)
-    agent = Agent("g", dec, menu(True) + [TOOLS["tpose"]], recorder=rec)               # a preset, offered here
+    agent = Agent("g", dec, menu(True), recorder=rec)                                  # a routine, as one tool
     assert run(agent, env, max_time=120) is True
     agent.close()
     tpose = agent.steps[0]
-    assert len(agent.steps) == 2 and dec.requests == 2 and chosen(tpose) == "tpose"
+    assert len(agent.steps) == 2 and dec.requests == 2 and chosen(tpose) == "play_routine"
     a = tpose["action"]
     assert a["duration_s"] == pytest.approx(11.0, abs=2 * CONTROL_DT) and a["planned_s"] == pytest.approx(11.0)
     assert env.q_max[16] > 1.4 and a["q_end"][16] < 0.5            # raised (1.57, sagging at kp 60), then lowered
-    assert {k: v for k, v in a["args"].items() if k != "note"} == {"hold_s": 5.0, "rise_s": 3.0}
+    assert {k: v for k, v in a["args"].items() if k != "note"} == {"routine": "tpose"}
     assert status(tpose) == "completed" and tpose["t_end"] >= a["t_end"]   # the result comes after the settle
 
 

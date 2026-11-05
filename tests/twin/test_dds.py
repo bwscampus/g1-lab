@@ -44,6 +44,9 @@ def test_sim_gantry_hangs_it_and_never_walks(tmp_path):
     r = g1("run", "tpose", "--sim", "--mode", "gantry")
     assert r.returncode == 0, r.stdout + r.stderr
     assert "fsm: 4 (locked stand)" in r.stdout and "fsm: 1 (damp); done" in r.stdout and "FELL" not in r.stdout
-    r = g1("run", str(task(tmp_path, "walk", tools="walk_forward:0.3")), "--sim", "--mode", "gantry")
+    walk = tmp_path / "routines" / "walk"
+    walk.mkdir(parents=True)
+    (walk / "routine.json").write_text(json.dumps({"tracks": {"base": [{"t0": 0.0, "t1": 1.5, "vx": 0.2}]}}))
+    r = g1("run", str(walk), "--sim", "--mode", "gantry")
     assert r.returncode != 0 and "never walks" in r.stderr and "twin: serving" not in r.stdout
 

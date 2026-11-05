@@ -2,14 +2,15 @@ import numpy as np
 
 from g1.cli import main, run
 from g1.envs.trace import compare, load
-from g1.tools import parse_chain
+from g1.tools import Chain
+from g1.tools.routines import RoutineTool
 from tests.doubles import sim_env
 
 
 def test_trace_records_and_compares_two_runs_of_a_chain(tmp_path, capsys):
     for name in ("a", "b"):
         (tmp_path / name).mkdir()
-        assert run(parse_chain("tpose:0.5:1"), sim_env(trace=str(tmp_path / name / "trace.npz"))) is True
+        assert run(Chain(RoutineTool(routine="tpose")), sim_env(trace=str(tmp_path / name / "trace.npz"))) is True
     a, b = load(tmp_path / "a"), load(tmp_path / "b" / "trace.npz")              # a run directory or the file
     assert str(a["env"]) == "sim" and len(a["t"]) == len(b["t"]) and a["q"].shape == (len(a["t"]), 29)
     assert np.isfinite(a["base_true"]).all() and np.isnan(a["q_cmd"][:, 0]).all()     # legs: never commanded
