@@ -196,6 +196,50 @@ Unitree's reference: unitree_sdk2 `include/unitree/robot/g1/loco/g1_loco_client.
 (GetMimicMotion) and `include/unitree/robot/g1/arm/g1_arm_action_client.hpp`; the G1 sport
 services page, support.unitree.com/home/en/G1_developer/sport_services_interface.
 
+## The lidar (`g1 lidar`)
+
+The head lidar is a Livox MID-360 at `192.168.123.120`. It sends its points and IMU only to the main
+board (`.161:56301`/`:56401`), never to the Jetson or a laptop, so the feed comes from Unitree's onboard
+services: `lidar_driver` and `unitree_slam`. Both are switched on in the Unitree app (services);
+`g1 lidar` only reads the service list (`RobotStateClient.ServiceList`, status 0 = running) and never
+switches one. On 2026-11-05 both were off by default.
+
+`g1 lidar` checks both are running, starts a mapping session on Unitree's SLAM (`slam_operate` 1801,
+`slam_type` indoor) and reads `rt/unitree/slam_mapping/points` (PointCloud2, frame `map`, ~1,000 points
+a scan at 10 Hz) with the pose from `rt/unitree/slam_mapping/odom`. It maps until Ctrl-C (at most
+`lidar_max_s`), printing a line a second (frame, points, rate, bounds, pose, yaw, map size; the first
+scan also prints the cloud's fields), then always ends the session (Ctrl-C, a `kill` and a dropped
+ssh all end it the same way; the teardown can't be cut short) (1802; Unitree's own map lands on
+the main board, which has no ssh, so it is out of reach), closes SLAM (1901) and saves **our map as
+`runs/lidar/<time>/map.pcd`** (5 cm voxels, map frame). SLAM's origin is the MID-360's IMU at the start,
+X forward, Z up: on the gantry the floor is at about z -1.3 m.
+
+**The live view.** While it maps, `g1 lidar` serves a 3D view at `http://127.0.0.1:8766`
+(`lidar_view_port`; the URL is printed), like the camera's `--view`: the map dimmed and the latest scan
+bright, both coloured by height above the floor, a 1 m floor grid, and the robot as a red dot with a
+heading line. Drag to orbit, shift- or right-drag to pan, the wheel to zoom; Top, 3D, Follow robot,
+Scan and Map buttons. It is plain canvas (nothing fetched from the internet). Run on the Jetson and
+watch from a laptop over Wi-Fi:
+
+```
+ssh -L 8766:127.0.0.1:8766 unitree@<the Jetson's Wi-Fi address>
+cd ~/g1-lab && g1 lidar                  # then open http://127.0.0.1:8766 on the laptop; Ctrl-C ends it
+scp unitree@<the Jetson>:g1-lab/runs/lidar/<time>/map.pcd .    # open in CloudCompare or Open3D
+```
+
+The raw driver cloud (`rt/utlidar/cloud_livox_mid360`, `livox_frame`, ~20,000 points at 10 Hz) is not
+levelled (the lidar is mounted tilted), which is why the map is built from SLAM's points.
+
+For a 3D map, `g1/lidar.py:Scan` holds `points` (N x 4 float32: x, y, z in m, intensity) and `pose`
+(4 x 4, map <- body); `Scan.map_points()` gives the points in the map frame whichever frame the cloud
+came in; `MapAccumulator` voxel-downsamples scans (`lidar_voxel_m`) and `write_pcd` saves the result for
+Open3D, PCL or CloudCompare.
+
+Unitree's warnings: don't use the app's mapping or navigation at the same time; keep maps under 45 m in
+X and Y (beyond it SLAM can load the onboard computer enough to affect locomotion); avoid violent
+motion (it loses localisation). Sources: Unitree's SLAM and navigation services interface, and the
+service list and lidar parameters read from this robot.
+
 ## Conversation demo (`g1 talk`)
 
 `g1 talk` stands the robot ready (the `g1 moves fsm walk` order, if it is not standing), asks once

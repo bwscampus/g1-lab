@@ -45,6 +45,9 @@ g1 bench SUITE                       # suites/<name>/suite.json: its tasks on th
 g1 run TASK --mode standing|gantry [--view]   # the robot; --mode is required. standing may walk, gantry never does;
                                      # --view: its head camera at http://127.0.0.1:8765 (live only)
 g1 status                            # read-only: link ok / robot refuses / no link (UNITREE_IFACE)
+g1 lidar                             # the head lidar via Unitree SLAM: checks lidar_driver + unitree_slam are on
+                                     # (read-only), maps until Ctrl-C with a live 3D view at http://127.0.0.1:8766,
+                                     # then ends mapping and saves runs/lidar/<time>/map.pcd (robot only)
 g1 moves [list] | check MOVE...      # read-only: Unitree's moves stored on the robot (mimic motions = FSM 550<id>,
                                      # arm:<id|name> arm actions, custom:<name> taught in the app), installed or not
 g1 moves play MOVE... | fsm TARGET   # the robot only, asks first: play stored moves in order from standing; switch the
@@ -92,6 +95,9 @@ g1/twin/           assets (g1 twin fetch), model (unitree_mujoco G1 + head camer
                    bridge (DDS servers + rt/lowstate + rt/arm_sdk + rt/audio_msg), shm (camera frames), main (TwinProcess, serve, fetch)
 g1/camera.py       Frame, Camera (+subscribe), DirCamera, WebRTCCamera (from a laptop), DirectCamera (on the robot's
                    Jetson: the video hub's multicast, hardware decode), ShmCamera (the twin's), Viewer (--view)
+g1/lidar.py        Scan (points N x 4 in m + the 4x4 pose), points_from_cloud2, MapAccumulator, write_pcd,
+                   SlamLidar (SLAM's points + odom from a child process), save_map, lidar_main (g1 lidar);
+                   lidar_view.py: LidarViewer (the live 3D view: a canvas page, state.json, scan.bin, map.bin)
 g1/microphone.py   Microphone (rt/audio_msg: the robot's speech recognition, an utterance log), heard_view; sounds in g1/core/sounds.py
 g1/vlm.py          VLMClient (Hugging Face or OpenRouter), load_dotenv
 g1/talk.py         g1 talk: the conversation demo (Talk: listen, ask the model, say | move | walk | ignore)
@@ -151,6 +157,10 @@ root via `pythonpath`. `limits.ROOT` is the repo root (configs/, tasks/, assets/
   in `RobotEnv._command`; a failed speech warns and continues, a failed gesture raises.
   `PlayStream`/`SetVolume`/`LedControl` are never reachable from a reply. `g1 moves` (a person at the
   keyboard, never the model) is the one place that plays Unitree's stored moves and switches other FSMs.
+  `g1 lidar` makes only `config.SLAM_METHODS` (start mapping 1801, end mapping 1802, close SLAM 1901) and
+  only reads the service list: it never switches a service (the app does) and never navigates.
+- **Point clouds are decoded off the run's process.** PointCloud2 arrives as ~0.5 MB a scan; `SlamLidar`
+  subscribes in a spawned child and hands numpy bytes back, as the camera's decoder is a child on the Jetson.
 - **The camera on the Jetson is direct.** On the robot's Jetson `RobotEnv` reads the video hub's RTP multicast
   with a GStreamer child process (`DirectCamera`, chosen when `on_the_jetson()`); a laptop uses WebRTC. Never
   decode video in the run's own Python process on the Jetson: next to rt/lowstate it starves for the GIL.

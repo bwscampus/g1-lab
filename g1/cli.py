@@ -5,6 +5,7 @@
     g1 run TASK --sim [--mode gantry]      # the twin, in the MuJoCo window: the same robot code, over DDS
     g1 bench SUITE                         # a suite of tasks on the twin, headless, repeated, one table
     g1 status                              # is the robot reachable, and what state is it in
+    g1 lidar                               # the head lidar through Unitree's SLAM: the live feed, printed
     g1 twin fetch | status                 # the twin's model, walker and room assets
     g1 trace compare RUN_A RUN_B | show RUN   # how far the twin is from the robot on the same task
     g1 limits [SOURCE]                     # every number and default, from configs/limits.json (+ the model)
@@ -336,6 +337,7 @@ COMMANDS = {
     "run": "run a task on the robot, or on the twin with --sim",
     "bench": "run a suite of tasks on the twin, headless, repeated, scored by the twin; one table (suites/)",
     "status": "is the robot reachable and what state is it in (read-only)",
+    "lidar": "the head lidar through Unitree's SLAM: start mapping, print the live feed, end mapping (robot only)",
     "moves": "the robot's stored moves (Unitree's dances, gestures, arm actions): list | check | play, "
              "and FSM switches in their order: fsm damp|stand|main|walk|sit|up",
     "talk": "conversation demo: the robot listens and answers, or plays a stored move when asked; nothing else",
@@ -367,6 +369,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     if command == "status":
         from g1.envs.robot import status_main
         return status_main(rest)
+    if command == "lidar":
+        from g1.lidar import lidar_main
+        return lidar_main(rest)
     if command == "moves":
         from g1.envs.moves import main as moves_main
         return moves_main(rest)
