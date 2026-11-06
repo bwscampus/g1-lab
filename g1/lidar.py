@@ -421,6 +421,7 @@ class LidarSession:
         return self.viewer.url if self.viewer is not None else None
 
     def start(self) -> None:
+        from g1.envs import sdk
         rpc = limits.get("rpc_timeout_s")
         state = self.link.robot_state()
         state.SetTimeout(rpc)
@@ -429,6 +430,7 @@ class LidarSession:
         if code != 0:
             raise LidarUnavailable("cannot read the robot's service list; is the robot reachable? (g1 status)")
         self.state = state
+        deadline = time.monotonic() + limits.get("lidar_service_start_s")
         if off:
             print(f"lidar: {' and '.join(off)} {'is' if len(off) == 1 else 'are'} off; switching "
                   f"{'it' if len(off) == 1 else 'them'} on")
@@ -444,11 +446,20 @@ class LidarSession:
         slam.SetTimeout(rpc)
         slam.Init()
         print(f"lidar: {', '.join(SERVICES)} running; starting mapping ({limits.get('slam_type')})")
-        code, _ = slam_call(slam, "StartMapping", limits.get("slam_type"), log=self.log, verbose=self.verbose)
+        while True:
+            code, _ = slam_call(slam, "StartMapping", limits.get("slam_type"), log=self.log, verbose=self.verbose)
+            # a SLAM just switched on lists as running before it answers (no reply, 3104): ask again
+            if code == 0 or code not in sdk.TRANSPORT or not self.switched_on or time.monotonic() >= deadline:
+                break
+            self.log[-1]["retried"] = True        # asked again: not a failure of the session
+            print("lidar: SLAM is not answering yet; asking again")
+            time.sleep(limits.get("lidar_service_poll_s"))
         if code != 0:
             slam_call(slam, "CloseSlam", log=self.log, verbose=self.verbose)
             self._restore_services()
-            raise LidarUnavailable("SLAM refused to start mapping (is the app's mapping or navigation in use?)")
+            why = ("SLAM did not answer" if code in sdk.TRANSPORT else
+                   "SLAM refused to start mapping (is the app's mapping or navigation in use?)")
+            raise LidarUnavailable(why)
         self.slam = slam
         self.t0 = time.monotonic()
         self.lidar = self.lidar_cls(self.iface, self.domain)
@@ -575,6 +586,6 @@ def lidar_main(argv: list[str], link=None, lidar_cls=SlamLidar, runs: Optional[P
             signal.signal(sig, handler)
     if not session.log:
         return rc
-    failed = [e for e in session.log if e["code"] != 0]
+    failed = [e for e in session.log if e["code"] != 0 and not e.get("retried")]
     print(f"sdk: {len(session.log)} call(s), {len(failed)} failed")
     return rc or (1 if failed else 0)

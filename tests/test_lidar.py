@@ -302,6 +302,23 @@ def test_a_service_that_will_not_start_fails_before_any_slam_call_and_is_restore
     assert offs == [n for n in ons if n not in state.get("refuse_switch", ())]   # only what it switched on
 
 
+def test_a_slam_just_switched_on_is_asked_again_until_it_answers(robot, capsys, tmp_path):
+    link = FakeLink({"lidar_driver": 1, "unitree_slam": 1})
+    answers = iter([3104, 3104, 0])
+    link.slam_client.StartMapping = lambda t: (link.calls.append(("StartMapping", t)), (next(answers), "{}"))[1]
+    assert lidar_main([], link=link, lidar_cls=FakeLidar, runs=tmp_path) == 0
+    assert [c[0] for c in link.calls[1:]] == ["StartMapping"] * 3 + ["EndMapping", "CloseSlam"]
+    assert "not answering yet" in capsys.readouterr().out
+
+
+def test_a_slam_that_was_already_on_and_does_not_answer_is_asked_once(robot, capsys):
+    link = FakeLink()
+    link.slam_client.StartMapping = lambda t: (link.calls.append(("StartMapping", t)), (3104, "{}"))[1]
+    assert lidar_main([], link=link, lidar_cls=FakeLidar) == 1
+    assert [c[0] for c in link.calls[1:]] == ["StartMapping", "CloseSlam"]
+    assert "SLAM did not answer" in capsys.readouterr().out
+
+
 def test_an_unreadable_service_list_stops_before_anything(robot, capsys):
     link = FakeLink(list_code=3104)
     assert lidar_main([], link=link, lidar_cls=FakeLidar) == 1
