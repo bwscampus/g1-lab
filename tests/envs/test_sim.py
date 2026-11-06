@@ -6,7 +6,7 @@ import pytest
 from g1.cli import run, run_settings
 from g1.envs import SimEnv
 from g1.tools import Chain
-from g1.tools.arms import TPose
+from g1.tools.routines import RoutineTool
 from g1.tools.control import Hold
 from g1.tools.move import Move
 
@@ -18,7 +18,7 @@ def sim(**settings):
 
 def test_tpose_on_the_twin_keeps_it_standing_and_sags_like_the_robot():
     env = sim()
-    assert run(Chain(TPose()), env) is True
+    assert run(Chain(RoutineTool(routine="tpose")), env) is True
     assert env.twin.pelvis_z == pytest.approx(0.75, abs=0.02) and env.twin.onboard.fallen_at is None   # GR00T's height
     x, y, yaw = env.base_pose()
     assert math.hypot(x, y) < 0.02 and abs(yaw) < math.radians(2)       # an arm tool does not move the base
@@ -114,9 +114,8 @@ def test_a_fall_fails_the_run_through_the_twins_summary(capsys):
 
 def test_it_stands_still_while_the_arms_swing_and_takes_a_push():
     """GR00T's Balance network: no marching in place, no drift, and a shove does not floor it."""
-    from g1.tools.arms import SixSeven
     env = sim()
-    assert run(Chain(SixSeven(reps=2, settle_s=1.0, hold_s=0.1)), env) is True
+    assert run(Chain(RoutineTool(routine="sixseven")), env) is True
     x, y, yaw = env.base_pose()
     assert math.hypot(x, y) < 0.05 and abs(math.degrees(yaw)) < 3 and env.twin.onboard.walk_ticks == 0
     from g1.twin.core import Twin

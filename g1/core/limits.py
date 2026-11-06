@@ -32,12 +32,12 @@ NAMES = (
     "joint_margin_rad", "command_vel_max", "arm_sdk_kp", "arm_sdk_kd", "max_violations", "joint_moved_rad", "max_printed_violations",
     "move_dx_max_m", "move_dy_max_m", "move_dyaw_max_deg", "walk_forward_min_m", "look_yaw_max_deg", "look_seconds_min", "look_seconds_max", "look_seconds_default",
     "point_down_deg_max", "point_down_deg_default", "point_sag_deg", "point_rise_s_min", "point_rise_s_max", "point_rise_s_default", "point_hold_s_min", "point_hold_s_max", "point_hold_s_default", "point_to_distance_min_m", "point_to_distance_max_m", "point_to_yaw_max_deg",
-    "arm_path_max_waypoints", "arm_path_seconds_min", "arm_path_seconds_max", "arm_path_seconds_default", "tpose_hold_s_min", "tpose_hold_s_default", "tpose_rise_s_min", "tpose_rise_s_max", "tpose_rise_s_default", "sixseven_reps_max", "sixseven_reps_default", "sixseven_swing_s_min", "sixseven_swing_s_max", "sixseven_swing_s_default", "sixseven_settle_s_min", "sixseven_settle_s_max", "sixseven_settle_s_default", "sixseven_hold_s_min", "sixseven_hold_s_max", "sixseven_hold_s_default", "sixseven_lower_s",
-    "hold_seconds_max", "hold_seconds_min", "hold_seconds_default", "wave_hand_seconds", "shake_hand_seconds", "gesture_seconds_max", "gesture_seconds_min", "gesture_ramp_s", "sit_seconds", "sit_seconds_min", "sit_seconds_max", "sit_line_up_m", "sit_back_m",
+    "arm_path_max_waypoints", "arm_path_seconds_min", "arm_path_seconds_max", "arm_path_seconds_default",     "hold_seconds_max", "hold_seconds_min", "hold_seconds_default", "wave_hand_seconds", "shake_hand_seconds", "gesture_seconds_max", "gesture_seconds_min", "gesture_ramp_s", "sit_seconds", "sit_seconds_min", "sit_seconds_max", "sit_line_up_m", "sit_back_m",
     "say_max_chars", "speech_chars_per_s", "say_min_s", "say_pause_max_s", "tts_speaker_id", "sound_max_s",
     "heard_languages", "heard_max_chars", "heard_max_age_s", "mic_echo_guard_s",
     "listen_seconds_min", "listen_seconds_max", "listen_seconds_default",
-    "bookend_ramp_s", "bookend_ramp_max_s", "return_to_stand_s", "return_ramp_s", "return_released_s", "rpc_timeout_s", "lowstate_timeout_s", "lowstate_settle_s", "lowstate_poll_s", "release_s", "base_send_period_s", "fsm_enter_timeout_s", "fsm_poll_s", "gantry_damp_s", "gantry_lock_stand_s", "restore_fsm_s", "walk_fsm", "moves_settle_s", "moves_overrun_s", "arm_action_s", "talk_quiet_s", "talk_poll_s", "talk_history_turns", "talk_speech_timeout_s", "talk_walk_max_m", "talk_side_max_m", "talk_turn_max_deg", "sit_stand_timeout_s", "status_probe_s", "health_period_s",
+    "bookend_ramp_s", "bookend_ramp_max_s", "return_to_stand_s", "return_ramp_s", "return_released_s", "rpc_timeout_s", "lowstate_timeout_s", "lowstate_settle_s", "lowstate_poll_s", "release_s", "base_send_period_s", "fsm_enter_timeout_s", "fsm_poll_s", "gantry_damp_s", "gantry_lock_stand_s", "restore_fsm_s", "walk_fsm", "moves_settle_s", "moves_overrun_s", "arm_action_s", "console_ctrl_c_window_s", "console_escape_s", "console_refresh_s", "talk_quiet_s", "talk_poll_s", "talk_history_turns", "talk_speech_timeout_s", "talk_walk_max_m", "talk_side_max_m", "talk_turn_max_deg", "sit_stand_timeout_s", "status_probe_s", "health_period_s",
+    "routine_duration_max_s", "routine_keyframes_max", "routine_sample_rate_max_hz",
     "lidar_max_s", "lidar_print_period_s", "lidar_view_port", "lidar_view_points_max", "lidar_timeout_s", "lidar_voxel_m", "slam_type", "slam_map_path",
     "twin_physics_dt_s", "twin_fsm_delay_s", "twin_lock_stand_s", "twin_mask_arms_out_rad", "twin_sit_s", "twin_seated_fall_z_m", "twin_sit_kp", "twin_sit_kd", "twin_damp_kd", "twin_fall_z_m",
     "twin_fall_tilt_deg", "twin_band_kp", "twin_band_kd", "twin_waist_kp", "twin_waist_kd", "twin_waist_hold_s", "twin_arm_kp",
@@ -98,14 +98,11 @@ def _check_consistency(limits: dict, p: Path) -> None:
              ("gesture_seconds_min", "wave_hand_seconds"), ("gesture_seconds_min", "shake_hand_seconds"),
              ("sit_seconds_min", "sit_seconds"), ("sit_seconds", "sit_seconds_max"),
              ("bookend_ramp_s", "bookend_ramp_max_s"), ("walk_forward_min_m", "move_dx_max_m"),
-             ("tpose_hold_s_default", "hold_seconds_max"),
              ("point_down_deg_default", "point_down_deg_max")]
     # every tool argument with a range: min <= default <= max
-    for stem in ("look_seconds", "hold_seconds", "point_rise_s", "point_hold_s", "tpose_hold_s", "tpose_rise_s", "sixseven_swing_s",
-                 "sixseven_settle_s", "sixseven_hold_s"):
+    for stem in ("look_seconds", "hold_seconds", "point_rise_s", "point_hold_s"):
         lo, hi = f"{stem}_min", f"{stem}_max" if f"{stem}_max" in v else "hold_seconds_max"
         rules += [(lo, f"{stem}_default"), (f"{stem}_default", hi)]
-    rules.append(("sixseven_reps_default", "sixseven_reps_max"))
     for low, high in rules:
         if v[low] > v[high]:
             raise ValueError(f"limits file {p}: {low} ({v[low]}) must not exceed {high} ({v[high]})")

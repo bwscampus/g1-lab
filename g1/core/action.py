@@ -152,3 +152,4 @@ class Segment:
     label: str = ""
     base: Optional[tuple[float, float, float]] = None   # base velocity held for the whole segment
     command: Optional[tuple[str, dict]] = None          # one-shot onboard call on the segment's first tick
+    ease: str = "smooth"                                # "smooth" (cosine, stops at the ends) | "linear" (dense samples)

@@ -6,7 +6,7 @@ from g1.core.action import Action, Runnable, Segment
 from g1.core.config import BASE_VEL_MAX, LEFT_ARM, STAND_Q, UPPER_BODY
 from g1.envs.monitor import JointMonitor, TooManyViolations, Violation
 from g1.tools import Chain, Tool
-from g1.tools.arms import TPose
+from g1.tools.routines import RoutineTool
 from tests.doubles import sim_env
 
 
@@ -98,7 +98,7 @@ def test_strict_stops_early_and_report_only_does_not(capsys):
 
 def test_tpose_passes_in_sim():
     env = sim_env()
-    r = Chain(TPose())
+    r = Chain(RoutineTool(routine="tpose"))
     assert run(r, env) is True
     assert env.violations == [] and env.ticks == round(r.duration / 0.02)
     assert env.q_max[16] == pytest.approx(1.57, abs=0.15)        # measured tracks the command, sagging at kp 60

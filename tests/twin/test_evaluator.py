@@ -7,6 +7,7 @@ import pytest
 
 from g1.agent.task import load_task
 from g1.cli import run_once
+from g1.core import limits
 from g1.envs import scene
 from tests.doubles import sim_env
 
@@ -18,13 +19,18 @@ SUCCESS = {"point_at": "laptop", "within_deg": 10, "for_s": 1.0, "feet_drift_max
 
 
 def run_chain(tmp_path, chain, success=SUCCESS, **spec):
+    """A scripted chain of tools scored by the twin: a task folder for the scene and the success
+    criteria (its instruction is never read), the chain played in place of the agent."""
+    from g1.tools import parse_chain
     d = tmp_path / "tasks" / chain.replace(":", "_").replace(",", "-")
     d.mkdir(parents=True)
-    (d / "task.json").write_text(json.dumps({**LAPTOP, "tools": chain, "success": success, **spec}))
+    (d / "task.json").write_text(json.dumps({**LAPTOP, "instruction": "scripted", "success": success,
+                                             **({"hears": True} if spec.get("voices") else {}), **spec}))
     task = load_task(d)
+    task["program"] = chain
     env = sim_env(scene=task["scene"], sim_objects=[scene.parse_object(o) for o in task["objects"]],
                   sim_start=task["start"], success=task["success"], voices=task["voices"])
-    code, folder = run_once(task, sim=True, mode=None, env=env)
+    code, folder = run_once(task, sim=True, mode=None, env=env, program=parse_chain(chain, pause=limits.get("chain_pause_s")))
     return code, folder, json.loads((folder / "summary.json").read_text())
 
 

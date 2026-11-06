@@ -316,6 +316,10 @@ class Decider(Worker[AgentTurn, Decision]):
         """For config.json: how this run asks the model."""
         return {"model": self.model}
 
+    def demos_record(self) -> dict:
+        """For config.json: the in-context demos this run was shown (none here)."""
+        return {"ids": [], "text": ""}
+
 
 class VLMDecider(Decider):
     """Asks the vision-language model (Hugging Face or OpenRouter, see ``g1/vlm.py``), keeping
@@ -324,7 +328,10 @@ class VLMDecider(Decider):
     def __init__(self, client: VLMClient, *, max_width: int = IMAGE_WIDTH,
                  live_image_window: Optional[int] = AGENT_SETTINGS["live_image_window"],
                  fresh_turns: bool = False, min_interval: float = 0.0,
-                 history_full_turns: int = AGENT_SETTINGS["history_full_turns"]) -> None:
+                 history_full_turns: int = AGENT_SETTINGS["history_full_turns"],
+                 demos: Optional[list[dict]] = None,
+                 demo_images_max: int = AGENT_SETTINGS["demo_images_max"],
+                 demo_image_width_px: int = AGENT_SETTINGS["demo_image_width_px"]) -> None:
         super().__init__(min_interval=min_interval)
         if live_image_window is not None and live_image_window < 1:
             raise ValueError("live_image_window must be >= 1 or None")
@@ -335,13 +342,35 @@ class VLMDecider(Decider):
         self.fresh_turns = fresh_turns
         self._turns: list[dict] = []          # {"user": msg, "assistant": msg | None, "image_at": int | None}
         self._image_step: dict[int, int] = {}   # id(image block) -> the request (= step file) it came from
+        # In-context demos (g1/agent/demos.py), rendered once: the same blocks head every request,
+        # so the prefix stays stable (and cacheable); recorded once in config.json, not per step.
+        from g1.agent.demos import render
+        self.demos = list(demos or [])
+        self._demo_blocks, self.demo_text = render(self.demos, images_max=demo_images_max,
+                                                   image_width=demo_image_width_px)
+        self._demo_ids = {id(b) for b in self._demo_blocks}
 
     @classmethod
     def from_env(cls, model: Optional[str] = None, *,
                  live_image_window: Optional[int] = AGENT_SETTINGS["live_image_window"],
-                 fresh_turns: bool = False, **client_kw) -> "VLMDecider":
+                 fresh_turns: bool = False, demos: Optional[list[dict]] = None, **client_kw) -> "VLMDecider":
         return cls(VLMClient.from_env(model, **client_kw), live_image_window=live_image_window,
-                   fresh_turns=fresh_turns)
+                   fresh_turns=fresh_turns, demos=demos)
+
+    def demos_record(self) -> dict:
+        """For config.json: which demos this run was shown, and what they said (recorded once)."""
+        return {"ids": [d["run"] for d in self.demos], "text": self.demo_text}
+
+    def _with_demos(self, msgs: list[dict]) -> list[dict]:
+        """``msgs`` with the demos at the head of the first user message (a new message: the
+        history keeps what was sent without them)."""
+        if not self._demo_blocks:
+            return msgs
+        for i, m in enumerate(msgs):
+            if m.get("role") == "user":
+                content = m["content"] if isinstance(m["content"], list) else [{"type": "text", "text": m["content"]}]
+                return [*msgs[:i], {"role": "user", "content": [*self._demo_blocks, *content]}, *msgs[i + 1:]]
+        return msgs
 
     @property
     def model(self) -> str:      # type: ignore[override]
@@ -406,8 +435,15 @@ class VLMDecider(Decider):
         return "Earlier in this run (summarised by the host; images and full results omitted):\n" + "\n".join(lines)
 
     def messages(self, turn: Optional[AgentTurn] = None) -> list[dict]:
-        """The system prompt, then the newest ``history_full_turns`` turns in full; older turns
-        are one summary line each, at the head of the first full turn."""
+        """What is sent: the system prompt, then the newest ``history_full_turns`` turns in full
+        (older turns are one summary line each, at the head of the first full turn), ``turn``'s
+        observation last, and the demos at the head of the first user message."""
+        out = self._history()
+        if turn is not None:
+            out.append(self._user_message(turn)[0])
+        return self._with_demos(out)
+
+    def _history(self) -> list[dict]:
         assert self.context is not None
         out = [{"role": "system", "content": self.context.instructions}]
         if not self.fresh_turns:
@@ -421,8 +457,6 @@ class VLMDecider(Decider):
                 if t["assistant"] is not None:
                     out.append(t["assistant"])
                     out.extend(answers(t["assistant"]))
-        if turn is not None:
-            out.append(self._user_message(turn)[0])
         return out
 
     def as_recorded(self, msgs: list[dict]) -> list[dict]:
@@ -431,9 +465,15 @@ class VLMDecider(Decider):
         def strip(msg):
             if not isinstance(msg.get("content"), list):      # text, a tool call (None), a tool answer
                 return msg
-            blocks = [b if b["type"] == "text" else
-                      {"type": "image", "image": f"step_{self._image_step.get(id(b), 0):04d}.png"}
-                      for b in msg["content"]]
+            blocks, marked = [], False
+            for b in msg["content"]:
+                if id(b) in self._demo_ids:                   # the demos: one marker (their text is in config.json)
+                    if not marked:
+                        blocks.append({"type": "demos", "ids": [d["run"] for d in self.demos]})
+                        marked = True
+                    continue
+                blocks.append(b if b["type"] == "text" else
+                              {"type": "image", "image": f"step_{self._image_step.get(id(b), 0):04d}.png"})
             return {"role": msg["role"], "content": blocks}
         return [strip(m) for m in msgs]
 
@@ -446,8 +486,7 @@ class VLMDecider(Decider):
         user, image_at = self._user_message(turn)
         if not self.fresh_turns:
             self._prune(incoming=1 if image_at is not None else 0)
-        msgs = self.messages()
-        msgs.append(user)
+        msgs = self._with_demos([*self._history(), user])
         self.queries[turn.request_id] = self.as_recorded(msgs[1:])     # the system prompt is in config.json
         try:
             call = self.client.complete(msgs, tools=self.context.tools)

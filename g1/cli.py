@@ -1,22 +1,23 @@
-"""``g1``: run a task, on the robot or on the twin.
+"""``g1``: the robot, a session at a time or a run at a time.
 
-    g1 run TASK --mode standing|gantry     # the robot (UNITREE_IFACE, UNITREE_ROBOT_IP from .env)
-    g1 run TASK --mode standing --view     # ... and its head camera live in a browser
-    g1 run TASK --sim [--mode gantry]      # the twin, in the MuJoCo window: the same robot code, over DDS
+    g1 start --mode standing|gantry        # the robot in one interactive session: it listens, you type
+                                           # (plain text is chat; /help); it answers or runs a built-in,
+                                           # routine or task. Esc stops it; Ctrl-C twice exits
+    g1 run NAME --mode standing|gantry     # one task (or routine) on the robot; --view: its camera in a browser
+    g1 run NAME --sim [--mode gantry]      # the twin, in the MuJoCo window: the same robot code, over DDS
     g1 bench SUITE                         # a suite of tasks on the twin, headless, repeated, one table
     g1 status                              # is the robot reachable, and what state is it in
-    g1 lidar                               # the head lidar through Unitree's SLAM: the live feed, printed
+    g1 moves ...                           # Unitree's built-ins: list, check, play; FSM switches; short walks
+    g1 lidar                               # the head lidar through SLAM: a live 3D view, the map saved
     g1 twin fetch | status                 # the twin's model, walker and room assets
-    g1 trace compare RUN_A RUN_B | show RUN   # how far the twin is from the robot on the same task
+    g1 trace compare RUN_A RUN_B | show RUN   # how far the twin is from the robot on the same task or routine
     g1 limits [SOURCE]                     # every number and default, from configs/limits.json (+ the model)
 
-TASK is a folder under tasks/ (or its path): an ``instruction`` the vision model
-works on, or a fixed ``tools`` chain (``g1/agent/task.py``). ``--mode standing``
-lets the base walk; ``gantry`` never does. Every other number and default is in
-configs/limits.json (``g1 limits``), configs/model.json (which model, how it is asked)
-or the task's task.json; .env holds only what is
-private to this machine (the token, the robot's address and key). ``G1_VERBOSE=1``
-prints every SDK call and a health line a second.
+NAME is a task under tasks/ (an ``instruction`` the vision model works through) or a routine under
+routines/ (a fixed motion, no model). ``--mode standing`` lets the base walk; ``gantry`` never does.
+Every other number and default is in configs/limits.json (``g1 limits``), configs/model.json (which
+model, how it is asked) or the task's task.json; .env holds only what is private to this machine
+(the token, the robot's address and key). ``G1_VERBOSE=1`` prints every SDK call and a health line a second.
 """
 from __future__ import annotations
 
@@ -31,7 +32,7 @@ from g1.core import limits
 from g1.core.action import Action, Obs, Runnable, Segment
 from g1.envs import Env, EnvAbort
 from g1.envs.base import shield_sigint
-from g1.tools import Tool, parse_chain
+from g1.tools import Tool
 from g1.vlm import load_dotenv
 
 ROOT = limits.ROOT
@@ -174,7 +175,7 @@ def run_settings(task: Optional[dict] = None, *, sim: bool = False, mode: Option
         sim=sim, mode=mode, view=view,
         iface=os.environ.get("UNITREE_IFACE"), domain=None,
         camera_ip=os.environ.get("UNITREE_ROBOT_IP"), camera_timeout=limits.get("camera_timeout_s"),
-        camera_source="auto", camera="auto", trace=None,
+        camera_source="auto", camera="auto", trace=None, microphone=None, camera_shared=None,
         verbose=os.environ.get("G1_VERBOSE", "") not in ("", "0"),
         scene=task.get("scene") or "none", sim_objects=[parse_object(o) for o in task.get("objects") or []],
         camera_size=task.get("camera_size"), sim_start=task.get("start"), success=task.get("success"),
@@ -195,10 +196,11 @@ def run_settings(task: Optional[dict] = None, *, sim: bool = False, mode: Option
 
 def build_program(task: dict, env, runs: Path, env_name: str, mode: Optional[str] = None,
                   config: Optional[dict] = None) -> Runnable:
-    """The task's agent (an instruction) or its chain (tools); ``env_name`` labels its records,
-    ``config`` is the run's setup for config.json."""
-    if task["tools"]:
-        return parse_chain(task["tools"], pause=limits.get("chain_pause_s"))
+    """The task's agent, or a routine's program (a routine run spec, ``routines.run_spec``);
+    ``env_name`` labels its records, ``config`` is the run's setup for config.json."""
+    if task.get("routine"):
+        from g1.tools.routines import routine_program
+        return routine_program(task.get("routine_dir") or task["routine"])
     from g1.agent.agent import build_agent
     return build_agent(task, env_name=env_name, can_walk=env.can_walk, has_loco=env.has_loco, runs=runs,
                        mode=mode, config=config)
@@ -211,9 +213,13 @@ def run_task(task: dict, *, sim: bool, mode: Optional[str], view: bool = False, 
 
 
 def run_once(task: dict, *, sim: bool, mode: Optional[str], view: bool = False, env: Optional[Env] = None,
-             headless: bool = False) -> tuple[int, Optional[Path]]:
+             headless: bool = False, program: Optional[Runnable] = None, ask: bool = True,
+             settings: Optional[dict] = None) -> tuple[int, Optional[Path]]:
     """``run_task``, also returning the run's folder (None if it was not kept). ``headless``:
-    the twin without its window (g1 bench)."""
+    the twin without its window (g1 bench). ``program``: play this instead of the task's own (a
+    test's chain; ``task`` then only names and places the records). ``ask``: after a robot run,
+    ask whether to keep it and the verdict (talk runs keep it unreviewed). ``settings``: extra env
+    settings (talk shares its microphone)."""
     from datetime import datetime
     from g1.agent.task import (code_snapshot, label_run, record_result, run_config, run_dir, update_summary,
                                write_config, write_status)
@@ -225,16 +231,17 @@ def run_once(task: dict, *, sim: bool, mode: Optional[str], view: bool = False, 
     env_name = "sim" if sim else "robot"          # --sim runs RobotEnv itself: the label comes from the flag
     in_process = env is not None
     if env is None:
-        env = RobotEnv(run_settings(task, sim=sim, mode=mode, view=view))
+        env = RobotEnv(run_settings(task, sim=sim, mode=mode, view=view, **(settings or {})))
     settings = env.args
     runs = task["dir"] / "runs"
     runs.mkdir(parents=True, exist_ok=True)
     started = datetime.now().isoformat(timespec="seconds")
     config = run_config(task, env_name=env_name, mode=mode, settings=settings, code=code_snapshot())
-    try:
-        program = build_program(task, env, runs, env_name, mode, config)
-    except (KeyError, ValueError, RuntimeError) as e:
-        raise SystemExit(f"{task['dir'] / 'task.json'}: {e}") from None
+    if program is None:
+        try:
+            program = build_program(task, env, runs, env_name, mode, config)
+        except (KeyError, ValueError, RuntimeError) as e:
+            raise SystemExit(f"{task['dir']}: {e}") from None
     segments = getattr(program, "segments", None)
     if segments is not None and any(s.base for s in segments()) and not env.can_walk:
         raise SystemExit(f"{task['name']} drives the base, and --mode gantry never walks (use --mode standing)")
@@ -243,7 +250,7 @@ def run_once(task: dict, *, sim: bool, mode: Optional[str], view: bool = False, 
     if recorder is None:
         write_config(folder, config)
     settings.trace = str(folder / "trace.npz")
-    print(f"== {task['name']} ({'instruction' if task['instruction'] else 'tools'}) @ "
+    print(f"== {task['name']} ({'instruction' if task['instruction'] else 'routine' if task.get('routine') else 'program'}) @ "
           f"{'the twin' if sim else 'the robot'}, mode {mode} ==")
     if sim and not in_process:
         from g1.twin.main import TwinProcess
@@ -269,7 +276,7 @@ def run_once(task: dict, *, sim: bool, mode: Optional[str], view: bool = False, 
     update_summary(folder, health=health or None)
     if sim and task.get("success"):
         folder = twin_verdict(folder, health)
-    if not sim:                                  # the robot: keep it? then the human's verdict
+    if not sim and ask:                          # the robot: keep it? then the human's verdict
         from g1.agent import agent as prompts
         if not prompts.ask_save():
             shutil.rmtree(folder, ignore_errors=True)
@@ -311,7 +318,7 @@ def twin_verdict(folder: Path, health: dict) -> Path:
 def run_main(argv: list[str]) -> int:
     from g1.agent.task import find, load_task
     p = argparse.ArgumentParser(prog="g1 run", description="run a task on the robot, or on the twin with --sim")
-    p.add_argument("task", help="a folder under tasks/ (e.g. find_the_mug) or its path")
+    p.add_argument("task", help="a folder under tasks/ (e.g. find_the_mug) or its path; a routine under routines/ (e.g. tpose) plays too")
     p.add_argument("--sim", action="store_true", help="run on the twin instead of the robot, in the MuJoCo window")
     p.add_argument("--mode", choices=("standing", "gantry"), default=None,
                    help="standing: on its own feet, may walk (default with --sim). gantry: hanging; "
@@ -324,8 +331,12 @@ def run_main(argv: list[str]) -> int:
         p.error("--view is the robot's camera; --sim already shows the twin in the MuJoCo window")
     try:
         task = load_task(find(args.task))
-    except ValueError as e:
-        p.error(str(e))
+    except ValueError as task_error:
+        from g1 import routines
+        try:                                       # not a task: a routine of that name plays the same way
+            task = routines.run_spec(args.task)
+        except routines.RoutineError:
+            p.error(str(task_error).replace("; tasks:", f"; routines: {', '.join(routines.routine_names()) or 'none'}; tasks:"))
     return run_task(task, sim=args.sim, mode=args.mode, view=args.view)
 
 
@@ -337,10 +348,11 @@ COMMANDS = {
     "run": "run a task on the robot, or on the twin with --sim",
     "bench": "run a suite of tasks on the twin, headless, repeated, scored by the twin; one table (suites/)",
     "status": "is the robot reachable and what state is it in (read-only)",
-    "lidar": "the head lidar through Unitree's SLAM: start mapping, print the live feed, end mapping (robot only)",
+    "lidar": "the head lidar through Unitree's SLAM: a live 3D view until Ctrl-C, the map saved (robot only)",
     "moves": "the robot's stored moves (Unitree's dances, gestures, arm actions): list | check | play, "
              "and FSM switches in their order: fsm damp|stand|main|walk|sit|up",
-    "talk": "conversation demo: the robot listens and answers, or plays a stored move when asked; nothing else",
+    "start": "the robot in one interactive session: it listens, you type (plain text is chat; /help), it answers or "
+             "runs a built-in, routine or task; /mode, /mic, /camera, /lidar; Esc stops, Ctrl-C twice exits",
     "twin": "fetch the twin's model, walker and room assets (fetch | status)",
     "trace": "compare two runs of a task, e.g. the twin's and the robot's (compare | show)",
     "limits": "print every limit and default in configs/limits.json as one table (or one source: g1 limits guess), "
@@ -375,9 +387,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     if command == "moves":
         from g1.envs.moves import main as moves_main
         return moves_main(rest)
-    if command == "talk":
-        from g1.talk import main as talk_main
-        return talk_main(rest)
+    if command == "start":
+        from g1.console import start_main
+        return start_main(rest)
     if command == "limits":
         code = limits.main(rest)
         if code == 0:

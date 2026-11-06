@@ -12,6 +12,8 @@ whose name starts with ``_`` are not imported.
 """
 from __future__ import annotations
 
+import dataclasses
+
 import importlib
 import importlib.util
 import json
@@ -199,8 +201,7 @@ def parse_tool(item: str) -> Tool:
 
 def prefixed(tool: Tool) -> list[Segment]:
     """A tool's segments with labels prefixed by its name."""
-    return [Segment(seg.goal, seg.duration, seg.weight,
-                    f"{tool.name}: {seg.label}" if seg.label else "", seg.base, seg.command)
+    return [dataclasses.replace(seg, label=f"{tool.name}: {seg.label}" if seg.label else "")
             for seg in tool.segments()]
 
 

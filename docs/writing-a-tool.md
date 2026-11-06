@@ -6,10 +6,13 @@ drift apart. Drop a file in the directory and it is in the menu on the next run;
 definition fails at import with the file named.
 
 ```
-$EDITOR g1/tools/bow.py                  # the class below
-echo '{"tools": "bow"}' > tasks/bow/task.json    # (mkdir tasks/bow first) a task that runs it
-g1 run bow --sim                         # runs it on the twin, fully checked; the model is offered it now
+$EDITOR g1/tools/bow.py                  # the class below; the model is offered it from the next run
+python -c "from g1.cli import run; from g1.tools import parse_chain; from tests.doubles import sim_env; \
+           print(run(parse_chain('bow'), sim_env()))"     # plays it on the twin, fully checked: PASS or FAIL
 ```
+
+(A command for this comes with the next CLI pass. A fixed motion you want to keep as data rather
+than code is a routine: `docs/writing-a-routine.md`.)
 
 ## The contract
 
@@ -26,7 +29,7 @@ class Bow(Tool):
         "hold_s": num(0.0, limit("hold_seconds_max"), 1.0, "seconds to stay bowed"),
         "reps": integer(1, 3, 1, "how many bows"),
     }
-    # visible = True      False keeps it out of the model's menu (tools chains only)
+    # visible = True      False keeps it out of the model's menu (code and chains only)
     # needs_base = False  True if it drives the base; hidden where the env cannot walk
     # needs_loco = False  True for an onboard gesture (the twin plays a stand-in)
     # needs_hearing = False  True if it is about the microphone (listen); offered only when the task hears
@@ -43,7 +46,7 @@ eases between the segments at 50 Hz from wherever the previous tool left the joi
 ## Parameters: numbers with ranges, not switches
 
 A continuous quantity is a `num(lo, hi, default, description)` — never `speed: slow|fast`.
-The caller (the model, a task's tools chain, another student) picks the seconds, metres or degrees, so
+The caller (the model, a chain in code, another student) picks the seconds, metres or degrees, so
 one tool serves every situation. The rules, enforced by a test on every tool:
 
 * every number and integer has a `minimum` and a `maximum`; the host clamps and tells the
@@ -57,7 +60,7 @@ one tool serves every situation. The rules, enforced by a test on every tool:
   a note and `"source": "guess"` until you have verified it) rather than a literal, when
   anything else should respect the same number
 * every motion tool also takes a `note` — the model's evidence and intent, required of the
-  model, empty from code and a tools chain. Do not declare it.
+  model, empty from code and a chain. Do not declare it.
 
 `text(description)` is a required non-empty string, `flag(default)` a boolean; a plain
 JSON-schema dict works for anything else (`arm_path`'s waypoints array).
@@ -74,8 +77,8 @@ radians, merged onto the previous pose, so a segment may set only some joints) o
 * Touch only the joints your tool is about and leave them where it ends. Nothing else ever
   moves the arms to a neutral pose — not the run's start or end (the bookends only blend
   the arm_sdk weight in place), not walking — so a tool that needs a starting pose makes it
-  its own first segment (`tpose` raises the arms itself, `sixseven` settles into palms-up
-  first). `g1/core/poses.py` has `STAND` (the stand pose, `config.STAND_Q`) if you want it.
+  its own first segment (`point` raises the arm itself; a routine's first keyframe is its
+  first pose). `g1/core/poses.py` has `STAND` (the stand pose, `config.STAND_Q`) if you want it.
 * Joints and conventions: `g1/core/config.py:JOINTS` has every joint with its limits and
   `STAND_Q` the stand value. Verified on the model: elbow 0 is a 90° bend with the forearm forward, ~1.57
   is a straight arm, more negative bends the forearm up; `shoulder_roll` +1.57 (left) /
@@ -104,11 +107,11 @@ radians, merged onto the previous pose, so a segment may set only some joints) o
 
 ## What happens to it
 
-* `g1 run bow --sim` (a task with `"tools": "bow"`) plays it between the bookends and the joint
+* Played on the twin (the snippet above) it runs between the bookends and the joint
   monitor checks every tick: measured and commanded angles inside the limits minus a margin,
   command speed under `command_vel_max`, weight in [0, 1], base velocity under the ceiling.
   A FAIL names the joint, the tick and the value; so does a fall. The MuJoCo window shows it.
-* Chained (`"tools": "bow:20,hold:1,bow:10"`), each tool starts from the previous tool's last
+* Chained in code (`parse_chain("bow:20,hold:1,bow:10")`), each tool starts from the previous tool's last
   *commanded* pose, so the seam is continuous and the velocity gate covers it.
 * Offered to the model, its prompt and schema go with every request as a function definition;
   before it executes, the agent dry-runs it through the monitor from the commanded pose (the

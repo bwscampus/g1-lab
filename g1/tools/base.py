@@ -259,7 +259,8 @@ class Tool(Runnable):
     def step(self, t: float, obs: Obs) -> Optional[Action]:
         for i, (t0, t1, start, goal, seg) in enumerate(self._plan):
             if t < t1 - 1e-9:
-                a = ease((t - t0) / (t1 - t0))
+                x = (t - t0) / (t1 - t0)
+                a = x if seg.ease == "linear" else ease(x)
                 if seg.label and seg.label != self._last_label:
                     print(f"[{self.name}] {seg.label}")
                     self._last_label = seg.label

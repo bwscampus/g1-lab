@@ -222,4 +222,6 @@ assets/
 # task runs
 tasks/*/runs/
 tasks/*/results.jsonl
+routines/*/runs/
+routines/*/results.jsonl
 suites/*/runs/

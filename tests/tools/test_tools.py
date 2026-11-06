@@ -27,8 +27,7 @@ EXTREMES = {                       # (extreme args, cheap args for the pairwise 
     "look": ([{"yaw_deg": -45.0}, {"yaw_deg": 45.0, "seconds": 0.5}, {"yaw_deg": 145.0, "seconds": 3.0}, {"yaw_deg": -145.0, "seconds": 3.0}], {"yaw_deg": 45.0}),
     "point": ([{"down_deg": 0.0, "rise_s": 0.8, "hold_s": 0.5}, {"down_deg": 60.0}], {"hold_s": 0.5, "rise_s": 1.0}),
     "hold": ([{"seconds": 0.1}, {"seconds": 30.0}], {"seconds": 0.5}),
-    "tpose": ([{}, {"hold_s": 0.5, "rise_s": 1.0}], {"hold_s": 0.5, "rise_s": 1.0}),
-    "sixseven": ([{}, {"reps": 1, "settle_s": 1.0, "hold_s": 0.1}], {"reps": 1, "settle_s": 1.0, "hold_s": 0.1}),
+    "play_routine": ([{"routine": "tpose"}, {"routine": "sixseven"}], {"routine": "tpose"}),
 }
 
 
@@ -127,7 +126,7 @@ def test_point_moves_only_the_right_arm_and_keeps_it_up_until_lower_arm():
     assert segs[-1].goal == segs[0].goal                         # it ends pointing: the next image shows the arm
     lower = TOOLS["lower_arm"]()
     assert lower.segments()[-1].goal == {j: STAND[j] for j in R_ARM}
-    assert (raises_arm(p), raises_arm(lower), raises_arm(TOOLS["look"](yaw_deg=10)), raises_arm(TOOLS["tpose"]())) == \
+    assert (raises_arm(p), raises_arm(lower), raises_arm(TOOLS["look"](yaw_deg=10)), raises_arm(TOOLS["play_routine"](routine="tpose"))) == \
         (True, False, None, False)
     # a chain that ends pointing lowers the arm before it hands back
     from g1.tools import parse_chain
@@ -194,7 +193,7 @@ def test_gestures_emit_one_onboard_call_and_the_twin_waves(capsys):
     with pytest.raises(ValueError, match="needs_loco"):
         NoLoco.check_definition()
     assert [t["function"]["name"] for t in function_schemas(menu(True))] == ["move", "arm_path", "look", "point_to", "point", "lower_arm", "hold", "check",
-                                                                           "locate_point", "say", "done", "give_up"]
+                                                                           "locate_point", "say", "play_routine", "done", "give_up"]
     assert [t["function"]["name"] for t in function_schemas(menu(True, True))][9:11] == ["wave_hand", "shake_hand"]
 
 
@@ -214,22 +213,22 @@ def test_validate_args():
     with pytest.raises(ValueError):
         validate_args(turn, {"angle_deg": "left"})
     assert validate_args(TOOLS["done"], {"summary": "s", "hindsight": None})[0] == {"summary": "s", "hindsight": ""}
-    assert validate_args(TOOLS["tpose"], {}) == ({"hold_s": 5.0, "rise_s": 3.0, "note": ""}, [])   # defaults fill in
+    hold_default = TOOLS["hold"].schema()["properties"]["seconds"]["default"]
+    assert validate_args(TOOLS["hold"], {}) == ({"seconds": hold_default, "note": ""}, [])         # defaults fill in
     assert validate_args(TOOLS["turn"], {"angle_deg": 1})[0]["note"] == ""      # a note is the model's duty, not code's
     with pytest.raises(ValueError):
         validate_args(TOOLS["check"], {"tool": "turn", "arguments": 3, "note": "n"})
 
 
 def test_menu_and_parse():
-    assert [t.name for t in menu(False)] == ["arm_path", "look", "point_to", "point", "lower_arm", "hold", "check", "locate_point", "say", "done",
-                                             "give_up"]
+    assert [t.name for t in menu(False)] == ["arm_path", "look", "point_to", "point", "lower_arm", "hold", "check", "locate_point", "say",
+                                             "play_routine", "done", "give_up"]
     assert [t.name for t in menu(True)] == ["move", "arm_path", "look", "point_to", "point", "lower_arm", "hold", "check", "locate_point", "say",
-                                            "done", "give_up"]
+                                            "play_routine", "done", "give_up"]
     assert [t.name for t in menu(True, True)] == ["move", "arm_path", "look", "point_to", "point", "lower_arm", "hold", "check", "locate_point", "wave_hand",
-                                                 "shake_hand", "sit", "say", "done", "give_up"]
+                                                 "shake_hand", "sit", "say", "play_routine", "done", "give_up"]
     assert "sit" not in [t.name for t in menu(False, True)]                    # never on the gantry
-    assert {n for n in TOOLS if not TOOLS[n].visible} == {"walk_forward", "turn", "tpose", "sixseven",
-                                                          "takeover", "handback"}
+    assert {n for n in TOOLS if not TOOLS[n].visible} == {"walk_forward", "turn", "routine", "takeover", "handback"}
     m = parse_tool("move:1:0.3:-45")
     assert m.args == {"dx_m": 1.0, "dy_m": 0.3, "dyaw_deg": -45.0, "note": ""}
     a = parse_tool('arm_path:waypoints=[{"joints":{"left_elbow":-0.4},"seconds":1.5}]')
@@ -239,18 +238,20 @@ def test_menu_and_parse():
     tool = parse_tool("turn:45")
     assert tool.name == "turn" and tool.args == {"angle_deg": 45.0, "note": ""}
     assert parse_tool("look:yaw_deg=-20").args == {"yaw_deg": -20.0, "seconds": 1.5, "note": ""}
-    assert parse_tool("tpose").args == {"hold_s": 5.0, "rise_s": 3.0, "note": ""}        # defaults fill in
-    assert parse_tool("tpose:1:2").args == {"hold_s": 1.0, "rise_s": 2.0, "note": ""}    # positional, in params order
+    hold_default = TOOLS["hold"].schema()["properties"]["seconds"]["default"]
+    assert parse_tool("hold").args == {"seconds": hold_default, "note": ""}              # defaults fill in
+    assert parse_tool("look:10:2").args == {"yaw_deg": 10.0, "seconds": 2.0, "note": ""}  # positional, in params order
+    assert parse_tool("play_routine:tpose").args == {"routine": "tpose", "note": ""}
     with pytest.raises(KeyError):
         parse_tool("fly:1")
     with pytest.raises(ValueError):
-        parse_tool("tpose:1:2:3")
+        parse_tool("look:1:2:3")
 
 
 def test_chain_seeds_each_tool_from_the_last_command():
-    c = parse_chain("walk_forward:0.5,turn:45,tpose:0.5:1,sixseven:1:0.4:1:0.1")
-    assert isinstance(c, Chain) and c.name == "walk_forward+turn+tpose+sixseven"
-    assert [t.name for t in c.tools] == ["walk_forward", "turn", "tpose", "sixseven"]     # presets still chain
+    c = parse_chain("walk_forward:0.5,turn:45,play_routine:tpose")
+    assert isinstance(c, Chain) and c.name == "walk_forward+turn+play_routine"
+    assert [t.name for t in c.tools] == ["walk_forward", "turn", "play_routine"]          # routines chain too
     env = sim_env()
     assert run(c, env) is True and env.violations == [] and env.base_path == pytest.approx(0.5)
     c = parse_chain('move:1:0.3:-45,arm_path:waypoints=[{"joints":{"waist_yaw":0.5},"seconds":1}]')
@@ -296,7 +297,8 @@ def test_every_tool_is_well_defined_and_runs_with_its_defaults():
         args = {}
         for k, spec in schema["properties"].items():
             if k in schema["required"] and "default" not in spec:
-                args[k] = ("n" if spec.get("type") == "string" else spec.get("minimum", 0)
+                args[k] = ((spec["enum"][0] if "enum" in spec else "tpose" if k == "routine" else "n")
+                           if spec.get("type") == "string" else spec.get("minimum", 0)
                            if spec.get("type") in ("number", "integer") else {} if spec.get("type") == "object"
                            else [{"joints": {"waist_yaw": 0.0}}] if spec.get("type") == "array" else "move")
         tool = cls(**args)
@@ -310,7 +312,7 @@ def test_every_tool_is_well_defined_and_runs_with_its_defaults():
 
 def test_parameters_are_numbers_with_ranges_not_switches():
     """A continuous quantity is a number with a range, in seconds/metres/degrees;
-    enums are only for genuinely discrete choices (the menu's tool names)."""
+    enums are only for genuinely discrete choices (the menu's tool names, the routines' names)."""
     for cls in TOOLS.values():
         for key, spec in cls.schema()["properties"].items():
             if key == "note":
@@ -320,7 +322,7 @@ def test_parameters_are_numbers_with_ranges_not_switches():
                 assert spec["minimum"] < spec["maximum"], (cls.name, key)
                 if kind == "number":
                     assert key.endswith(("_s", "_m", "_deg", "_rad", "_px")) or key == "seconds", (cls.name, key)
-            assert "enum" not in spec or (cls.name, key) == ("check", "tool"), (cls.name, key)
+            assert "enum" not in spec or (cls.name, key) in (("check", "tool"), ("play_routine", "routine")), (cls.name, key)
     with pytest.raises(ValueError, match="minimum and maximum"):
         type("Bad", (Tool,), {"name": "bad", "prompt": "p", "params": {"x_s": {"type": "number"}}}).check_definition()
 

@@ -114,7 +114,7 @@ def test_robot_and_twin_timing_is_never_a_literal():
     # bring-up, teardown and RPC timeouts move the real robot: they come from limits.json
     pattern = re.compile(r"(?:sleep|SetTimeout|release)\(\s*[0-9.]+\s*\)")
     for rel in ("g1/envs/robot.py", "g1/envs/sim.py", "g1/twin/core.py", "g1/twin/onboard.py", "g1/twin/main.py",
-                "g1/twin/services.py", "g1/cli.py", "g1/envs/moves.py", "g1/talk.py"):
+                "g1/twin/services.py", "g1/cli.py", "g1/envs/moves.py", "g1/session.py", "g1/console.py"):
         hits = pattern.findall((ROOT / rel).read_text())
         assert not hits, (rel, hits)
 

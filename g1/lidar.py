@@ -356,13 +356,130 @@ def save_map(acc: MapAccumulator, runs: Path) -> Optional[Path]:
     return write_pcd(folder / "map.pcd", acc.points())
 
 
+class LidarUnavailable(RuntimeError):
+    """The lidar feed cannot start: the robot is unreachable, a service is off, SLAM refused."""
+
+
+class LidarSession:
+    """One SLAM mapping session with its live view and map, started and stopped (``g1 lidar``,
+    ``g1 start``'s ``/lidar on|off``). ``start`` checks the services (read-only), starts mapping and
+    the feed, serves the view and accumulates the map on a thread; ``stop`` ends mapping, closes SLAM
+    and saves ``runs/<time>/map.pcd``. The caller shields ``stop`` (it must run to the end)."""
+
+    def __init__(self, link, iface: str, domain: int, *, lidar_cls=SlamLidar, runs: Optional[Path] = None,
+                 verbose: bool = False, print_lines: bool = True) -> None:
+        self.link, self.iface, self.domain = link, iface, domain
+        self.lidar_cls, self.verbose, self.print_lines = lidar_cls, verbose, print_lines
+        self.runs = Path(runs) if runs is not None else limits.ROOT / "runs" / "lidar"
+        self.log: list = []
+        self.slam = None
+        self.lidar = None
+        self.viewer = None
+        self.acc = MapAccumulator()
+        self.sizes: list[int] = []
+        self.saved: Optional[Path] = None
+        self._thread: Optional[threading.Thread] = None
+        self._running = False
+        self.t0 = 0.0
+
+    @property
+    def active(self) -> bool:
+        return self.slam is not None
+
+    @property
+    def url(self) -> Optional[str]:
+        return self.viewer.url if self.viewer is not None else None
+
+    def start(self) -> None:
+        rpc = limits.get("rpc_timeout_s")
+        state = self.link.robot_state()
+        state.SetTimeout(rpc)
+        state.Init()
+        code, off = services_off(state, log=self.log, verbose=self.verbose)
+        if code != 0:
+            raise LidarUnavailable("cannot read the robot's service list; is the robot reachable? (g1 status)")
+        if off:
+            raise LidarUnavailable(f"{' and '.join(off)} {'is' if len(off) == 1 else 'are'} off; switch "
+                                   f"{'it' if len(off) == 1 else 'them'} on in the Unitree app (services), then try again")
+        slam = self.link.slam()
+        slam.SetTimeout(rpc)
+        slam.Init()
+        print(f"lidar: {', '.join(SERVICES)} running; starting mapping ({limits.get('slam_type')})")
+        code, _ = slam_call(slam, "StartMapping", limits.get("slam_type"), log=self.log, verbose=self.verbose)
+        if code != 0:
+            slam_call(slam, "CloseSlam", log=self.log, verbose=self.verbose)
+            raise LidarUnavailable("SLAM refused to start mapping (is the app's mapping or navigation in use?)")
+        self.slam = slam
+        self.t0 = time.monotonic()
+        self.lidar = self.lidar_cls(self.iface, self.domain)
+        try:
+            self.lidar.start()
+        except BaseException:                    # no feed (or Ctrl-C while waiting): end the mapping we started
+            self.stop()
+            raise
+        print(f"lidar: first scan after {time.monotonic() - self.t0:.1f}s")
+        if self.lidar.layout:
+            fields, step = self.lidar.layout
+            print(f"lidar: {POINTS_TOPIC} fields {fields}, point_step {step} bytes")
+        from g1.lidar_view import LidarViewer
+        self.viewer = LidarViewer(self.lidar, self.acc)
+        self.viewer.start()
+        print(f"lidar: live view {self.viewer.url}  (from a laptop: ssh -L {self.viewer.port}:127.0.0.1:"
+              f"{self.viewer.port} unitree@<the Jetson>, then open {self.viewer.url})")
+        self._running = True
+        self._thread = threading.Thread(target=self._accumulate, name="lidar-map", daemon=True)
+        self._thread.start()
+
+    def _accumulate(self) -> None:
+        seen, t_start, first, printed = 0, time.monotonic(), self.lidar.count, 0.0
+        while self._running:
+            scan = self.lidar.latest()
+            now = time.monotonic()
+            if scan is not None and scan.seq != seen:
+                seen = scan.seq
+                self.sizes.append(len(scan.points))
+                self.acc.add(scan)
+                if self.print_lines and now - printed >= limits.get("lidar_print_period_s"):
+                    printed = now
+                    print(scan_line(scan, (self.lidar.count - first) / max(now - t_start, 1e-6), now)
+                          + f"  map {len(self.acc.points())} pts")
+            time.sleep(0.02)
+
+    def stop(self) -> Optional[Path]:
+        """End mapping, close SLAM, save the map (None when nothing was mapped). Idempotent."""
+        if self.slam is None:
+            return self.saved
+        self._running = False
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+            self._thread = None
+        if self.viewer is not None:
+            self.viewer.stop()
+            self.viewer = None
+        if self.lidar is not None:
+            self.lidar.stop()
+        slam_call(self.slam, "EndMapping", limits.get("slam_map_path"), log=self.log, verbose=self.verbose)
+        slam_call(self.slam, "CloseSlam", log=self.log, verbose=self.verbose)
+        self.slam = None
+        self.saved = save_map(self.acc, self.runs)
+        if self.sizes:
+            elapsed = time.monotonic() - self.t0
+            growing = len(self.sizes) > 2 and self.sizes[-1] > 1.5 * self.sizes[0]
+            print(f"lidar: {len(self.sizes)} scans ({self.lidar.count} received, {self.lidar.odom_count} odometry) in "
+                  f"{elapsed:.1f}s, {np.mean(self.sizes):.0f} points each on average "
+                  f"({'growing: a map' if growing else 'steady: one scan each'}); "
+                  f"{len(self.acc.points())} points in the {self.acc.voxel_m:g} m voxel map")
+        if self.saved is not None:
+            shown = self.saved.relative_to(limits.ROOT) if self.saved.is_relative_to(limits.ROOT) else self.saved
+            print(f"lidar: map saved: {shown} ({len(self.acc.points())} points; open it in CloudCompare or Open3D)")
+        return self.saved
+
+
 def lidar_main(argv: list[str], link=None, lidar_cls=SlamLidar, runs: Optional[Path] = None) -> int:
     from g1.envs.base import shield_sigint
     from g1.envs.link import DdsLink, dds_domain, is_loopback
-    from g1.lidar_view import LidarViewer
     from g1.vlm import load_dotenv
     load_dotenv()
-    runs = Path(runs) if runs is not None else limits.ROOT / "runs" / "lidar"
     p = argparse.ArgumentParser(prog="g1 lidar", description=(
         "the head lidar through Unitree's SLAM: checks lidar_driver and unitree_slam are on (read-only), "
         "starts mapping, serves the live 3D view at http://127.0.0.1:<lidar_view_port> and prints a line a "
@@ -375,69 +492,24 @@ def lidar_main(argv: list[str], link=None, lidar_cls=SlamLidar, runs: Optional[P
     if is_loopback(iface):
         p.error("g1 lidar is the robot's lidar; the twin has none (UNITREE_IFACE is loopback)")
     verbose = os.environ.get("G1_VERBOSE", "") not in ("", "0")
-    log: list = []
     link = link or DdsLink()
     domain = dds_domain(iface)
     try:
         link.init(domain, iface)
     except ImportError as e:
         p.error(f"unitree_sdk2py is not installed ({e})")
-    rpc = limits.get("rpc_timeout_s")
-
-    state = link.robot_state()
-    state.SetTimeout(rpc)
-    state.Init()
-    code, off = services_off(state, log=log, verbose=verbose)
-    if code != 0:
-        print("lidar: cannot read the robot's service list; is the robot reachable? (g1 status)")
-        return 1
-    if off:
-        print(f"lidar: {' and '.join(off)} {'is' if len(off) == 1 else 'are'} off; switch "
-              f"{'it' if len(off) == 1 else 'them'} on in the Unitree app (services), then run g1 lidar again")
-        return 1
-
-    slam = link.slam()
-    slam.SetTimeout(rpc)
-    slam.Init()
-    print(f"lidar: {', '.join(SERVICES)} running; starting mapping ({limits.get('slam_type')})")
-    code, _ = slam_call(slam, "StartMapping", limits.get("slam_type"), log=log, verbose=verbose)
-    if code != 0:
-        print("lidar: SLAM refused to start mapping (is the app's mapping or navigation in use?)")
-        slam_call(slam, "CloseSlam", log=log, verbose=verbose)
-        return 1
-
+    session = LidarSession(link, iface, domain, lidar_cls=lidar_cls, runs=runs, verbose=verbose)
     previous = stop_like_ctrl_c()
-    lidar = lidar_cls(iface, domain)
-    acc = MapAccumulator()
-    viewer = None
-    sizes: list[int] = []
     rc = 0
-    saved = None
-    t0 = time.monotonic()
     try:
-        lidar.start()
-        print(f"lidar: first scan after {time.monotonic() - t0:.1f}s")
-        if lidar.layout:
-            fields, step = lidar.layout
-            print(f"lidar: {POINTS_TOPIC} fields {fields}, point_step {step} bytes")
-        viewer = LidarViewer(lidar, acc)
-        viewer.start()
-        print(f"lidar: live view {viewer.url}  (from a laptop: ssh -L {viewer.port}:127.0.0.1:{viewer.port} "
-              f"unitree@<the Jetson>, then open {viewer.url})")
+        session.start()
         print(f"lidar: mapping until Ctrl-C (at most {limits.get('lidar_max_s'):g} s)")
-        seen, t_start, first, printed = 0, time.monotonic(), lidar.count, 0.0
+        t_start = time.monotonic()
         while time.monotonic() - t_start < limits.get("lidar_max_s"):
-            scan = lidar.latest()
-            now = time.monotonic()
-            if scan is not None and scan.seq != seen:
-                seen = scan.seq
-                sizes.append(len(scan.points))
-                acc.add(scan)
-                if now - printed >= limits.get("lidar_print_period_s"):
-                    printed = now
-                    print(scan_line(scan, (lidar.count - first) / max(now - t_start, 1e-6), now)
-                          + f"  map {len(acc.points())} pts")
-            time.sleep(0.02)
+            time.sleep(0.05)
+    except LidarUnavailable as e:
+        print(f"lidar: {e}")
+        rc = 1
     except (TimeoutError, ConnectionError) as e:
         print(e)
         rc = 1
@@ -449,23 +521,11 @@ def lidar_main(argv: list[str], link=None, lidar_cls=SlamLidar, runs: Optional[P
             if sig != signal.SIGINT:
                 signal.signal(sig, lambda signum, frame: print(f"\n{note}", flush=True))
         with shield_sigint(note):
-            if viewer is not None:
-                viewer.stop()
-            lidar.stop()
-            slam_call(slam, "EndMapping", limits.get("slam_map_path"), log=log, verbose=verbose)
-            slam_call(slam, "CloseSlam", log=log, verbose=verbose)
-            saved = save_map(acc, runs)
+            session.stop()
         for sig, handler in previous.items():
             signal.signal(sig, handler)
-    if sizes:
-        elapsed = time.monotonic() - t0
-        growing = len(sizes) > 2 and sizes[-1] > 1.5 * sizes[0]
-        print(f"lidar: {len(sizes)} scans ({lidar.count} received, {lidar.odom_count} odometry) in {elapsed:.1f}s, "
-              f"{np.mean(sizes):.0f} points each on average ({'growing: a map' if growing else 'steady: one scan each'}); "
-              f"{len(acc.points())} points in the {acc.voxel_m:g} m voxel map")
-    if saved is not None:
-        shown = saved.relative_to(limits.ROOT) if saved.is_relative_to(limits.ROOT) else saved
-        print(f"lidar: map saved: {shown} ({len(acc.points())} points; open it in CloudCompare or Open3D)")
-    failed = [e for e in log if e["code"] != 0]
-    print(f"sdk: {len(log)} call(s), {len(failed)} failed")
+    if not session.log:
+        return rc
+    failed = [e for e in session.log if e["code"] != 0]
+    print(f"sdk: {len(session.log)} call(s), {len(failed)} failed")
     return rc or (1 if failed else 0)

@@ -1,0 +1,154 @@
+{
+  "notes": "The six-seven: palms up, elbows bent 90 degrees, the forearms see-saw three times each, then the arms go down.",
+  "tracks": {
+    "upper_body": {
+      "keyframes": [
+        {
+          "t": 3.0,
+          "joints": {
+            "waist_yaw": 0.0,
+            "waist_roll": 0.0,
+            "waist_pitch": 0.0,
+            "left_shoulder_pitch": 0.0,
+            "left_shoulder_roll": 0.1,
+            "left_shoulder_yaw": 0.0,
+            "left_elbow": 0.0,
+            "left_wrist_roll": -1.571,
+            "left_wrist_pitch": 0.0,
+            "left_wrist_yaw": 0.0,
+            "right_shoulder_pitch": 0.0,
+            "right_shoulder_roll": -0.1,
+            "right_shoulder_yaw": 0.0,
+            "right_elbow": 0.0,
+            "right_wrist_roll": 1.571,
+            "right_wrist_pitch": 0.0,
+            "right_wrist_yaw": 0.0
+          },
+          "label": "palms up, elbows 90"
+        },
+        {
+          "t": 4.0,
+          "joints": {
+            "waist_yaw": 0.0,
+            "waist_roll": 0.0,
+            "waist_pitch": 0.0,
+            "left_shoulder_pitch": 0.0,
+            "left_shoulder_roll": 0.1,
+            "left_shoulder_yaw": 0.0,
+            "left_elbow": 0.0,
+            "left_wrist_roll": -1.571,
+            "left_wrist_pitch": 0.0,
+            "left_wrist_yaw": 0.0,
+            "right_shoulder_pitch": 0.0,
+            "right_shoulder_roll": -0.1,
+            "right_shoulder_yaw": 0.0,
+            "right_elbow": 0.0,
+            "right_wrist_roll": 1.571,
+            "right_wrist_pitch": 0.0,
+            "right_wrist_yaw": 0.0
+          },
+          "label": "holding"
+        },
+        {
+          "t": 4.8,
+          "joints": {
+            "left_elbow": -0.45
+          },
+          "label": "left hand up (1/3)"
+        },
+        {
+          "t": 5.6,
+          "joints": {
+            "left_elbow": 0.0,
+            "right_elbow": -0.45
+          },
+          "label": "right hand up (1/3)"
+        },
+        {
+          "t": 6.4,
+          "joints": {
+            "left_elbow": -0.45,
+            "right_elbow": 0.0
+          },
+          "label": "left hand up (2/3)"
+        },
+        {
+          "t": 7.2,
+          "joints": {
+            "left_elbow": 0.0,
+            "right_elbow": -0.45
+          },
+          "label": "right hand up (2/3)"
+        },
+        {
+          "t": 8.0,
+          "joints": {
+            "left_elbow": -0.45,
+            "right_elbow": 0.0
+          },
+          "label": "left hand up (3/3)"
+        },
+        {
+          "t": 8.8,
+          "joints": {
+            "left_elbow": 0.0,
+            "right_elbow": -0.45
+          },
+          "label": "right hand up (3/3)"
+        },
+        {
+          "t": 9.6,
+          "joints": {
+            "right_elbow": 0.0
+          }
+        },
+        {
+          "t": 10.6,
+          "joints": {
+            "waist_yaw": 0.0,
+            "waist_roll": 0.0,
+            "waist_pitch": 0.0,
+            "left_shoulder_pitch": 0.0,
+            "left_shoulder_roll": 0.1,
+            "left_shoulder_yaw": 0.0,
+            "left_elbow": 0.0,
+            "left_wrist_roll": -1.571,
+            "left_wrist_pitch": 0.0,
+            "left_wrist_yaw": 0.0,
+            "right_shoulder_pitch": 0.0,
+            "right_shoulder_roll": -0.1,
+            "right_shoulder_yaw": 0.0,
+            "right_elbow": 0.0,
+            "right_wrist_roll": 1.571,
+            "right_wrist_pitch": 0.0,
+            "right_wrist_yaw": 0.0
+          },
+          "label": "holding"
+        },
+        {
+          "t": 11.8,
+          "joints": {
+            "waist_yaw": 0.0,
+            "waist_roll": 0.0,
+            "waist_pitch": 0.0,
+            "left_shoulder_pitch": 0.2,
+            "left_shoulder_roll": 0.2,
+            "left_shoulder_yaw": 0.0,
+            "left_elbow": 1.28,
+            "left_wrist_roll": 0.0,
+            "left_wrist_pitch": 0.0,
+            "left_wrist_yaw": 0.0,
+            "right_shoulder_pitch": 0.2,
+            "right_shoulder_roll": -0.2,
+            "right_shoulder_yaw": 0.0,
+            "right_elbow": 1.28,
+            "right_wrist_roll": 0.0,
+            "right_wrist_pitch": 0.0,
+            "right_wrist_yaw": 0.0
+          },
+          "label": "arms down"
+        }
+      ]
+    }
+  }
+}

@@ -7,7 +7,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 A Unitree G1 (29-DoF) driven one **tool** at a time by a vision-language model, in
 GPT-Policy's shape (arXiv:2609.19138): the model picks a tool from a menu and fills in its
 arguments; the host plans a fixed motion from them, checks it, runs it, waits for the joints
-to settle and reports. The same tools chain without a model. `g1 run TASK` runs a task on the
+to settle and reports. `g1 start` is the one interactive session: the robot listens, you type (plain text is chat,
+`/` commands call skills and settings), and it chooses what to do from a fixed menu (a built-in, a
+routine, a task, or just an answer). `g1 run TASK` runs a task on the
 robot (`RobotEnv`, live via `unitree_sdk2py`); `--sim` runs the *same* `RobotEnv` code over DDS
 against the **twin** (`g1/twin/`): unitree_mujoco's 29-DoF G1 with a free base and torque
 motors, behind a stand-in onboard controller that answers LocoClient/AudioClient, blends
@@ -20,10 +22,16 @@ Run it with `--sim` before the robot for anything new.
 - **tool** — one class in `g1/tools/`: `name`, `prompt`, `params` (JSON-schema fragments), `segments()`.
   A fixed motion (or a query) computed from the arguments; ends by construction; **never watches
   the camera while it runs** — the model is the closed loop. Visible to the model by default.
-- **instruction** — the goal text. **task** — a folder (`tasks/<name>/task.json`) with an instruction (or a
-  fixed `tools` chain) and its context, no code; it is the only thing `g1 run` runs. **observation / decision / execution result / verdict** — as in the paper.
-- Retired, do not reintroduce: *skill*, *policy*, *primitive*, *routine*, *goal*, a catalog file, a
-  tool that servos on vision, a per-tool timeout.
+- **instruction** — the goal text. **task** — a folder (`tasks/<name>/task.json`) with an instruction and its
+  context, no code: the model works through it one tool at a time (and may be shown **demos**: successful past
+  runs a person promoted, `tasks/<name>/demos/`). **observation / decision / execution result / verdict** — as in the paper.
+- **routine** — our reference motion (`routines/<name>/routine.json`): a timeline of tracks (upper body via
+  arm_sdk, base via LocoClient, onboard gestures; full body kept but not played), start to finish, no model.
+- **built-in** — a motion that comes with the robot and runs on Unitree's controller (the stored dances and
+  gestures, walking): `g1 moves`, talk's `move` and `walk`.
+- The robot's menu is built-ins, routines and tasks; talk chooses among them and never authors one.
+- Retired, do not reintroduce: *skill*, *policy* (until a trained closed-loop controller exists),
+  *primitive*, *goal*, a catalog file, a tool that servos on vision, a per-tool timeout.
 
 ## Commands
 
@@ -54,13 +62,17 @@ g1 moves play MOVE... | fsm TARGET   # the robot only, asks first: play stored m
                                      # FSM along its order (damp, stand 4, main 200, walk 501, run 801, sit 3; never via damp);
                                      # a move runs in 550 and ends in 802, where the next plays
 g1 moves walk|side|turn N            # the robot only, asks first: a short walk (SetVelocity's 1 s dead-man, re-sent) in limit walk_fsm (walk mode, 501)
-g1 talk                              # the robot only: stands it ready, listens (rt/audio_msg), answers with TtsMaker,
-                                     # plays an allow-listed stored move (5xx/6xx) or takes a capped short walk; never a task or the arms
+g1 start --mode standing|gantry      # the robot only: one interactive session (Claude-Code-style terminal). It listens
+                                     # (rt/audio_msg) and you type: plain text is chat (as if said); the model answers or
+                                     # chooses a built-in (5xx/6xx move, capped walk; standing only), a routine or a task
+                                     # (model-chosen ones confirmed y/N). /routine /task /move /walk /say call one directly;
+                                     # /skills /mode /mic /camera /lidar /status /help /quit. Esc stops what runs, to
+                                     # neutral; Ctrl-C clears the line (stops a running skill); Ctrl-C twice exits
 g1 twin fetch|status
 g1 trace compare RUN_A RUN_B | show RUN   # two run dirs of the same task: tracking, sag, lag, A-B difference
 g1 limits [SOURCE]                   # every limit and default in configs/limits.json as one table, + the model in use
 
-TASK = a folder under tasks/ (tpose, find_the_mug) or a path. .env: UNITREE_IFACE, UNITREE_ROBOT_IP,
+TASK = a folder under tasks/ (find_the_mug) or a path; a routine under routines/ (tpose) plays the same way. .env: UNITREE_IFACE, UNITREE_ROBOT_IP,
 UNITREE_AES_128_KEY, UNITREE_DOMAIN, HF_TOKEN, VLM_BASE_URL, OPENROUTER_API_KEY; G1_VERBOSE=1 prints every SDK call.
 Which model is asked, and how, is `configs/model.json` (`provider`, `models`, `reasoning_effort`, `max_tokens`,
 `temperature`, and `agent`: the decision budget, timeouts, retries, image size, history windows). It may be tuned
@@ -81,9 +93,10 @@ g1/bench.py        g1 bench: load_suite, run_suite, totals (task | execution | i
 g1/core/           config (joint table, STAND_Q, UPPER_BODY, LOCO_METHODS, BASE_VEL_MAX, the URDF's waist/arm chains),
                    limits (configs/limits.json), aim (pixel+distance -> a point, the arm's line, the aim solve: point_to),
                    action (Action, Obs, Segment, Runnable, ease, EPS), poses, images (Pillow, RGB), worker
-g1/tools/          __init__: discovery (TOOLS), menu(), the three renderings, parse_tool/parse_chain, Chain
+g1/tools/          __init__: discovery (TOOLS), menu(), the three renderings, parse_tool/parse_chain, Chain (internal)
                    base: the Tool contract + the segment player + validate_args + num/integer/text/flag/limit
-                   move (move, walk_forward, turn) · arms (arm_path, look, point, point_to, lower_arm, tpose, sixseven) · gestures (wave_hand,
+                   move (move, walk_forward, turn) · arms (arm_path, look, point, point_to, lower_arm) · routines (play_routine,
+                   RoutineTool, routine_program: dry-run, then Chain) · gestures (wave_hand,
                    shake_hand) · posture (sit: SetFsmId(3)) · speech (say: AudioClient.TtsMaker) · control (hold, listen, check +
                    dry_run, done, give_up, takeover, handback)
 g1/envs/           base (Env, EnvAbort, shield_sigint, verbose, sdk_log), monitor (JointMonitor), scene (the room),
@@ -100,13 +113,19 @@ g1/lidar.py        Scan (points N x 4 in m + the 4x4 pose), points_from_cloud2, 
                    lidar_view.py: LidarViewer (the live 3D view: a canvas page, state.json, scan.bin, map.bin)
 g1/microphone.py   Microphone (rt/audio_msg: the robot's speech recognition, an utterance log), heard_view; sounds in g1/core/sounds.py
 g1/vlm.py          VLMClient (Hugging Face or OpenRouter), load_dotenv
-g1/talk.py         g1 talk: the conversation demo (Talk: listen, ask the model, say | move | walk | ignore)
+g1/session.py      g1 start's engine (Session: mode, mic/camera/lidar, the events queue, chat -> the model's one choice,
+                   run_skill: the one executor; robot_runner: cli.run_once in the session's mode, its mic and camera)
+g1/console.py      g1 start's terminal (prompt_toolkit in its own thread: input box, status line, / completion;
+                   parse, Console: Esc/Ctrl-C/y-N/quit, start_main)
+g1/routines.py     routines: SCHEMA, load_routine, routine_names, compile_segments (the timeline as Segments), run_spec
 g1/agent/          agent (Agent, build_agent), decider (AgentContext/AgentTurn/Decision, observation(), instructions(),
-                   VLMDecider), episode (EpisodeWriter, load_episode), task (find, load_task, run_config, code_snapshot, record_result)
+                   VLMDecider), episode (EpisodeWriter, load_episode), task (find, load_task, run_config, code_snapshot, record_result),
+                   demos (promote, load_demos, render: in-context demos, host truth never copied)
 suites/            stationary/ (point_at_the_laptop x 10), point_on_request/ (point_at_what_you_hear x 5); runs/ inside are git-ignored
-tasks/             tpose/ (a tools chain), find_the_mug/, point_at_the_laptop/, find_and_point_at_the_laptop/, sit_in_the_chair/,
-                   point_at_what_you_hear/ (spoken requests, hears) (instructions); runs and results.jsonl inside are git-ignored
-docs/              architecture, writing-a-tool, writing-a-task, running-on-the-robot, vision-model
+tasks/             find_the_mug/, point_at_the_laptop/, find_and_point_at_the_laptop/, sit_in_the_chair/,
+                   point_at_what_you_hear/ (spoken requests, hears); runs and results.jsonl inside are git-ignored, demos/ is not
+routines/          tpose/, sixseven/ (routine.json: upper-body keyframes); runs/ inside are git-ignored
+docs/              architecture, writing-a-tool, writing-a-task, writing-a-routine, running-on-the-robot, vision-model
 tests/             mirrors g1/ (core, tools, envs, agent, twin) + test_camera, test_cli, test_vlm; doubles.py (RedBallDecider,
                    red_blob, sim_env(**settings), scripted_sim); conftest keeps tests away from the real .env
 ```
@@ -150,15 +169,31 @@ root via `pythonpath`. `limits.ROOT` is the repo root (configs/, tasks/, assets/
   moves nothing. **Errors are feedback**: no re-ask loop.
 - **Ctrl-C runs the safe return to completion** (`cli.safe_return`: last commanded pose → STAND 3 s,
   weight → 0 over 2 s, base stopped, SIGINT shielded). Never add a second-Ctrl-C release or a keypress
-  escape. Never call the SDK from `step`. Walking is `LocoClient.Move` in `--mode standing` only; no
+  that escapes a safe return. In `g1 start`, **Esc stops** the running built-in, routine or task to its
+  neutral and the session goes on; Ctrl-C clears the line or, with a skill running, stops it like Esc; **Ctrl-C
+  twice** on an empty line exits (so do /quit, SIGTERM, SIGHUP), stopping anything running first. Every stop
+  is SIGINT to the process (the UI thread sends it; skills run on the main thread), so every stop takes the
+  one shielded path and nothing cuts a return short. Switching mode never moves the robot. The remote's
+  L2+B (damp) is the emergency stop. Never call the SDK from `step`. Walking is `LocoClient.Move` in `--mode standing` only; no
   low-level leg control. Onboard calls are allow-listed per service — `config.LOCO_METHODS`
   (`WaveHand`, `ShakeHand`; `needs_loco`; and `Sit`, the one FSM, `config.LOCO_FSM`: `sit`, sent as
   `SetFsmId(3)`, standing mode only, the teardown stands up with 801) and `config.AUDIO_METHODS` (`TtsMaker`; `say`) — routed by name
   in `RobotEnv._command`; a failed speech warns and continues, a failed gesture raises.
-  `PlayStream`/`SetVolume`/`LedControl` are never reachable from a reply. `g1 moves` (a person at the
-  keyboard, never the model) is the one place that plays Unitree's stored moves and switches other FSMs.
+  `PlayStream`/`SetVolume`/`LedControl` are never reachable from a reply. Built-ins (Unitree's stored
+  moves) play only from `g1 moves` (a person at the keyboard, any move) and talk (the model, ids 5xx/6xx
+  only, standing mode); only `g1 moves` and the session's walk-mode handover switch other FSMs.
+  The session runs a routine or task only through `cli.run_once` (never arm_sdk, the FSM or a tool itself;
+  `tests/test_session.py` guards it); one the model chooses is confirmed y/N, one you type is not.
   `g1 lidar` makes only `config.SLAM_METHODS` (start mapping 1801, end mapping 1802, close SLAM 1901) and
   only reads the service list: it never switches a service (the app does) and never navigates.
+- **Routines compile to segments and are dry-run first.** A routine's timeline (upper body, base windows,
+  onboard gestures at keyframe times; a smooth segment is never split) becomes the `Segment`s every tool plays
+  (`ease`: smooth for keyframes, linear between dense samples), dry-run whole before the takeover. Full-body
+  routines are refused until a tracking controller exists; tasks may play upper-body routines (`play_routine`).
+- **Demos carry the model's own words, never host truth.** `promote` copies each step's tool call, its note and
+  the result the model was shown next; never the measured base pose or error, the twin's evaluation, the
+  task's success, or the done summary/hindsight. Demos are same-env only and never say where they ran;
+  `tests/agent/test_what_the_model_knows.py` checks every request body.
 - **Point clouds are decoded off the run's process.** PointCloud2 arrives as ~0.5 MB a scan; `SlamLidar`
   subscribes in a spawned child and hands numpy bytes back, as the camera's decoder is a child on the Jetson.
 - **The camera on the Jetson is direct.** On the robot's Jetson `RobotEnv` reads the video hub's RTP multicast

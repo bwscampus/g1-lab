@@ -11,14 +11,11 @@ from g1.core import limits
 from g1.core.action import Segment
 from g1.core.config import (HEAD_CAMERA_FOV_H, HEAD_CAMERA_PITCH, HEAD_CAMERA_SIZE, JOINT_HI, JOINT_LO,
                              R_SHOULDER_FROM_CAMERA, WAIST, joint_index)
-from g1.core.poses import ARMS_UP, SIXSEVEN, STAND
-from g1.tools.base import Tool, integer, limit, num
+from g1.core.poses import STAND
+from g1.tools.base import Tool, limit, num
 from g1.vlm import IMAGE_WIDTH
 
 WAIST_YAW = joint_index("waist_yaw")
-L_ELBOW, R_ELBOW = joint_index("left_elbow"), joint_index("right_elbow")
-ELBOW_REST = 0.0      # 90-degree bend, forearm horizontal
-ELBOW_UP = -0.45      # fingertips at shoulder height
 # The right arm pointing (verified on the twin model): shoulder_pitch -1.57 with elbow 1.57
 # holds a straight arm level and forward; each degree less of pitch tips it a degree down.
 R_ARM = [joint_index(f"right_{j}") for j in ("shoulder_pitch", "shoulder_roll", "shoulder_yaw", "elbow",
@@ -316,70 +313,3 @@ class Look(Tool):
     def segments(self) -> tuple[Segment, ...]:
         return (Segment({WAIST_YAW: math.radians(self.yaw_deg)}, self.seconds,
                         label=f"look {self.yaw_deg:+.0f} deg"),)
-
-
-class TPose(Tool):
-    """A preset: both arms straight out to the sides, hold, lower."""
-
-    name = "tpose"
-    order = 63
-    visible = False
-    prompt = ("Raise both arms straight out to the sides over rise_s seconds, hold for hold_s, then lower them over "
-              "rise_s. Needs clear space to both sides at shoulder height.")
-    params = {"hold_s": num(limit("tpose_hold_s_min"), limit("hold_seconds_max"), limit("tpose_hold_s_default"),
-                            "seconds to hold the pose"),
-              "rise_s": num(limit("tpose_rise_s_min"), limit("tpose_rise_s_max"), limit("tpose_rise_s_default"),
-                            "seconds to raise and to lower")}
-
-    def segments(self) -> tuple[Segment, ...]:
-        return (Segment(ARMS_UP, self.rise_s, label="arms up"),
-                Segment(ARMS_UP, self.hold_s, label="holding T-pose"),
-                Segment(STAND, self.rise_s, label="arms down"))
-
-
-class SixSeven(Tool):
-    """A preset: palms up, elbows bent 90 degrees, then the forearms see-saw:
-    the left swings up until the fingertips reach shoulder height, and as it
-    starts back down the right swings up, overlapping, for ``reps`` rounds each.
-
-    Joint conventions (verified by rendering the Menagerie model):
-      * elbow 0.0 is the 90-degree bend with the forearm forward; ~1.57 is a
-        straight arm; more negative bends the forearm up
-      * wrist roll -1.57 (left) / +1.57 (right) turns the palms up, thumbs outward
-    """
-
-    name = "sixseven"
-    order = 64
-    visible = False
-    prompt = ("A two-handed see-saw wave with the palms up: reps swings per hand of swing_s seconds each, after "
-              "settle_s seconds to reach the palms-up pose and hold_s seconds before and after.")
-    params = {"reps": integer(1, limit("sixseven_reps_max"), limit("sixseven_reps_default"), "swings per hand"),
-              "swing_s": num(limit("sixseven_swing_s_min"), limit("sixseven_swing_s_max"),
-                             limit("sixseven_swing_s_default"), "seconds per swing"),
-              "settle_s": num(limit("sixseven_settle_s_min"), limit("sixseven_settle_s_max"),
-                              limit("sixseven_settle_s_default"), "seconds to reach the palms-up pose"),
-              "hold_s": num(limit("sixseven_hold_s_min"), limit("sixseven_hold_s_max"),
-                            limit("sixseven_hold_s_default"), "seconds to hold before and after")}
-
-    def _swings(self) -> tuple[Segment, ...]:
-        """Each segment raises one hand while lowering the other, so the next hand
-        starts up exactly when the previous one starts down."""
-        order = [("left", L_ELBOW), ("right", R_ELBOW)] * self.reps
-        out: list[Segment] = []
-        prev = None
-        for i, (side, joint) in enumerate(order):
-            goal = {joint: ELBOW_UP}
-            if prev is not None:
-                goal[prev] = ELBOW_REST
-            out.append(Segment(goal, self.swing_s, label=f"{side} hand up ({i // 2 + 1}/{self.reps})"))
-            prev = joint
-        if prev is not None:
-            out.append(Segment({prev: ELBOW_REST}, self.swing_s))   # last hand back down
-        return tuple(out)
-
-    def segments(self) -> tuple[Segment, ...]:
-        return (Segment(SIXSEVEN, self.settle_s, label="palms up, elbows 90"),
-                Segment(SIXSEVEN, self.hold_s, label="holding"),
-                *self._swings(),
-                Segment(SIXSEVEN, self.hold_s, label="holding"),
-                Segment(STAND, limits.get("sixseven_lower_s"), label="arms down"))

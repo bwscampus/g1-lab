@@ -1,14 +1,16 @@
 """A task: a folder with what to do and its context, no code. It is what ``g1 run`` runs.
 
     tasks/<name>/
-        task.json       an instruction (the model decides) or a tools chain (no model),
+        task.json       an instruction (the model decides, one tool at a time),
                         the scene, safety notes, the budget
+        demos/          successful past runs promoted as in-context examples (g1/agent/demos.py)
         runs/           every run of this task (git-ignored): summary.json, config.json,
                         step files, trace.npz (g1/agent/episode.py)
         results.jsonl   one line per run: outcome, end reason, decisions, tokens, health
 
     {"instruction": "find the mug and stop in front of it", "scene": "room", "objects": ["mug@1.5,1.2"]}
-    {"tools": "tpose,look:30"}
+
+A fixed motion with no model is a routine (routines/, g1/routines.py), not a task.
 """
 from __future__ import annotations
 
@@ -24,12 +26,9 @@ from g1.vlm import AGENT_SETTINGS
 
 ROOT = limits.ROOT
 SCHEMA = {
-    "type": "object", "additionalProperties": False,
-    "oneOf": [{"required": ["instruction"], "not": {"required": ["tools"]}},
-              {"required": ["tools"], "not": {"required": ["instruction"]}}],
+    "type": "object", "additionalProperties": False, "required": ["instruction"],
     "properties": {
         "instruction": {"type": "string", "minLength": 1, "description": "what the model is asked to do"},
-        "tools": {"type": "string", "minLength": 1, "description": "a fixed chain instead, e.g. tpose,look:30"},
         "scene": {"type": "string", "enum": ["none", "room"], "default": "none", "description": "the sim scene"},
         "objects": {"type": "array", "items": {"type": "string"}, "default": [],
                     "description": "sim objects to place, name@x,y[,z] (needs scene room)"},
@@ -102,16 +101,16 @@ def load_task(directory: Path | str) -> dict:
         Draft202012Validator(SCHEMA).validate(data)
     except ValidationError as e:
         where = ".".join(str(p) for p in e.absolute_path) or "task.json"
-        message = "needs exactly one of instruction or tools" if e.validator == "oneOf" else e.message
+        message = e.message
+        if e.validator == "additionalProperties" and "'tools'" in e.message:
+            message = "a task is an instruction; a fixed motion is a routine (routines/<name>/routine.json)"
         raise ValueError(f"{path}: {where}: {message}") from None
     task: dict[str, Any] = {k: spec.get("default") for k, spec in SCHEMA["properties"].items()}
     task.update(data)
     if task["objects"] and task["scene"] != "room":
         raise ValueError(f"{path}: objects need \"scene\": \"room\"")
-    if task["voices"] and task["instruction"] is not None and not task["hears"]:
+    if task["voices"] and not task["hears"]:
         raise ValueError(f"{path}: voices need \"hears\": true (the model would not hear them)")
-    if task["instruction"] is None and task["hears"]:
-        raise ValueError(f"{path}: hears needs an instruction (a tools chain does not listen)")
     for i, r in enumerate((task["success"] or {}).get("requests") or []):
         if r["voice"] >= len(task["voices"]):
             raise ValueError(f"{path}: success.requests[{i}]: voice {r['voice']}, but there are "
@@ -123,10 +122,15 @@ def load_task(directory: Path | str) -> dict:
     return task
 
 
+def fixed_label(task: dict) -> str:
+    """What a run with no model played: its routine, or the program a test passed in."""
+    return task.get("routine") or task.get("program") or "program"
+
+
 def run_dir(task: dict, env_name: str) -> Path:
-    """A fresh directory for a run without the agent's recorder (a tools chain)."""
+    """A fresh directory for a run without the agent's recorder (a routine, a test's program)."""
     from g1.agent.episode import fresh_dir, slug
-    return fresh_dir(task["dir"] / "runs", f"{datetime.now():%Y%m%d-%H%M%S}", f"{env_name}_{slug(task['tools'])}")
+    return fresh_dir(task["dir"] / "runs", f"{datetime.now():%Y%m%d-%H%M%S}", f"{env_name}_{slug(fixed_label(task))}")
 
 
 def code_snapshot(root: Path = ROOT) -> dict:
@@ -199,12 +203,12 @@ def write_config(run: Path, config: dict) -> None:
 
 def write_status(run: Path, ok: bool, *, task: dict, env_name: str, mode: Optional[str], started: str,
                  end_reason: str) -> None:
-    """A tools run's summary.json: its checks are the outcome (the agent's recorder writes its own)."""
+    """A routine run's summary.json: its checks are the outcome (the agent's recorder writes its own)."""
     from g1.agent.episode import new_summary, save_json
     path = run / "summary.json"
     if path.exists():
         return
-    s = new_summary(run.name, task=task["name"], instruction=task["tools"], env=env_name, mode=mode, model=None)
+    s = new_summary(run.name, task=task["name"], instruction=fixed_label(task), env=env_name, mode=mode, model=None)
     ended = datetime.now()
     s.update(started=started, ended=ended.isoformat(timespec="seconds"),
              duration_s=round((ended - datetime.fromisoformat(started)).total_seconds(), 3),

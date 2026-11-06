@@ -95,7 +95,7 @@ def test_the_twin_reports_its_own_speech_so_it_is_not_heard():
 
 
 @pytest.mark.parametrize("bad, match", [({"voices": [{"at_s": 1, "text": "hi"}]}, "hears"),
-                                        ({"hears": True, "tools": "hold:1", "instruction": None}, "instruction")])
+                                        ({"hears": True, "tools": "hold:1"}, "instruction")])
 def test_task_rules_for_hearing(tmp_path, bad, match):
     from g1.agent.task import load_task
     d = tmp_path / "t"
