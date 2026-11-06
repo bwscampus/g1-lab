@@ -414,12 +414,16 @@ class RobotEnv(Env):
                   + ("" if self.initial_fsm == FSM_MAIN else
                      f" (warning: taking the arms is verified only in FSM {FSM_MAIN}; if they do not move, /fsm {FSM_MAIN})"))
         self.arm = ArmSdk(self.link_health, link=link)
-        self.monitor = self._make_monitor()
-        self.base = None
-        if self.can_walk:
-            self._walk_banner()
-            self.base = BaseCommander(self.loco)
-            link.start_commander(self.base)
+        try:
+            self.monitor = self._make_monitor()
+            self.base = None
+            if self.can_walk:
+                self._walk_banner()
+                self.base = BaseCommander(self.loco)
+                link.start_commander(self.base)
+        except BaseException:                   # setup failed: no teardown follows, so close the reader here
+            self.arm.close()
+            raise
 
     # -- the SDK, checked ---------------------------------------------------------------------
     def _call(self, client, name: str, *args, label: Optional[str] = None, **kw):
@@ -493,10 +497,12 @@ class RobotEnv(Env):
         arm = getattr(self, "arm", None)
         if arm is not None:
             print("leaving control mode: releasing the arms")
-            arm.release()
-            close = getattr(arm, "close", None)
-            if close is not None:
-                close()                          # the LowState subscriber ends with the run
+            try:
+                arm.release()
+            finally:
+                close = getattr(arm, "close", None)
+                if close is not None:
+                    close()                      # the LowState subscriber ends with the run, whatever happened
         loco = getattr(self, "loco", None)
         if loco is None:
             return
@@ -784,15 +790,22 @@ def probe(iface: str, seconds: float = limits.get("status_probe_s"), verbose: bo
         latest["msg"] = msg
         health.tick()
 
-    subscribe(on_state)
-    loco = loco_cls()
-    loco.SetTimeout(min(seconds, limits.get("rpc_timeout_s")))
-    loco.Init()
-    t0 = time.monotonic()
-    code, fsm = sdk.call(loco, "GetFsmId", log=log, verbose=verbose)
-    out["rpc"] = {"code": code, "fsm": fsm, "explain": sdk.explain(code), "elapsed_s": log[-1]["elapsed_s"]}
-    while time.monotonic() - t0 < seconds:
-        time.sleep(limits.get("lowstate_poll_s"))
+    sub = subscribe(on_state)
+    try:
+        loco = loco_cls()
+        loco.SetTimeout(min(seconds, limits.get("rpc_timeout_s")))
+        loco.Init()
+        t0 = time.monotonic()
+        code, fsm = sdk.call(loco, "GetFsmId", log=log, verbose=verbose)
+        out["rpc"] = {"code": code, "fsm": fsm, "explain": sdk.explain(code), "elapsed_s": log[-1]["elapsed_s"]}
+        while time.monotonic() - t0 < seconds:
+            time.sleep(limits.get("lowstate_poll_s"))
+    finally:
+        # g1 start's /status runs this in the session's process, which outlives it: an open 500 Hz
+        # LowState callback would starve the session's RPCs on the Jetson (3104 on every call after)
+        close = getattr(sub, "Close", None)
+        if close is not None:
+            close()
     out["lowstate"] = {"count": health.count, "rate": health.count / seconds, "age_ms": health.age_ms()}
     msg = latest.get("msg")
     if msg is not None:

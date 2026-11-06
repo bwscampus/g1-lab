@@ -226,6 +226,12 @@ def test_probe_verdicts(monkeypatch, capsys):
     from g1.envs.robot import probe, status_main
     monkeypatch.setattr("time.sleep", lambda s: None)
 
+    closed = []
+
+    class Sub:
+        def Close(self):
+            closed.append(True)
+
     def run(fsm, code, lowstate):
         def subscribe(on_state):
             if lowstate:
@@ -234,9 +240,11 @@ def test_probe_verdicts(monkeypatch, capsys):
                     bms_state = type("B", (), {"soc": 77})()
                 for _ in range(10):
                     on_state(Msg())
+            return Sub()
         return probe("lo", 0.01, factory=lambda: None, loco_cls=lambda: Loco(fsm, get_code=code), subscribe=subscribe)
 
     out = run(200, 0, True)
+    assert closed == [True]                           # /status in g1 start: its LowState reader ends with the probe
     assert out["verdict"].startswith("link ok, FSM 200") and out["lowstate"]["battery_soc"] == 77
     assert "not a standing state" in run(1, 0, True)["verdict"]
     assert run(0, 3104, False)["verdict"].startswith("no link")
@@ -297,3 +305,24 @@ def test_a_session_run_uses_the_sessions_clients(monkeypatch, capsys):
     shared_loco, shared_audio = Loco(200), Client()
     env, loco, out = bring_up(monkeypatch, 200, capsys, loco_shared=shared_loco, audio_shared=shared_audio)
     assert env.loco is shared_loco and env.audio is shared_audio and "audio: volume" not in out
+
+
+def test_the_lowstate_reader_is_closed_when_setup_fails_after_it_or_the_release_raises(monkeypatch, capsys):
+    made = []
+
+    class Closing(Arm):
+        def __init__(self, *a, **k):
+            super().__init__()
+            made.append(self)
+
+        def release(self, duration=1.0):
+            raise RuntimeError("write failed")
+    monkeypatch.setattr("g1.envs.robot.RobotEnv._make_monitor", lambda self: (_ for _ in ()).throw(RuntimeError("monitor")))
+    with pytest.raises(RuntimeError, match="monitor"):
+        bring_up(monkeypatch, 200, capsys, arm_cls=Closing)
+    assert made[-1].sent == ["close"]                                    # no teardown follows a failed setup
+    monkeypatch.undo()
+    env, loco, out = bring_up(monkeypatch, 200, capsys, arm_cls=Closing)
+    with pytest.raises(RuntimeError, match="write failed"):
+        env._teardown_robot()
+    assert made[-1].sent == ["close"]                                    # closed even though the release raised

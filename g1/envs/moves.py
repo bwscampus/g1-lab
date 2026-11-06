@@ -354,9 +354,13 @@ def _mode_machine(link, wait_s: float) -> Optional[int]:
     seen: dict = {}
     sub = link.lowstate(lambda msg: seen.setdefault("mm", int(msg.mode_machine)))
     t0 = time.monotonic()
-    while "mm" not in seen and time.monotonic() - t0 < wait_s:
-        time.sleep(limits.get("lowstate_poll_s"))
-    del sub
+    try:
+        while "mm" not in seen and time.monotonic() - t0 < wait_s:
+            time.sleep(limits.get("lowstate_poll_s"))
+    finally:
+        close = getattr(sub, "Close", None)             # del alone leaves the reader running
+        if close is not None:
+            close()
     return seen.get("mm")
 
 
