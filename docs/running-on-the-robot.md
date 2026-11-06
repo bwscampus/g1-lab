@@ -201,11 +201,13 @@ services page, support.unitree.com/home/en/G1_developer/sport_services_interface
 
 The head lidar is a Livox MID-360 at `192.168.123.120`. It sends its points and IMU only to the main
 board (`.161:56301`/`:56401`), never to the Jetson or a laptop, so the feed comes from Unitree's onboard
-services: `lidar_driver` and `unitree_slam`. Both are switched on in the Unitree app (services);
-`g1 lidar` only reads the service list (`RobotStateClient.ServiceList`, status 0 = running) and never
-switches one. On 2026-11-05 both were off by default.
+services: `lidar_driver` and `unitree_slam` (off by default on 2026-11-05). `g1 lidar` and `/lidar on`
+switch on whichever is off (`RobotStateClient.ServiceSwitch`, only these two), wait until the service
+list (`ServiceList`, status 0 = running) shows both running (at most `lidar_service_start_s`), and at the
+end switch off the ones they switched on, so the robot is left as it was found. A service already on
+stays on.
 
-`g1 lidar` checks both are running, starts a mapping session on Unitree's SLAM (`slam_operate` 1801,
+`g1 lidar` then starts a mapping session on Unitree's SLAM (`slam_operate` 1801,
 `slam_type` indoor) and reads `rt/unitree/slam_mapping/points` (PointCloud2, frame `map`, ~1,000 points
 a scan at 10 Hz) with the pose from `rt/unitree/slam_mapping/odom`. It maps until Ctrl-C (at most
 `lidar_max_s`), printing a line a second (frame, points, rate, bounds, pose, yaw, map size; the first
@@ -274,7 +276,7 @@ directly, without the model and without the question:
 | `/mode gantry\|standing` | switch mode: it **never moves the robot**; it asks you to confirm it is hanging / standing (standing also needs a standing FSM) |
 | `/mic on\|off` | handle what the robot hears like chat, or ignore it (a task that hears needs it on) |
 | `/camera on\|off` | the head camera, live at `http://127.0.0.1:8765` (`ssh -L 8765:...` from a laptop); tasks reuse it |
-| `/lidar on\|off` | SLAM mapping and its live 3D view at `:8766`; off (and exit) saves `runs/lidar/<time>/map.pcd` |
+| `/lidar on\|off` | switches the lidar services on if needed, SLAM mapping and its live 3D view at `:8766`; off (and exit) saves `runs/lidar/<time>/map.pcd` and switches off the services it switched on |
 | `/status` · `/stop` · `/help` · `/quit` | the `g1 status` probe; Esc; the list; exit |
 
 A routine or task runs through `g1 run`'s own path in the session's mode (standing: back to walk

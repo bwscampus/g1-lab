@@ -4,9 +4,10 @@ The lidar sends its points only to the main board (.161), where Unitree's ``lida
 ``unitree_slam`` services turn them into DDS topics. A mapping session (``slam_operate`` 1801)
 publishes ``rt/unitree/slam_mapping/points`` (sensor_msgs PointCloud2) and
 ``rt/unitree/slam_mapping/odom`` (nav_msgs Odometry); 1802 ends it and saves Unitree's own map as
-a .pcd on the robot, 1901 closes SLAM. Both services are switched on in the Unitree app; this code
-never switches a service (it only reads the service list), and the SLAM calls it may make are
-``config.SLAM_METHODS``.
+a .pcd on the robot, 1901 closes SLAM. A session switches on whichever of the two services is off
+(``RobotStateClient.ServiceSwitch``, only these two names), waits until both report running and,
+when it ends, switches off the ones it switched on: the robot is left as it was found. The SLAM
+calls it may make are ``config.SLAM_METHODS``.
 
 The format for a 3D map is ``Scan``: ``points`` (N, 4) float32 ``x, y, z, intensity`` in metres,
 ``pose`` (4, 4) map<-body at the scan's time, and ``map_points()`` in the map frame either way.
@@ -18,7 +19,7 @@ PointCloud2's ``data`` reaches Python as a sequence of ~0.5 MB a scan; decoded n
 would starve the run for the GIL (the WebRTC camera on the Jetson did), so ``SlamLidar`` subscribes in
 a child process that sends numpy bytes back, and the parent keeps a latest-only slot.
 
-  g1 lidar      check the services, start mapping, serve the live view and print a line a second until
+  g1 lidar      switch the services on if needed, start mapping, serve the live view and print a line a second until
                 Ctrl-C (or lidar_max_s), then end mapping and save runs/lidar/<time>/map.pcd
 """
 from __future__ import annotations
@@ -42,7 +43,7 @@ from g1.core import config, limits
 
 POINTS_TOPIC = "rt/unitree/slam_mapping/points"
 ODOM_TOPIC = "rt/unitree/slam_mapping/odom"
-SERVICES = ("lidar_driver", "unitree_slam")     # the onboard services the feed needs, switched on in the app
+SERVICES = ("lidar_driver", "unitree_slam")     # the onboard services the feed needs (the only ones ever switched)
 SERVICE_RUNNING = 0                             # RobotStateClient.ServiceList status of a running service
 
 # sensor_msgs/PointField datatypes
@@ -319,6 +320,32 @@ def services_off(state, *, log: list, verbose: bool) -> tuple[int, list[str]]:
     return 0, [n for n in SERVICES if status.get(n) != SERVICE_RUNNING]
 
 
+def switch_services(state, names, on: bool, *, log: list, verbose: bool) -> list[str]:
+    """``ServiceSwitch`` each of ``names`` (only ``SERVICES``); returns the ones the robot refused."""
+    from g1.envs import sdk
+    refused = []
+    for name in names:
+        if name not in SERVICES:
+            raise ValueError(f"service {name!r} is not one the lidar may switch (lidar.SERVICES)")
+        code, _ = sdk.call(state, "ServiceSwitch", name, on, log=log, verbose=verbose, label="RobotStateClient")
+        if code != 0:
+            refused.append(name)
+    return refused
+
+
+def wait_services(state, *, log: list, verbose: bool, timeout: float, poll: float,
+                  sleep=time.sleep, clock=time.monotonic) -> list[str]:
+    """Poll the service list until both are running or ``timeout``; returns the ones still off."""
+    t0 = clock()
+    while True:
+        code, off = services_off(state, log=log, verbose=verbose)
+        if code == 0 and not off:
+            return []
+        if clock() - t0 >= timeout:
+            return off if code == 0 else list(SERVICES)
+        sleep(poll)
+
+
 def scan_line(scan: Scan, rate: float, now: float) -> str:
     p = scan.points
     lo, hi = (p[:, :3].min(axis=0), p[:, :3].max(axis=0)) if len(p) else (np.zeros(3), np.zeros(3))
@@ -333,8 +360,15 @@ def stop_like_ctrl_c() -> dict:
     """SIGINT, SIGTERM and SIGHUP all end the session as Ctrl-C does (end mapping, close SLAM, save the
     map): a dropped ssh (SIGHUP) or a kill (SIGTERM) must not leave SLAM mapping and the map unsaved,
     and a shell that started us in the background had set SIGINT to ignored. Returns the old handlers.
-    Main thread only (a no-op elsewhere)."""
+    Main thread only (a no-op elsewhere). It fires once: a second signal before the teardown's shield
+    is up (``timeout`` signals the process and then its whole group) is ignored, never a second
+    KeyboardInterrupt into the teardown."""
+    fired = []
+
     def handler(signum, frame):
+        if fired:
+            return
+        fired.append(signum)
         raise KeyboardInterrupt
     old = {}
     for sig in (signal.SIGINT, signal.SIGTERM, getattr(signal, "SIGHUP", None)):
@@ -357,14 +391,15 @@ def save_map(acc: MapAccumulator, runs: Path) -> Optional[Path]:
 
 
 class LidarUnavailable(RuntimeError):
-    """The lidar feed cannot start: the robot is unreachable, a service is off, SLAM refused."""
+    """The lidar feed cannot start: the robot is unreachable, a service will not start, SLAM refused."""
 
 
 class LidarSession:
     """One SLAM mapping session with its live view and map, started and stopped (``g1 lidar``,
-    ``g1 start``'s ``/lidar on|off``). ``start`` checks the services (read-only), starts mapping and
-    the feed, serves the view and accumulates the map on a thread; ``stop`` ends mapping, closes SLAM
-    and saves ``runs/<time>/map.pcd``. The caller shields ``stop`` (it must run to the end)."""
+    ``g1 start``'s ``/lidar on|off``). ``start`` switches on the services that are off and waits for
+    them, starts mapping and the feed, serves the view and accumulates the map on a thread; ``stop``
+    ends mapping, closes SLAM, saves ``runs/<time>/map.pcd`` and switches off the services ``start``
+    switched on. The caller shields ``stop`` (it must run to the end)."""
 
     def __init__(self, link, iface: str, domain: int, *, lidar_cls=SlamLidar, runs: Optional[Path] = None,
                  verbose: bool = False, print_lines: bool = True) -> None:
@@ -373,6 +408,8 @@ class LidarSession:
         self.runs = Path(runs) if runs is not None else limits.ROOT / "runs" / "lidar"
         self.log: list = []
         self.slam = None
+        self.state = None
+        self.switched_on: list[str] = []          # the services this session switched on (off again at stop)
         self.lidar = None
         self.viewer = None
         self.acc = MapAccumulator()
@@ -391,6 +428,7 @@ class LidarSession:
         return self.viewer.url if self.viewer is not None else None
 
     def start(self) -> None:
+        from g1.envs import sdk
         rpc = limits.get("rpc_timeout_s")
         state = self.link.robot_state()
         state.SetTimeout(rpc)
@@ -398,17 +436,37 @@ class LidarSession:
         code, off = services_off(state, log=self.log, verbose=self.verbose)
         if code != 0:
             raise LidarUnavailable("cannot read the robot's service list; is the robot reachable? (g1 status)")
+        self.state = state
+        deadline = time.monotonic() + limits.get("lidar_service_start_s")
         if off:
-            raise LidarUnavailable(f"{' and '.join(off)} {'is' if len(off) == 1 else 'are'} off; switch "
-                                   f"{'it' if len(off) == 1 else 'them'} on in the Unitree app (services), then try again")
+            print(f"lidar: {' and '.join(off)} {'is' if len(off) == 1 else 'are'} off; switching "
+                  f"{'it' if len(off) == 1 else 'them'} on")
+            refused = switch_services(state, off, True, log=self.log, verbose=self.verbose)
+            self.switched_on = [n for n in off if n not in refused]
+            still = wait_services(state, log=self.log, verbose=self.verbose,
+                                  timeout=limits.get("lidar_service_start_s"), poll=limits.get("lidar_service_poll_s"))
+            if still:
+                self._restore_services()
+                raise LidarUnavailable(f"{' and '.join(still)} did not start within "
+                                       f"{limits.get('lidar_service_start_s'):g} s (switch on in the Unitree app: services)")
         slam = self.link.slam()
         slam.SetTimeout(rpc)
         slam.Init()
         print(f"lidar: {', '.join(SERVICES)} running; starting mapping ({limits.get('slam_type')})")
-        code, _ = slam_call(slam, "StartMapping", limits.get("slam_type"), log=self.log, verbose=self.verbose)
+        while True:
+            code, _ = slam_call(slam, "StartMapping", limits.get("slam_type"), log=self.log, verbose=self.verbose)
+            # a SLAM just switched on lists as running before it answers (no reply, 3104): ask again
+            if code == 0 or code not in sdk.TRANSPORT or not self.switched_on or time.monotonic() >= deadline:
+                break
+            self.log[-1]["retried"] = True        # asked again: not a failure of the session
+            print("lidar: SLAM is not answering yet; asking again")
+            time.sleep(limits.get("lidar_service_poll_s"))
         if code != 0:
             slam_call(slam, "CloseSlam", log=self.log, verbose=self.verbose)
-            raise LidarUnavailable("SLAM refused to start mapping (is the app's mapping or navigation in use?)")
+            self._restore_services()
+            why = ("SLAM did not answer" if code in sdk.TRANSPORT else
+                   "SLAM refused to start mapping (is the app's mapping or navigation in use?)")
+            raise LidarUnavailable(why)
         self.slam = slam
         self.t0 = time.monotonic()
         self.lidar = self.lidar_cls(self.iface, self.domain)
@@ -430,6 +488,13 @@ class LidarSession:
         self._thread = threading.Thread(target=self._accumulate, name="lidar-map", daemon=True)
         self._thread.start()
 
+    def _restore_services(self) -> None:
+        """Switch off the services this session switched on (a refusal is printed, never raised)."""
+        if self.switched_on and self.state is not None:
+            print(f"lidar: switching {' and '.join(self.switched_on)} off again (as found)")
+            switch_services(self.state, self.switched_on, False, log=self.log, verbose=self.verbose)
+        self.switched_on = []
+
     def _accumulate(self) -> None:
         seen, t_start, first, printed = 0, time.monotonic(), self.lidar.count, 0.0
         while self._running:
@@ -446,7 +511,8 @@ class LidarSession:
             time.sleep(0.02)
 
     def stop(self) -> Optional[Path]:
-        """End mapping, close SLAM, save the map (None when nothing was mapped). Idempotent."""
+        """End mapping, close SLAM, save the map (None when nothing was mapped), switch off the services
+        ``start`` switched on. Idempotent."""
         if self.slam is None:
             return self.saved
         self._running = False
@@ -461,6 +527,7 @@ class LidarSession:
         slam_call(self.slam, "EndMapping", limits.get("slam_map_path"), log=self.log, verbose=self.verbose)
         slam_call(self.slam, "CloseSlam", log=self.log, verbose=self.verbose)
         self.slam = None
+        self._restore_services()
         self.saved = save_map(self.acc, self.runs)
         if self.sizes:
             elapsed = time.monotonic() - self.t0
@@ -481,8 +548,8 @@ def lidar_main(argv: list[str], link=None, lidar_cls=SlamLidar, runs: Optional[P
     from g1.vlm import load_dotenv
     load_dotenv()
     p = argparse.ArgumentParser(prog="g1 lidar", description=(
-        "the head lidar through Unitree's SLAM: checks lidar_driver and unitree_slam are on (read-only), "
-        "starts mapping, serves the live 3D view at http://127.0.0.1:<lidar_view_port> and prints a line a "
+        "the head lidar through Unitree's SLAM: switches lidar_driver and unitree_slam on if they are off "
+        "(and off again at the end), starts mapping, serves the live 3D view at http://127.0.0.1:<lidar_view_port> and prints a line a "
         f"second until Ctrl-C (at most lidar_max_s, {limits.get('lidar_max_s'):g} s), then ends mapping, closes "
         "SLAM and saves the map as runs/lidar/<time>/map.pcd. Robot only."))
     p.parse_args(argv)
@@ -526,6 +593,6 @@ def lidar_main(argv: list[str], link=None, lidar_cls=SlamLidar, runs: Optional[P
             signal.signal(sig, handler)
     if not session.log:
         return rc
-    failed = [e for e in session.log if e["code"] != 0]
+    failed = [e for e in session.log if e["code"] != 0 and not e.get("retried")]
     print(f"sdk: {len(session.log)} call(s), {len(failed)} failed")
     return rc or (1 if failed else 0)
