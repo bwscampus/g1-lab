@@ -1,5 +1,6 @@
 {
   "notes": "Arms straight out to the sides in a T, held, then lowered. The first thing to run: no model, no walking; needs clear space to both sides at shoulder height.",
+  "modes": ["gantry", "standing"],
   "tracks": {
     "upper_body": {
       "keyframes": [

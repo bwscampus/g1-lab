@@ -108,6 +108,8 @@
     "memory_distill_timeout_s":   {"value": 60.0,   "unit": "s",      "source": "guess",      "note": "g1 start: longest wait at quit for the model to distill the session into MEMORY.md (Esc skips)"},
     "memory_distill_log_chars":   {"value": 20000,  "unit": "chars",  "source": "guess",      "note": "g1 start: the newest part of the session log the distill is shown"},
     "memory_show_bullets":        {"value": 10,     "unit": "count",  "source": "repo",       "note": "g1 start: /memory shows this many newest memories, /soul this many lines"},
+    "task_fill_max_chars":        {"value": 60,     "unit": "count",  "source": "guess",      "note": "g1 start: longest value of a task's slot (what to point at), as a person or the model gave it; longer is cut"},
+    "look_up_timeout_s":          {"value": 15.0,   "unit": "s",      "source": "guess",      "note": "g1 start: longest wait for the chat model's web search (look_up); then it says it could not look it up"},
     "talk_quiet_s":               {"value": 0.8,    "unit": "s",      "source": "guess",      "note": "g1 talk: answer once someone has been quiet this long after speaking (joins an utterance the speech recognition split)"},
     "talk_poll_s":                {"value": 0.05,   "unit": "s",      "source": "repo",       "note": "g1 talk: how often the microphone log and the speaker state are checked"},
     "talk_history_turns":         {"value": 6,      "unit": "count",  "source": "guess",      "note": "g1 talk: the model sees this many earlier exchanges (what was said and its answer)"},

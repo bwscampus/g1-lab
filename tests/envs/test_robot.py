@@ -38,7 +38,7 @@ class Arm:
 
 
 def robot(**settings):
-    env = RobotEnv(run_settings(iface="lo", mode="standing", **settings))
+    env = RobotEnv(run_settings(iface="lo", **{"mode": "standing", **settings}))
     env.arm, env.loco, env.audio = Arm(), Client(), Client()
     env.monitor, env.base = None, None
     env.audio_calls, env._audio_warned, env.overruns, env.ticks = 0, False, 0, 0
@@ -139,7 +139,7 @@ def bring_up(monkeypatch, fsm, capsys, set_code=0, get_code=0, arm_cls=None, **s
         built.append(1)
         return Arm()
     monkeypatch.setattr("g1.envs.robot.ArmSdk", arm_cls or arm_sdk)
-    env = RobotEnv(run_settings(iface="lo", mode="standing", **settings))
+    env = RobotEnv(run_settings(iface="lo", **{"mode": "standing", **settings}))
     env.setup()
     out = capsys.readouterr().out
     env.arms_built = len(built)
@@ -185,6 +185,25 @@ def test_standing_mode_refuses_a_robot_that_is_not_standing(monkeypatch, capsys)
     assert loco.calls == [("SetFsmId", 200)]
     env._teardown_robot()
     assert loco.calls[-1] == ("SetFsmId", 4) and "4 (locked stand) restored" in capsys.readouterr().out
+
+
+def test_gantry_found_limp_gets_the_bring_up_and_is_damped_again(monkeypatch, capsys):
+    env, loco, out = bring_up(monkeypatch, 1, capsys, mode="gantry")
+    assert loco.calls == [("Damp",), ("SetFsmId", 4), ("SetFsmId", 200)] and "fsm: 4 (locked stand)" in out
+    env._teardown_robot()
+    assert loco.calls[-1] == ("Damp",)
+
+
+def test_gantry_found_standing_never_damps_and_leaves_it_as_found(monkeypatch, capsys):
+    env, loco, out = bring_up(monkeypatch, 200, capsys, mode="gantry")   # g1 start's gantry session rests in 200
+    assert loco.calls == [] and "already in control mode" in out
+    env.arm.state = None
+    env._teardown_robot()
+    assert loco.calls == [] and "Damp" not in capsys.readouterr().out
+    env, loco, out = bring_up(monkeypatch, 501, capsys, mode="gantry")
+    assert loco.calls == [("SetFsmId", 200)]
+    env._teardown_robot()
+    assert ("Damp",) not in loco.calls and loco.calls[-1] == ("SetFsmId", 501)
 
 
 def test_teardown_never_raises(monkeypatch, capsys):

@@ -14,7 +14,7 @@ ROOT = limits.ROOT
 def task_dir(tmp_path, name="find_the_mug", **data):
     d = tmp_path / name
     d.mkdir(parents=True)
-    (d / "task.json").write_text(json.dumps(data))
+    (d / "task.json").write_text(json.dumps({"modes": ["gantry", "standing"], **data}))
     return d
 
 
@@ -30,8 +30,9 @@ def test_load_task_defaults_and_validates(tmp_path):
                        ({"instruction": ""}, "instruction"), ({"instruction": "x", "scene": "moon"}, "scene"),
                        ({"instruction": "x", "demo": "walk.mp4"}, "demo"), ({"instruction": "x", "max_decisions": 0}, "max_decisions"),
                        ({"instruction": "x", "camera_size": "big"}, "camera_size"),
-                       ({"instruction": "x", "objects": ["mug@1,0"]}, "objects need")]:
-        (d / "task.json").write_text(json.dumps(bad))
+                       ({"instruction": "x", "objects": ["mug@1,0"]}, "objects need"),
+                       ({"instruction": "x", "modes": []}, "modes"), ({"instruction": "x", "modes": ["sitting"]}, "modes")]:
+        (d / "task.json").write_text(json.dumps({"modes": ["standing"], **bad} if bad else bad))
         with pytest.raises(ValueError, match=match):
             load_task(d)
     (d / "task.json").write_text("{")
@@ -116,3 +117,26 @@ def test_code_snapshot_restores_the_working_tree_untouched(tmp_path, no_code_sna
     assert git("rev-parse", snap["ref"]) == snap["snapshot"] and git("rev-parse", f"{snap['snapshot']}^") == head
     assert git("rev-parse", "HEAD") == head and git("status", "--porcelain") == status   # nothing else moved
     assert code_snapshot(tmp_path / "runs" / "nope")["snapshot"] is None                 # no repo: recorded, not fatal
+
+
+def test_a_slot_is_filled_cleaned_and_capped_and_must_match_the_instruction(tmp_path, monkeypatch):
+    slot = {"object": {"note": "what to point at", "default": "laptop"}}
+    d = task_dir(tmp_path, "p", instruction="find the {object} and point at it", fill=slot)
+    t = load_task(d)
+    assert t["instruction"] == "find the laptop and point at it" and t["template"] == "find the {object} and point at it"
+    assert load_task(d, fill={"object": "  the red\n{cup} "})["instruction"] == "find the the red cup and point at it"
+    monkeypatch.setitem(limits.LIMITS["task_fill_max_chars"], "value", 5)
+    assert load_task(d, fill={"object": "water bottle"})["filled"] == {"object": "water"}
+    for name, bad in [("q", {"instruction": "find the {thing}", "fill": slot}), ("r", {"instruction": "find it", "fill": slot}),
+                      ("s", {"instruction": "find the {object}"})]:
+        with pytest.raises(ValueError, match="slots"):
+            load_task(task_dir(tmp_path, name, **bad))
+
+
+def test_the_session_offers_only_the_tasks_that_say_so():
+    from g1.session import task_menu
+    shown = set(task_menu())
+    for d in (ROOT / "tasks").iterdir():
+        if (d / "task.json").is_file():
+            assert (d.name in shown) == load_task(d)["session"], d.name
+    assert shown == {"point_at", "point_at_the_laptop"}

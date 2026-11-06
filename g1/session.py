@@ -21,9 +21,14 @@ first. You can also call any skill yourself (``g1/console.py``: ``/routine``, ``
 at a time (``events``), so Ctrl-C, Esc and quitting all stop a skill the one way the safe returns are
 shielded on: SIGINT.
 
-The **mode** decides what may run and how: ``standing`` (everything; routines and tasks run in
-``--mode standing``) or ``gantry`` (no built-ins or base motion; routines and tasks run in ``--mode
-gantry``: the bring-up, then damp at the end). Switching mode never moves the robot. The settings:
+The **mode** is who commands the legs. ``standing``: we do, through LocoClient (built-ins, walks; the
+routines and tasks whose ``modes`` list standing run in ``--mode standing``). ``gantry``: never (no
+built-ins, no base motion; only the routines and tasks listing gantry, the arms through arm_sdk while
+Unitree's controller holds the legs). Each mode has a **resting FSM** (``REST_FSM``: gantry 200,
+standing ``walk_fsm``, 501): the session brings the robot there at the start and on ``/mode`` (after
+a y/N), every skill starts there (a skill is refused anywhere else) and ends there (a run leaves the
+robot as it found it; a built-in move's 802 is taken back to 501 at once). Quitting a gantry session
+damps it (it hangs); quitting a standing one leaves it standing in 501 for the remote. The settings:
 the **mic** (speech handled like chat, or ignored), the **speaker** (replies said out loud, or only
 printed; tasks run here follow it too), the **camera** (opened once and served at
 ``view_port``; runs reuse it) and the **lidar** (a SLAM mapping session and its view, map saved when
@@ -41,12 +46,19 @@ from typing import Any, Callable, Optional
 
 from g1.core import limits
 from g1.envs import sdk
-from g1.envs.moves import PLAY_FSMS, Moves, gloss
+from g1.envs.moves import PLAY_FSMS, Moves, fsm_path, gloss
 
 # The moves the model may play: the gestures and dances (mimic ids 5xx, 6xx). Never the get-up and
 # lie-down motions (4xx) or the stance (101), whatever the robot lists.
 TALK_MOVES = range(500, 700)
 MODES = ("standing", "gantry")
+FSM_MAIN, FSM_DAMP = 200, 1
+
+
+def rest_fsm(mode: str) -> int:
+    """Where the robot waits between skills: gantry in main operation (200: the arms ready for arm_sdk,
+    the legs held by Unitree's controller, never commanded by us); standing in walk mode (walk_fsm)."""
+    return FSM_MAIN if mode == "gantry" else int(limits.get("walk_fsm"))
 
 # The session's rules: how to answer and what is safe. Who the robot is, where, and for whom is SOUL.md
 # (knowledge/, written by people); what it remembers is MEMORY.md (written by the robot). These stay in
@@ -64,7 +76,10 @@ meaning). Answer with exactly one tool call:
   warning first ("Stepping forward!"). You cannot see while you talk, so never walk unless asked, and never toward people.
 - play_routine: when someone asks for one of your routines (fixed arm motions you know by name, listed in the tool).
 - run_task: when someone asks for something one of your tasks does (listed in the tool with what each one does).
-  A task uses your camera and takes a while; say briefly what you will do first.
+  A task uses your camera and takes a while; say briefly what you will do first. A task that names a slot (point_at:
+  {{object}}) needs it filled from what was asked ("point at the water bottle": object "water bottle").
+- look_up (when offered): for facts you do not know or anything recent (news, weather, sports, dates of events).
+  Say a short line first ("Let me check."). You then get the results and answer. Never look up a person near you.
 - remember: when you learn something worth knowing next time (someone's name and role, a place, an event, a
   preference, something you are taught), or are told to forget something. Say a short line too. Never remember
   phone numbers, addresses, passwords or private details about a person.
@@ -106,12 +121,15 @@ class RoutineInfo:
     notes: str
     uses_base: bool = False
     uses_onboard: bool = False
+    modes: tuple = MODES
 
 
 @dataclass
 class TaskInfo:
-    instruction: str
+    instruction: str                    # as written: a slot shows as {object}
     hears: bool = False
+    modes: tuple = MODES
+    fill: dict = field(default_factory=dict)   # its slots: {"object": {"note": ..., "default": ...}}
 
 
 def routine_menu() -> dict[str, RoutineInfo]:
@@ -125,12 +143,13 @@ def routine_menu() -> dict[str, RoutineInfo]:
             print(f"warning: routine {name} skipped: {e}")
             continue
         if not r.full_body:
-            out[name] = RoutineInfo((r.notes.strip().splitlines() or [name])[0], r.uses_base, r.uses_onboard)
+            out[name] = RoutineInfo((r.notes.strip().splitlines() or [name])[0], r.uses_base, r.uses_onboard,
+                                    tuple(r.modes))
     return out
 
 
 def task_menu() -> dict[str, TaskInfo]:
-    """The tasks the session may run."""
+    """The tasks the session may run (those whose task.json says ``"session": false`` are left out)."""
     from g1.agent.task import ROOT, load_task
     out = {}
     for d in sorted((ROOT / "tasks").iterdir()):
@@ -140,12 +159,13 @@ def task_menu() -> dict[str, TaskInfo]:
             except ValueError as e:
                 print(f"warning: task {d.name} skipped: {e}")
                 continue
-            out[d.name] = TaskInfo(t["instruction"], bool(t.get("hears")))
+            if t["session"]:
+                out[d.name] = TaskInfo(t["template"], bool(t.get("hears")), tuple(t["modes"]), dict(t["fill"]))
     return out
 
 
 def tools(menu: dict[int, dict], routines: Optional[dict] = None, tasks: Optional[dict] = None,
-          *, builtins: bool = True) -> list[dict]:
+          *, builtins: bool = True, look_up: bool = False) -> list[dict]:
     """The model's tools for this session: say and ignore always; the built-ins when standing; the
     routines and tasks given (already filtered for the mode)."""
     out = [{"type": "function", "function": {
@@ -184,12 +204,16 @@ def tools(menu: dict[int, dict], routines: Optional[dict] = None, tasks: Optiona
                 "required": ["name"]}}})
     if tasks:
         listing = "; ".join(f"{n}: {_instruction(t)}" for n, t in tasks.items())
+        props = {"name": {"type": "string", "enum": list(tasks), "description": "the task"}}
+        slots = [(k, f"{n}: {spec['note']}") for n, t in tasks.items() if isinstance(t, TaskInfo)
+                 for k, spec in t.fill.items()]
+        for k in sorted({k for k, _ in slots}):
+            props[k] = {"type": "string", "description": "fills {" + k + "} in a task that names it ("
+                        + "; ".join(v for kk, v in slots if kk == k) + ")"}
+        props["say"] = {"type": "string", "description": "a short line to say before it: what you will do"}
         out.append({"type": "function", "function": {
             "name": "run_task", "description": f"Run one of your tasks with your camera until it is done. The tasks: {listing}.",
-            "parameters": {"type": "object", "properties": {
-                "name": {"type": "string", "enum": list(tasks), "description": "the task"},
-                "say": {"type": "string", "description": "a short line to say before it: what you will do"}},
-                "required": ["name"]}}})
+            "parameters": {"type": "object", "properties": props, "required": ["name"]}}})
     out.append({"type": "function", "function": {
         "name": "remember", "description": "Keep a fact in your long-term memory (MEMORY.md), or forget one.",
         "parameters": {"type": "object", "properties": {
@@ -197,6 +221,14 @@ def tools(menu: dict[int, dict], routines: Optional[dict] = None, tasks: Optiona
             "forget": {"type": "string", "description": "optional: a memory to remove, copied exactly as it appears"},
             "say": {"type": "string", "description": "a short line to say, e.g. that you will remember it"}},
             "required": ["fact"]}}})
+    if look_up:
+        out.append({"type": "function", "function": {
+            "name": "look_up", "description": "Search the web for a fact you do not know or something recent; "
+                                              "you get the results next and then answer.",
+            "parameters": {"type": "object", "properties": {
+                "query": {"type": "string", "description": "a short web search query"},
+                "say": {"type": "string", "description": "a short line to say while you look, e.g. Let me check."}},
+                "required": ["query"]}}})
     out.append({"type": "function", "function": {
         "name": "ignore", "description": "Say nothing: what was heard was not meant for you.",
         "parameters": {"type": "object", "properties": {
@@ -264,6 +296,7 @@ class Session:
         self.busy = threading.Event()
         self.running = ""                       # what runs now, for the status line
         self.fsm: Optional[int] = None
+        self.confirmed: Optional[str] = None      # the mode a person confirmed (hanging / on its feet): quit damps only a confirmed gantry
         self.mic_on = mic is not None
         self.knowledge = knowledge                  # g1/knowledge.py: SOUL.md, MEMORY.md, the daily log (None: none)
         self._source = "typed"                      # what the exchange being handled came from (the log)
@@ -273,7 +306,7 @@ class Session:
         self.lidar = None
         self.history: list[dict] = []           # user / assistant text turns, newest last
         self.counts = {"heard": 0, "typed": 0, "said": 0, "moves": 0, "walks": 0, "routines": 0, "tasks": 0,
-                       "stopped": 0, "refused": 0, "ignored": 0, "remembered": 0, "errors": 0}
+                       "stopped": 0, "refused": 0, "ignored": 0, "remembered": 0, "looked_up": 0, "errors": 0}
         self._seq = mic.seq if mic is not None else 0
 
     # -- what may run ------------------------------------------------------------------------------
@@ -287,16 +320,28 @@ class Session:
         if kind == "routine":
             if name not in self.routines:
                 return f"no routine {name!r} (/skills lists them)"
-            if self.mode == "gantry" and self.routines[name].uses_base:
-                return f"routine {name} drives the base: standing mode only"
         if kind == "task":
             if name not in self.tasks:
                 return f"no task {name!r} (/skills lists them)"
             if self.tasks[name].hears and not self.mic_on:
                 return f"task {name} listens: /mic on first"
-        if kind in ("routine", "task") and self.runner is None:
-            return "no runner for routines and tasks"
-        return None
+        if kind in ("routine", "task"):
+            modes = (self.routines if kind == "routine" else self.tasks)[name].modes
+            if self.mode not in modes:
+                return f"{kind} {name} runs in {' and '.join(modes)} mode only: /mode {modes[0]}"
+            if self.runner is None:
+                return "no runner for routines and tasks"
+        return self.off_rest()
+
+    def off_rest(self) -> Optional[str]:
+        """Why no skill may start from the FSM the robot reports (None: it rests where its mode rests)."""
+        rest = rest_fsm(self.mode)
+        if self.fsm == rest:
+            return None
+        if self.fsm is None:
+            return "the robot's FSM is unknown (no reply to GetFsmId): /status"
+        return (f"the robot is in FSM {sdk.fsm_name(self.fsm)}, not {self.mode} mode's resting FSM "
+                f"{sdk.fsm_name(rest)}: /mode {self.mode} brings it there")
 
     def resolve_move(self, name: str) -> Optional[int]:
         """A built-in move by id or by (part of) its name."""
@@ -316,9 +361,14 @@ class Session:
         tasks = {n: t for n, t in self.tasks.items() if self.why_not("task", n) is None}
         return routines, tasks
 
-    def model_tools(self) -> list[dict]:
+    def can_look_up(self) -> bool:
+        """The chat model may search the web: it has ``search`` and is served by OpenRouter."""
+        return callable(getattr(self.model, "search", None)) and getattr(self.model, "provider", "") == "openrouter"
+
+    def model_tools(self, *, look_up: bool = True) -> list[dict]:
         routines, tasks = self.offered()
-        return tools(self.menu, routines, tasks, builtins=self.mode == "standing")
+        return tools(self.menu, routines, tasks, builtins=self.mode == "standing",
+                     look_up=look_up and self.can_look_up())
 
     def skills(self) -> list[str]:
         """``/skills``: the skills this mode (and the mic) allows now, grouped; nothing else. Typing
@@ -340,7 +390,8 @@ class Session:
     def status(self) -> str:
         parts = [self.mode]
         if self.fsm is not None:
-            parts.append(f"FSM {self.fsm}")
+            rest = rest_fsm(self.mode)
+            parts.append(f"FSM {self.fsm}" + ("" if self.fsm == rest else f" (rests in {rest})"))
         parts.append(f"mic {'on' if self.mic_on else 'off'}")
         parts.append(f"speaker {'on' if self.speaker_on else 'off'}")
         parts.append(f"camera {self.viewer.url if self.viewer is not None else 'off'}")
@@ -454,6 +505,7 @@ class Session:
         if self.model is None:
             print("no model (configs/model.json and its key in .env): chat is off; call skills directly (/skills)")
             return
+        self._refresh_fsm()                          # what may run (the tools offered) depends on it
         messages = ([{"role": "system", "content": system_prompt(self.knowledge)}]
                     + self.history[-2 * int(limits.get("talk_history_turns")):]
                     + [{"role": "user", "content": text}])
@@ -469,32 +521,83 @@ class Session:
             self.speak("Sorry, I could not think of an answer just now.")
             return
         print(f"  ({call.name} after {self.now() - t0:.1f} s)")
-        if call.name == "move" and self.mode == "standing" and int(args.get("move_id", -1)) in self.menu:
+        self._act(text, call.name, args, messages)
+
+    def _act(self, text: str, name: str, args: dict, messages: Optional[list] = None) -> None:
+        """Run the model's one choice ``name(args)`` for ``text``. ``messages``: the request it answered
+        (a look_up asks again from them; None: no second look-up)."""
+        if name == "look_up" and messages is not None and self.can_look_up() and str(args.get("query") or "").strip():
+            self._look_up(text, str(args["query"]).strip(), str(args.get("say") or ""), messages)
+            return
+        if name == "move" and self.mode == "standing" and int(args.get("move_id", -1)) in self.menu:
             self.run_skill("move", str(int(args["move_id"])), heard=text, say=str(args.get("say") or ""), chosen_by="model")
             return
-        if call.name == "walk" and self.mode == "standing":
+        if name == "walk" and self.mode == "standing":
             amounts = {k: _clamp(args.get(k), limits.get(cap)) for k, cap in
                        (("turn_deg", "talk_turn_max_deg"), ("forward_m", "talk_walk_max_m"), ("side_m", "talk_side_max_m"))}
             if any(amounts.values()):
                 self.run_skill("walk", "", heard=text, say=str(args.get("say") or ""), chosen_by="model", walk=amounts)
                 return
         routines, tasks = self.offered()
-        if call.name == "play_routine" and args.get("name") in routines:
+        if name == "play_routine" and args.get("name") in routines:
             self.run_skill("routine", args["name"], heard=text, say=str(args.get("say") or ""), chosen_by="model")
             return
-        if call.name == "run_task" and args.get("name") in tasks:
-            self.run_skill("task", args["name"], heard=text, say=str(args.get("say") or ""), chosen_by="model")
+        if name == "run_task" and args.get("name") in tasks:
+            fill = {k: str(args.get(k) or "") for k in tasks[args["name"]].fill}
+            self.run_skill("task", args["name"], heard=text, say=str(args.get("say") or ""), chosen_by="model", fill=fill)
             return
-        if call.name == "remember":
+        if name == "remember":
             self._learn(text, str(args.get("fact") or ""), str(args.get("forget") or ""), str(args.get("say") or ""))
             return
-        if call.name == "say" and str(args.get("text", "")).strip():
+        if name == "say" and str(args.get("text", "")).strip():
             self._remember(text, args["text"])
             self.speak(str(args["text"]))
             return
         self.counts["ignored"] += 1
-        print(f"  (ignored: {args.get('reason') or call.name})")
-        self._log(text, f"ignored ({args.get('reason') or call.name})")
+        print(f"  (ignored: {args.get('reason') or name})")
+        self._log(text, f"ignored ({args.get('reason') or name})")
+
+    def _look_up(self, text: str, query: str, say: str, messages: list) -> None:
+        """Say the line, search the web (bounded by look_up_timeout_s), then ask the model again with the
+        results, without look_up, and run its choice."""
+        if say:
+            self.speak(say)
+        self.counts["looked_up"] += 1
+        timeout = limits.get("look_up_timeout_s")
+        box: dict = {}
+
+        def search():
+            try:
+                box["text"] = self.model.search(query, timeout=timeout)
+            except Exception as e:                   # the network, the provider
+                box["error"] = e
+        t = threading.Thread(target=search, name="look-up", daemon=True)
+        t.start()
+        t.join(timeout)
+        found = None if t.is_alive() else box.get("text")
+        if not found:
+            why = "no reply in time" if t.is_alive() else (box.get("error") or "nothing found")
+            print(f"  look_up {query!r}: {why}")
+            self._remember(text, f"[looked up: {query}: no answer]")
+            self.speak("Sorry, I could not look that up right now.")
+            return
+        print(f"  look_up {query!r}: {found}")
+        again = messages + [{"role": "assistant", "content": f"[looked up: {query}]"},
+                            {"role": "user", "content": f"Web search results for {query!r}: {found}\n"
+                                                        f"Now answer what was said: {text}"}]
+        t0 = self.now()
+        try:
+            call = self.model.complete(again, tools=self.model_tools(look_up=False))
+            args = json.loads(call.arguments or "{}")
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            self.counts["errors"] += 1
+            print(f"model error after {self.now() - t0:.1f} s: {type(e).__name__}: {e}")
+            self.speak("Sorry, I could not think of an answer just now.")
+            return
+        print(f"  ({call.name} after {self.now() - t0:.1f} s)")
+        self._act(text, call.name, args)
 
     # -- running a skill ------------------------------------------------------------------------------
     def _busy(self, what: str, action: Callable[[], object]) -> object:
@@ -511,17 +614,27 @@ class Session:
         print(f"stopped {what}: the robot is back to neutral")
 
     def run_skill(self, kind: str, name: str, *, heard: str = "", say: str = "", chosen_by: str = "user",
-                  walk: Optional[dict] = None) -> None:
+                  walk: Optional[dict] = None, fill: Optional[dict] = None) -> None:
         """One skill, the one way: checked against the mode, confirmed when the model chose a routine
-        or task, run, and its result said."""
-        heard = heard or f"/{kind} {name}".strip()
+        or task, run, and its result said. ``fill``: a task's slots (what to point at); each must be given."""
+        heard = heard or (f"/{kind} {name} " + " ".join((fill or {}).values())).strip()
+        self._refresh_fsm()
         why = self.why_not(kind, name)
+        if why is None and kind == "task":
+            from g1.agent.task import clean_fill
+            fill = {k: clean_fill((fill or {}).get(k)) for k in self.tasks[name].fill}
+            missing = [k for k, v in fill.items() if not v]
+            if missing:
+                why = (f"task {name} needs its {', '.join(missing)} (" + "; ".join(
+                    self.tasks[name].fill[k]["note"] for k in missing) + f"): /task {name} WHAT")
         if why is not None:
             self.counts["refused"] += 1
             print(f"refused: {why}")
             self._remember(heard, f"[{kind} {name}: not possible now: {why}]")
             if chosen_by == "model":
-                self.speak("Sorry, I cannot do that right now.")
+                self.speak("Sorry, I cannot do that right now." if "needs its" not in why
+                           else "What should I point at? Please tell me again." if "object" in why
+                           else "Sorry, I need a bit more to go on. Please tell me again.")
             return
         if kind == "move":
             mid = self.resolve_move(name)
@@ -533,7 +646,7 @@ class Session:
             move = {"kind": "mimic", "id": mid, "label": m["name"], "duration": m["duration"]}
             if self._busy(f"move {m['name']} (Esc stops)", lambda: self.moves.play([move])) == 130:
                 self._stopped("the move")
-            self._refresh_fsm()
+            self.rest()                                  # a stored move ends in 802: back to walk mode at once
             return
         if kind == "walk":
             amounts = walk or {}
@@ -544,47 +657,49 @@ class Session:
             self.counts["walks"] += 1
             if self._busy(f"walk {what} (Esc stops)", lambda: self.moves.walk(**amounts)) == 130:
                 self._stopped("the walk")
-            self._refresh_fsm()
+            self.rest()
             return
-        self._run_on_robot(kind, name, heard, say, chosen_by)
+        self._run_on_robot(kind, name, heard, say, chosen_by, fill or {})
 
-    def _run_on_robot(self, kind: str, name: str, heard: str, say: str, chosen_by: str) -> None:
+    def _run_on_robot(self, kind: str, name: str, heard: str, say: str, chosen_by: str, fill: dict) -> None:
+        label = name + (f" ({', '.join(fill.values())})" if fill else "")
+        instruction = ""
+        if kind == "task":
+            from g1.agent.task import fill_instruction
+            instruction = fill_instruction(self.tasks[name].instruction, self.tasks[name].fill, fill)[0]
         if chosen_by == "model":
             what = (f"the {name} routine ({self.routines[name].notes})" if kind == "routine"
-                    else f"the task {name}: {self.tasks[name].instruction}")
+                    else f"the task {name}: {instruction}")
             self.speak(say or (f"I will play my {name} routine." if kind == "routine"
-                               else f"I will {self.tasks[name].instruction}."))
+                               else f"I will {instruction.split(';')[0]}."))
             if not self.ui.confirm(f"Start {what}? It takes over the arms ({self.mode} mode)."):
                 self._remember(heard, f"[{kind} {name}: not approved at the keyboard]")
                 self.speak("Okay, I will not do that.")
                 return
         elif say:
             self.speak(say)
-        if self.mode == "standing":
-            fsm = self.moves.fsm()
-            if fsm not in sdk.STANDING_FSMS:         # after a built-in move it stands in 802: back to walk mode
-                print(f"the robot is in FSM {sdk.fsm_name(fsm)}; walk mode first")
-                self.moves.switch(int(limits.get("walk_fsm")))
         self.counts["routines" if kind == "routine" else "tasks"] += 1
         settings = {"microphone": self.mic, "camera_shared": self.camera, "speaker": self.speaker_on}
+        run = ((lambda: self.runner(kind, name, self.mode, settings, fill=fill)) if fill
+               else (lambda: self.runner(kind, name, self.mode, settings)))
         try:
-            result = self._busy(f"{kind} {name} (Esc stops)", lambda: self.runner(kind, name, self.mode, settings))
+            result = self._busy(f"{kind} {label} (Esc stops)", run)
         except KeyboardInterrupt:
-            self._stopped(f"{kind} {name}")
-            self._remember(heard, f"[{kind} {name}: stopped]")
+            self._stopped(f"{kind} {label}")
+            self._remember(heard, f"[{kind} {label}: stopped]")
             return
         except (SystemExit, Exception) as e:        # refused or failed: the env's teardown has already run
             self.counts["errors"] += 1
-            print(f"{kind} {name} failed: {e}")
-            self._remember(heard, f"[{kind} {name}: could not run]")
+            print(f"{kind} {label} failed: {e}")
+            self._remember(heard, f"[{kind} {label}: could not run]")
             self.speak(f"Sorry, I could not do the {name} {kind}.")
             return
         finally:
             self._refresh_fsm()
         if result.get("stopped"):
-            self._stopped(f"{kind} {name}")
+            self._stopped(f"{kind} {label}")
         outcome = "stopped" if result.get("stopped") else (result.get("outcome") or "unknown")
-        self._remember(heard, f"[{kind} {name}: {outcome}]")
+        self._remember(heard, f"[{kind} {label}: {outcome}]")
         if result.get("stopped"):
             self.speak("I stopped.")
         elif kind == "task" and result.get("summary"):
@@ -599,14 +714,71 @@ class Session:
         except Exception:
             self.fsm = None
 
+    def rest(self) -> bool:
+        """Bring the robot to this mode's resting FSM along the allowed order (``Moves.switch``, which
+        prints the path and its warnings). Callers ask the person first where a person must say yes
+        (``start``, ``set_mode``). False when it is not there afterwards: skills are refused until ``/mode``."""
+        rest = rest_fsm(self.mode)
+        self._refresh_fsm()
+        if self.fsm == rest:
+            return True
+        if self.fsm is None:
+            print(f"the robot's FSM is unknown; it was not brought to {sdk.fsm_name(rest)}")
+            return False
+        if fsm_path(self.fsm, rest) is None:
+            print(f"no allowed way from FSM {sdk.fsm_name(self.fsm)} to {sdk.fsm_name(rest)}: use the remote")
+            return False
+        print(f"{self.mode} mode rests in FSM {sdk.fsm_name(rest)}")
+        try:
+            self.moves.switch(rest)
+        except SystemExit as e:
+            print(f"could not reach FSM {rest}: {e}")
+        self._refresh_fsm()
+        return self.fsm == rest
+
+    def start(self) -> bool:
+        """The session's first step: a person confirms the mode (hanging in the gantry, or on its own feet
+        with the area clear) and the robot is brought to its resting FSM. False: not started."""
+        if self.mode == "gantry":
+            question = ("Is the robot hanging in the gantry (feet just touching or off the floor)? Its legs are "
+                        "never commanded here, and it is damped when the session ends.")
+        else:
+            question = ("Is the robot standing on its own feet, area clear, spotter and remote ready? Built-ins "
+                        "(dances, walks) play when asked; routines and tasks the model chooses are asked each time.")
+        if not self.ui.confirm(question):
+            return False
+        self.confirmed = self.mode
+        self.rest()
+        return True
+
+    def park(self) -> None:
+        """At quit, with nothing running: gantry (confirmed hanging) is damped; standing goes back to its
+        resting FSM and stays standing for the remote. Never raises."""
+        try:
+            self._refresh_fsm()
+            if self.mode == "gantry":
+                if self.confirmed != "gantry":
+                    print("not damped: no one confirmed it hangs in the gantry")
+                elif self.fsm not in (0, FSM_DAMP):
+                    print(f"gantry: damping (FSM {self.fsm} -> {sdk.fsm_name(FSM_DAMP)}); it hangs limp")
+                    self.moves.switch(FSM_DAMP)
+            else:
+                self.rest()
+                print(f"left standing in FSM {sdk.fsm_name(self.fsm)}: the remote has it now")
+        except (SystemExit, Exception) as e:
+            print(f"warning: at quit the FSM was left as it is: {e}")
+
     # -- mode and settings ----------------------------------------------------------------------------
     def set_mode(self, mode: str) -> None:
-        """Change what may run and how. Never moves the robot."""
+        """Change what may run and how, after a y/N, and bring the robot to the new mode's resting FSM
+        (gantry 200, standing walk mode)."""
         if mode not in MODES:
             print(f"mode is standing or gantry, not {mode!r}")
             return
         if mode == self.mode:
             print(f"already in {mode} mode")
+            if self.confirmed == mode:
+                self.rest()                          # back to its resting FSM if it left it
             return
         if mode == "standing":
             fsm = self.moves.fsm()
@@ -620,9 +792,10 @@ class Session:
         if not self.ui.confirm(question):
             print("mode unchanged")
             return
-        self.mode = mode
-        print(f"mode: {mode}" + ("" if mode == "standing" else
-                                 " (no built-ins or base motion; routines and tasks run with the gantry bring-up and damp at the end)"))
+        self.mode, self.confirmed = mode, mode
+        print(f"mode: {mode}" + (" (we command the legs: built-ins and walks)" if mode == "standing" else
+                                 " (the legs are never commanded: no built-ins or base motion)"))
+        self.rest()
         self._remember(f"/mode {mode}", f"[now in {mode} mode]")
 
     def set_mic(self, on: bool) -> None:
@@ -703,8 +876,12 @@ class Session:
         elif n == "heard":
             print(f"\nheard: {cmd.text}")
             self.chat(cmd.text, "heard")
-        elif n in ("routine", "task"):
+        elif n == "routine":
             self.run_skill(n, a[0] if a else "")
+        elif n == "task":
+            name = a[0] if a else ""
+            slots = self.tasks[name].fill if name in self.tasks else {}
+            self.run_skill(n, name, fill={k: cmd.text for k in slots} if slots else None)
         elif n == "move":
             self.run_skill("move", " ".join(a))
         elif n == "walk":
@@ -760,13 +937,15 @@ class Session:
             print("memory: skipped")
 
     def shutdown(self) -> None:
-        """Lidar mapping ended and saved, the camera closed, this session distilled into memory, the counts printed."""
+        """Lidar mapping ended and saved, the camera closed, the robot parked (``park``), this session
+        distilled into memory, the counts printed."""
         from g1.envs.base import shield_sigint
         with shield_sigint("closing the session; this finishes on its own"):
             if self.lidar is not None:
                 self.lidar.stop()
                 self.lidar = None
             self._stop_camera()
+            self.park()
         self._distill()
         print("session: " + ", ".join(f"{k} {v}" for k, v in self.counts.items())
               + (f"; microphone: {self.mic.counts}" if self.mic is not None else ""))
@@ -775,11 +954,11 @@ class Session:
 def robot_runner(*, ask: bool = False) -> Callable[..., dict]:
     """Runs a routine or task on the robot through ``cli.run_once`` in the session's mode, with its
     microphone and camera, kept unreviewed (no questions mid-session)."""
-    def run(kind: str, name: str, mode: str, settings: dict) -> dict:
+    def run(kind: str, name: str, mode: str, settings: dict, fill: Optional[dict] = None) -> dict:
         from g1 import routines
         from g1.agent.task import find, load_task
         from g1.cli import run_once
-        spec = routines.run_spec(name) if kind == "routine" else load_task(find(name))
+        spec = routines.run_spec(name) if kind == "routine" else load_task(find(name), fill=fill)
         code, folder = run_once(spec, sim=False, mode=mode, ask=ask, settings=settings)
         return result_of(code, folder)
     return run

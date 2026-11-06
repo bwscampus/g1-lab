@@ -6,9 +6,10 @@ from pathlib import Path
 import pytest
 
 from g1 import session as session_module
+from g1.console import parse
 from g1.envs.moves import Moves, inventory
 from g1.microphone import Microphone
-from g1.session import (Command, RoutineInfo, ScriptedUI, Session, TaskInfo, routine_menu, system_prompt, talk_menu,
+from g1.session import (Command, rest_fsm, RoutineInfo, ScriptedUI, Session, TaskInfo, routine_menu, system_prompt, talk_menu,
                         task_menu, tools)
 from g1.vlm import ToolCall
 from tests.envs.test_moves import Arm, Loco
@@ -19,8 +20,9 @@ MIMIC = {"fsm_id": 550, "api_id": 1, "motion": {
     "516": {"duration": 4.92, "name": "bow"},
     "604": {"duration": 17.92, "name": "vq_YSKJ_JIXIEWU3_001_XX_b1f11bf1_G1_50hz"},
     "553": {"duration": 6.02, "name": "vq_shuangshoudazhaohu"}}}
-ROUTINES = {"tpose": RoutineInfo("arms out in a T"), "walkabout": RoutineInfo("a step forward", uses_base=True)}
-TASKS = {"find_it": TaskInfo("find the laptop and point at it"),
+ROUTINES = {"tpose": RoutineInfo("arms out in a T"),
+            "walkabout": RoutineInfo("a step forward", uses_base=True, modes=("standing",))}
+TASKS = {"find_it": TaskInfo("find the laptop and point at it"), "walk_to_it": TaskInfo("walk to it", modes=("standing",)),
          "point_on_request": TaskInfo("point at what you hear", hears=True)}
 
 
@@ -48,12 +50,16 @@ class Audio:
 
 
 class Runner:
-    """Records each routine or task run (kind, name, mode, settings) and returns a result."""
+    """Records each routine or task run (kind, name, mode, settings; a task's slots in ``fills``) and
+    returns a result."""
     def __init__(self, result=None, raises=None, check=None):
         self.runs, self.result, self.raises, self.check = [], result or {"ok": True, "outcome": "success"}, raises, check
+        self.fills = []
 
-    def __call__(self, kind, name, mode, settings):
+    def __call__(self, kind, name, mode, settings, fill=None):
         self.runs.append((kind, name, mode, settings))
+        if fill:
+            self.fills.append(fill)
         if self.check:
             self.check()
         if self.raises:
@@ -61,7 +67,9 @@ class Runner:
         return self.result
 
 
-def make(*replies, fsm=501, mode="standing", runner=None, ui=None, sleep_hook=None, **kw):
+def make(*replies, fsm=None, mode="standing", runner=None, ui=None, sleep_hook=None, **kw):
+    """A session on fakes. ``fsm``: what the robot reports (default: the mode's resting FSM)."""
+    fsm = rest_fsm(mode) if fsm is None else fsm
     clock = {"t": 0.0}
 
     def sleep(dt):
@@ -74,8 +82,9 @@ def make(*replies, fsm=501, mode="standing", runner=None, ui=None, sleep_hook=No
     moves = Moves(loco, Arm(), sleep=sleep, now=now, confirm=lambda q: True)
     mic = Microphone(now)
     menu = talk_menu(inventory(loco, Arm(), []))
-    s = Session(mic, Audio(), moves, Model(*replies), menu, mode=mode, routines=dict(ROUTINES), tasks=dict(TASKS),
+    s = Session(mic, Audio(), moves, Model(*replies), menu, mode=mode, routines=dict(ROUTINES), tasks=kw.pop("tasks", dict(TASKS)),
                 runner=runner if runner is not None else Runner(), ui=ui or ScriptedUI(), sleep=sleep, now=now, **kw)
+    s._refresh_fsm()                                              # as run() does first
     return s, mic, clock
 
 
@@ -99,7 +108,8 @@ def test_the_menus_offer_the_routines_and_tasks_that_exist():
     from g1.routines import routine_names
     routines, tasks = routine_menu(), task_menu()
     assert set(routines) == set(routine_names()) and "T" in routines["tpose"].notes
-    assert {"find_the_mug", "point_at_the_laptop"} <= set(tasks) and tasks["point_at_what_you_hear"].hears
+    assert set(tasks) == {"point_at", "point_at_the_laptop"}                       # the rest say "session": false
+    assert tasks["point_at"].instruction.startswith("find the {object}") and "object" in tasks["point_at"].fill
 
 
 def test_the_model_is_offered_what_the_mode_allows():
@@ -110,8 +120,9 @@ def test_the_model_is_offered_what_the_mode_allows():
     tools_ = {t["function"]["name"]: t["function"] for t in g.model_tools()}
     assert "move" not in tools_ and "walk" not in tools_                           # hanging: no built-ins
     assert tools_["play_routine"]["parameters"]["properties"]["name"]["enum"] == ["tpose"]   # no base routine
+    assert set(tools_["run_task"]["parameters"]["properties"]["name"]["enum"]) == {"find_it", "point_on_request"}
     s.set_mic(False)
-    assert s.offered()[1].keys() == {"find_it"}                                     # a hearing task needs the mic
+    assert s.offered()[1].keys() == {"find_it", "walk_to_it"}                       # a hearing task needs the mic
     assert "Answer with exactly one tool call" in system_prompt()
 
 
@@ -119,7 +130,8 @@ def test_skills_lists_only_what_this_mode_allows():
     g, _, _ = make(mode="gantry")
     text = "\n".join(g.skills())
     assert "mode: gantry" in text and "built-ins: (none in gantry mode)" in text
-    assert "/move" not in text and "/walk" not in text and "walkabout" not in text and "✗" not in text
+    assert "/move" not in text and "/walk" not in text and "walkabout" not in text and "walk_to_it" not in text
+    assert "✗" not in text
     assert "· /routine tpose" in text and "· /task find_it" in text and "· /task point_on_request" in text
     g.set_mic(False)
     assert "point_on_request" not in "\n".join(g.skills())                         # a hearing task needs the mic
@@ -155,11 +167,11 @@ def test_chat_says_moves_ignores_and_survives_a_model_error():
                    RuntimeError("network down"))
     s.chat("how tall are you")
     s.chat("can you dance")
-    assert s.moves.loco.calls == [550604] and s.moves.loco.fsm == 802
+    assert s.moves.loco.calls == [550604, 501] and s.moves.loco.fsm == 501      # 802 after the dance: back to rest
     s.chat("no I was talking to her")
     s.chat("lie down")
     s.chat("what is your name")
-    assert s.moves.loco.calls == [550604]
+    assert s.moves.loco.calls == [550604, 501]
     assert s.audio.said == ["I am about one point three metres tall.", "Here is my robot dance!",
                             "Sorry, I could not think of an answer just now."]
     assert s.counts["moves"] == 1 and s.counts["ignored"] == 2 and s.counts["errors"] == 1 and s.counts["typed"] == 5
@@ -220,26 +232,47 @@ def test_unknown_or_impossible_skills_are_refused_and_said_why(capsys):
     s.handle(Command("move", ["bow"]))
     s.handle(Command("walk", ["0.5"]))
     s.handle(Command("routine", ["walkabout"]))
+    s.handle(Command("task", ["walk_to_it"]))
     s.handle(Command("routine", ["nope"]))
     out = capsys.readouterr().out
-    assert out.count("refused:") == 4 and "standing mode" in out and "drives the base" in out and "no routine 'nope'" in out
-    assert s.moves.loco.calls == [] and s.counts["refused"] == 4
+    assert out.count("refused:") == 5 and "need standing mode" in out and "no routine 'nope'" in out
+    assert "routine walkabout runs in standing mode only: /mode standing" in out
+    assert "task walk_to_it runs in standing mode only" in out
+    assert s.moves.loco.calls == [] and s.counts["refused"] == 5
 
 
-def test_after_a_built_in_it_goes_back_to_walk_mode_before_a_routine():
+def test_a_built_in_goes_back_to_walk_mode_at_once_and_skills_start_only_from_the_resting_fsm(capsys):
     s = None
     seen = []
     runner = Runner(check=lambda: seen.append(s.moves.loco.fsm))
-    s, _, _ = make(fsm=802, runner=runner)
+    s, _, _ = make(runner=runner)
+    s.handle(Command("move", ["bow"]))
+    assert s.moves.loco.calls == [550516, 501] and s.fsm == 501          # a stored move ends in 802: back to rest
     s.handle(Command("routine", ["tpose"]))
-    assert seen == [501] and 501 in s.moves.loco.calls        # 802 is not a standing-run state
+    assert seen == [501]
+    s.moves.loco.fsm = 802                                                  # left there somehow (the remote)
+    s.handle(Command("routine", ["tpose"]))
+    s.handle(Command("move", ["bow"]))
+    out = capsys.readouterr().out
+    assert len(runner.runs) == 1 and out.count("not standing mode's resting FSM 501") == 2 and "/mode standing" in out
+    assert "(rests in 501)" in s.status()
+    s.set_mode("standing")                                                  # the same mode: back to its rest
+    assert s.moves.loco.fsm == 802                                          # not confirmed yet: untouched
+    s.confirmed = "standing"
+    s.set_mode("standing")
+    assert s.moves.loco.fsm == 501
+    s.handle(Command("routine", ["tpose"]))
+    assert len(runner.runs) == 2
 
 
-def test_in_gantry_a_task_runs_in_gantry_mode_and_the_fsm_is_left_alone():
+def test_in_gantry_a_task_runs_in_gantry_mode_from_200_and_never_from_limp(capsys):
     runner = Runner()
-    s, _, _ = make(fsm=0, mode="gantry", runner=runner)
+    s, _, _ = make(mode="gantry", runner=runner)
     s.handle(Command("task", ["find_it"]))
-    assert runner.runs[0][2] == "gantry" and s.moves.loco.calls == []   # the run does its own bring-up
+    assert runner.runs[0][2] == "gantry" and s.moves.loco.calls == []      # it rests in 200: nothing to switch
+    s.moves.loco.fsm = 1
+    s.handle(Command("task", ["find_it"]))
+    assert len(runner.runs) == 1 and "resting FSM 200" in capsys.readouterr().out
 
 
 def test_a_refusal_keeps_the_session_going():
@@ -251,15 +284,33 @@ def test_a_refusal_keeps_the_session_going():
 
 # -- mode and settings --------------------------------------------------------------------------
 
-def test_switching_mode_never_moves_the_robot():
+def test_switching_mode_asks_then_goes_to_the_new_resting_fsm():
     ui = ScriptedUI(True, True, False)
-    s, _, _ = make(fsm=501, ui=ui)
+    s, _, _ = make(ui=ui)
     s.set_mode("gantry")
-    assert s.mode == "gantry" and "hanging" in ui.asked[0]
+    assert s.mode == "gantry" and "hanging" in ui.asked[0] and s.moves.loco.calls == [200] and s.fsm == 200
     s.set_mode("standing")
-    assert s.mode == "standing" and "standing on its own feet" in ui.asked[1]
-    s.set_mode("gantry")                                          # declined
-    assert s.mode == "standing" and not any(c for c in s.moves.loco.calls if not isinstance(c, tuple))   # no SetFsmId
+    assert s.mode == "standing" and "standing on its own feet" in ui.asked[1] and s.moves.loco.calls == [200, 501]
+    s.set_mode("gantry")                                          # declined: nothing switches
+    assert s.mode == "standing" and s.moves.loco.calls == [200, 501]
+
+
+def test_the_start_asks_then_rests_and_quit_parks(capsys):
+    ui = ScriptedUI(True)
+    s, _, _ = make(fsm=1, mode="gantry", ui=ui)                   # hanging limp
+    assert s.start() and "hanging in the gantry" in ui.asked[0]
+    assert s.moves.loco.calls == [4, 200] and s.fsm == 200        # damp -> locked stand -> main operation
+    s.shutdown()
+    assert s.moves.loco.calls[-1] == 1 and "damping" in capsys.readouterr().out   # it hangs: limp at the end
+    s, _, _ = make(fsm=802, ui=ScriptedUI(True))
+    assert s.start() and s.moves.loco.calls == [501]
+    s.moves.loco.fsm = 802
+    s.shutdown()
+    assert s.moves.loco.calls == [501, 501] and "left standing in FSM 501" in capsys.readouterr().out   # never damped
+    s, _, _ = make(mode="gantry", ui=ScriptedUI(False))
+    assert not s.start() and s.confirmed is None
+    s.shutdown()                                                  # no one said it hangs: never damped
+    assert s.moves.loco.calls == [] and "not damped" in capsys.readouterr().out
 
 
 def test_standing_is_refused_when_the_robot_does_not_stand(capsys):
@@ -423,3 +474,74 @@ def test_a_routine_runs_for_real_on_the_twin_through_the_session(tmp_path):
     s, _, _ = make(runner=runner)
     s.handle(Command("routine", ["tpose"]))
     assert s.audio.said == ["Done."] and envs[0].actions[-1].weight == pytest.approx(0.0, abs=1e-3)
+
+
+# -- a task's slot (point at X) ---------------------------------------------------------------------
+
+POINT = TaskInfo("find the {object} and point at it", fill={"object": {"note": "what to point at", "default": "laptop"}})
+
+
+def test_the_model_fills_a_tasks_slot_and_the_question_and_runner_get_it(capsys):
+    runner, ui = Runner(), ScriptedUI(True)
+    s, _, _ = make(("run_task", {"name": "point_at", "object": "water bottle", "say": "Looking for it!"}),
+                   ("run_task", {"name": "point_at"}), runner=runner, ui=ui, tasks={**TASKS, "point_at": POINT})
+    run_task = next(t for t in s.model_tools() if t["function"]["name"] == "run_task")["function"]
+    assert "what to point at" in run_task["parameters"]["properties"]["object"]["description"]
+    s.chat("point at the water bottle")
+    assert "find the water bottle and point at it" in ui.asked[0]
+    assert runner.runs[0][:3] == ("task", "point_at", "standing") and runner.fills == [{"object": "water bottle"}]
+    assert "[task point_at (water bottle): success]" in [h["content"] for h in s.history]
+    s.chat("point at it")                                           # no object: asked again, nothing runs
+    assert len(runner.runs) == 1 and s.audio.said[-1] == "What should I point at? Please tell me again."
+
+
+def test_a_typed_task_takes_the_rest_of_the_line_as_its_slot(capsys):
+    runner = Runner()
+    s, _, _ = make(runner=runner, tasks={**TASKS, "point_at": POINT})
+    s.handle(parse("/task point_at the teacher's {red} cup"))
+    s.handle(parse("/task point_at"))
+    assert runner.fills == [{"object": "the teacher's red cup"}] and "needs its object" in capsys.readouterr().out
+
+
+# -- look_up ---------------------------------------------------------------------------------------
+
+class Searching(Model):
+    provider = "openrouter"
+
+    def __init__(self, *replies, found="It is sunny and 18 degrees in Boston today.", wait=None):
+        super().__init__(*replies)
+        self.found, self.wait, self.searched = found, wait, []
+
+    def search(self, query, timeout=None):
+        self.searched.append(query)
+        if self.wait is not None:
+            self.wait.wait(5)
+        if isinstance(self.found, Exception):
+            raise self.found
+        return self.found
+
+
+def test_look_up_says_its_line_searches_then_answers_from_the_results():
+    s, _, _ = make()
+    s.model = Searching(("look_up", {"query": "Boston weather today", "say": "Let me check."}),
+                        ("say", {"text": "It is sunny and eighteen degrees."}))
+    assert "look_up" in [t["function"]["name"] for t in s.model_tools()]
+    s.chat("what's the weather in Boston")
+    assert s.model.searched == ["Boston weather today"]
+    assert s.audio.said == ["Let me check.", "It is sunny and eighteen degrees."] and s.counts["looked_up"] == 1
+    second = s.model.asked[1]
+    assert "sunny and 18 degrees" in second[-1]["content"] and "look_up" not in s.model.tools[1]   # one look-up a turn
+
+
+def test_look_up_is_bounded_said_when_it_fails_and_only_offered_with_search(monkeypatch):
+    import threading
+    s, _, _ = make()
+    assert "look_up" not in [t["function"]["name"] for t in s.model_tools()]   # a model without search
+    hold = threading.Event()
+    monkeypatch.setitem(session_module.limits.LIMITS["look_up_timeout_s"], "value", 0.05)
+    s.model = Searching(("look_up", {"query": "news"}), wait=hold)
+    s.chat("any news today")
+    hold.set()
+    s.model = Searching(("look_up", {"query": "news"}), found=RuntimeError("quota"))
+    s.chat("any news today")
+    assert s.audio.said == ["Sorry, I could not look that up right now."] * 2 and len(s.model.asked) == 1

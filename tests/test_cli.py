@@ -142,7 +142,7 @@ def test_agent_records_the_interruption(tmp_path):
 def task_dir(tmp_path, name="t", **spec):
     d = tmp_path / "tasks" / name
     d.mkdir(parents=True)
-    (d / "task.json").write_text(json.dumps(spec))
+    (d / "task.json").write_text(json.dumps({"modes": ["gantry", "standing"], **spec}))
     return d
 
 
@@ -151,8 +151,9 @@ def routine_spec(tmp_path, name="r", **tracks):
     from g1.routines import run_spec
     d = tmp_path / "routines" / name
     d.mkdir(parents=True)
-    (d / "routine.json").write_text(json.dumps({"tracks": tracks or {"upper_body": {"keyframes": [
-        {"t": 0.3, "joints": {"waist_yaw": 0.0}}]}}}))
+    (d / "routine.json").write_text(json.dumps({"modes": ["standing"] if "base" in tracks else ["gantry", "standing"],
+                                                "tracks": tracks or {"upper_body": {"keyframes": [
+                                                    {"t": 0.3, "joints": {"waist_yaw": 0.0}}]}}}))
     return run_spec(d)
 
 
@@ -206,7 +207,7 @@ def test_a_routine_runs_records_and_traces(tmp_path, capsys):
 def test_gantry_never_walks(tmp_path, capsys):
     from g1.cli import run_task
     task = routine_spec(tmp_path, base=[{"t0": 0.0, "t1": 1.5, "vx": 0.2}])
-    with pytest.raises(SystemExit, match="never walks"):
+    with pytest.raises(SystemExit, match="standing mode only, not gantry"):     # its modes say so: refused before the env
         run_task(task, sim=True, mode="gantry", env=sim_env(mode="gantry"))
     assert not (task["dir"] / "runs").exists() or not any((task["dir"] / "runs").iterdir())
     assert sim_env(mode="gantry").can_walk is False and sim_env().can_walk is True

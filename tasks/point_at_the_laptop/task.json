@@ -1,5 +1,6 @@
 {
   "instruction": "find the laptop by turning your waist, without walking, then point at it with your right arm",
+  "modes": ["gantry", "standing"],
   "scene": "room",
   "objects": ["laptop@1.75,-1.5,0.77"],
   "start": [1.2, -0.95, 0],

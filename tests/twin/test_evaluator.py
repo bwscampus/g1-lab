@@ -24,7 +24,7 @@ def run_chain(tmp_path, chain, success=SUCCESS, **spec):
     from g1.tools import parse_chain
     d = tmp_path / "tasks" / chain.replace(":", "_").replace(",", "-")
     d.mkdir(parents=True)
-    (d / "task.json").write_text(json.dumps({**LAPTOP, "instruction": "scripted", "success": success,
+    (d / "task.json").write_text(json.dumps({**LAPTOP, "instruction": "scripted", "modes": ["gantry", "standing"], "success": success,
                                              **({"hears": True} if spec.get("voices") else {}), **spec}))
     task = load_task(d)
     task["program"] = chain

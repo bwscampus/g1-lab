@@ -67,7 +67,8 @@ g1 start --mode standing|gantry      # the robot only: one interactive session (
                                      # chooses a built-in (5xx/6xx move, capped walk; standing only), a routine or a task
                                      # (model-chosen ones confirmed y/N). /routine /task /move /walk /say call one directly;
                                      # /skills /mode /mic /speaker /camera /lidar /memory /soul /status /help /quit. Esc stops what runs, to
-                                     # neutral; Ctrl-C clears the line (stops a running skill); Ctrl-C twice exits
+                                     # neutral; Ctrl-C clears the line (stops a running skill); Ctrl-C twice exits. It rests in its
+                                     # mode's FSM (gantry 200, standing 501), asked at the start and on /mode; quitting gantry damps
 g1 twin fetch|status
 g1 trace compare RUN_A RUN_B | show RUN   # two run dirs of the same task: tracking, sag, lag, A-B difference
 g1 limits [SOURCE]                   # every limit and default in configs/limits.json as one table, + the model in use
@@ -124,8 +125,9 @@ g1/agent/          agent (Agent, build_agent), decider (AgentContext/AgentTurn/D
                    VLMDecider), episode (EpisodeWriter, load_episode), task (find, load_task, run_config, code_snapshot, record_result),
                    demos (promote, load_demos, render: in-context demos, host truth never copied)
 suites/            stationary/ (point_at_the_laptop x 10), point_on_request/ (point_at_what_you_hear x 5); runs/ inside are git-ignored
-tasks/             find_the_mug/, point_at_the_laptop/, find_and_point_at_the_laptop/, sit_in_the_chair/,
-                   point_at_what_you_hear/ (spoken requests, hears); runs and results.jsonl inside are git-ignored, demos/ is not
+tasks/             point_at/ (point at {object}: g1 start fills it), point_at_the_laptop/, and not in g1 start ("session":
+                   false): find_the_mug/, find_and_point_at_the_laptop/, sit_in_the_chair/, point_at_what_you_hear/
+                   (spoken requests, hears); runs and results.jsonl inside are git-ignored, demos/ is not
 routines/          tpose/, sixseven/ (routine.json: upper-body keyframes); runs/ inside are git-ignored
 docs/              architecture, writing-a-tool, writing-a-task, writing-a-routine, running-on-the-robot, vision-model
 tests/             mirrors g1/ (core, tools, envs, agent, twin) + test_camera, test_cli, test_vlm; doubles.py (RedBallDecider,
@@ -175,7 +177,7 @@ root via `pythonpath`. `limits.ROOT` is the repo root (configs/, tasks/, assets/
   neutral and the session goes on; Ctrl-C clears the line or, with a skill running, stops it like Esc; **Ctrl-C
   twice** on an empty line exits (so do /quit, SIGTERM, SIGHUP), stopping anything running first. Every stop
   is SIGINT to the process (the UI thread sends it; skills run on the main thread), so every stop takes the
-  one shielded path and nothing cuts a return short. Switching mode never moves the robot. The remote's
+  one shielded path and nothing cuts a return short. The remote's
   L2+B (damp) is the emergency stop. Never call the SDK from `step`. Walking is `LocoClient.Move` in `--mode standing` only; no
   low-level leg control. Onboard calls are allow-listed per service — `config.LOCO_METHODS`
   (`WaveHand`, `ShakeHand`; `needs_loco`; and `Sit`, the one FSM, `config.LOCO_FSM`: `sit`, sent as
@@ -183,12 +185,23 @@ root via `pythonpath`. `limits.ROOT` is the repo root (configs/, tasks/, assets/
   in `RobotEnv._command`; a failed speech warns and continues, a failed gesture raises.
   `PlayStream`/`SetVolume`/`LedControl` are never reachable from a reply. Built-ins (Unitree's stored
   moves) play only from `g1 moves` (a person at the keyboard, any move) and talk (the model, ids 5xx/6xx
-  only, standing mode); only `g1 moves` and the session's walk-mode handover switch other FSMs.
+  only, standing mode); only `g1 moves` and the session's resting-FSM switches change the FSM outside a run.
   The session runs a routine or task only through `cli.run_once` (never arm_sdk, the FSM or a tool itself;
   `tests/test_session.py` guards it); one the model chooses is confirmed y/N, one you type is not.
   `g1 lidar` makes only `config.SLAM_METHODS` (start mapping 1801, end mapping 1802, close SLAM 1901) and
   switches only `lidar.SERVICES` (`lidar_driver`, `unitree_slam`): on when off, and off again at the end
   only those it switched on (the robot is left as found). It never navigates.
+- **The mode is who commands the legs.** `gantry`: we never do (no Move, Sit, stored move or walk mode; the arms
+  through arm_sdk in FSM 200, where Unitree's controller holds the legs; hanging). `standing`: we do, through
+  LocoClient only (no low-level leg control until a trained controller exists). Every task and routine declares
+  `"modes"` in its json (required; anything that walks or sits lists only standing; a routine with a `base` track
+  may not list gantry), and `g1 run --mode X` and the session refuse the others before anything connects. A run
+  leaves the robot in the FSM it found: from a standing FSM (4, 200, 500, 501) straight to 200 and back; only a
+  gantry robot found limp gets Damp → 4 → 200 and is damped again. `g1 start` owns a **resting FSM** per mode
+  (`session.rest_fsm`: gantry 200, standing `walk_fsm` 501): a person confirms the mode at the start and on
+  `/mode` (hanging / on its feet), then the session switches there (`Moves.switch`, along `moves.FSM_NEXT`); every
+  skill starts there (refused anywhere else) and ends there (a stored move's 802 goes back to 501 at once). Quit
+  damps a confirmed gantry and leaves standing in 501 for the remote (never damped or sat: it would fall).
 - **Routines compile to segments and are dry-run first.** A routine's timeline (upper body, base windows,
   onboard gestures at keyframe times; a smooth segment is never split) becomes the `Segment`s every tool plays
   (`ease`: smooth for keyframes, linear between dense samples), dry-run whole before the takeover. Full-body
@@ -207,6 +220,14 @@ root via `pythonpath`. `limits.ROOT` is the repo root (configs/, tasks/, assets/
 - **The view never touches the tick.** `--view` (live runs) serves the env's camera slot (`Env.source()`)
   from its own threads; `cli.run` starts it after `env.reset()` and stops it inside `with env`. The robot
   takes one WebRTC client, so the live picture must come out of our process.
+- **A task may take a slot.** task.json `fill` declares each `{name}` its instruction names (a note and the
+  default `g1 run` uses, which the twin's `success` is scored on); `load_task(d, fill=...)` fills and cleans them
+  (`task_fill_max_chars`). In g1 start the model fills them through `run_task`'s arguments (`/task point_at water
+  bottle` when typed); a task with an unfilled slot is refused and asked again. `"session": false` keeps a task out
+  of g1 start (not yet tried on the robot); `g1 run` and `g1 bench` still run it.
+- **Only g1 start's chat searches the web.** Its `look_up(query)` tool runs `VLMClient.search` (OpenRouter's web
+  plugin, `web.max_results` in configs/model.json, bounded by `look_up_timeout_s`), then asks the model again with
+  the results and without `look_up`. A task's model never searches: it knows only what the robot senses.
 - **Hugging Face or OpenRouter** for the model, switched by `provider` in `configs/model.json` (`HF_TOKEN`,
   `VLM_BASE_URL` | `OPENROUTER_API_KEY`; a model id for each in `models`; `g1/vlm.py:PROVIDERS`, `load_model`); no other providers,
   no Anthropic SDK. Fakes are test doubles only (`tests/doubles.py`); `search` always uses the real model.

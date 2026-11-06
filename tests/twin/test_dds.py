@@ -23,7 +23,7 @@ def g1(*args, timeout=180):
 def task(tmp_path, name, **spec):
     d = tmp_path / name
     d.mkdir()
-    (d / "task.json").write_text(json.dumps(spec))
+    (d / "task.json").write_text(json.dumps({"modes": ["gantry", "standing"], **spec}))
     return d
 
 
@@ -46,7 +46,7 @@ def test_sim_gantry_hangs_it_and_never_walks(tmp_path):
     assert "fsm: 4 (locked stand)" in r.stdout and "fsm: 1 (damp); done" in r.stdout and "FELL" not in r.stdout
     walk = tmp_path / "routines" / "walk"
     walk.mkdir(parents=True)
-    (walk / "routine.json").write_text(json.dumps({"tracks": {"base": [{"t0": 0.0, "t1": 1.5, "vx": 0.2}]}}))
+    (walk / "routine.json").write_text(json.dumps({"modes": ["standing"], "tracks": {"base": [{"t0": 0.0, "t1": 1.5, "vx": 0.2}]}}))
     r = g1("run", str(walk), "--sim", "--mode", "gantry")
-    assert r.returncode != 0 and "never walks" in r.stderr and "twin: serving" not in r.stdout
+    assert r.returncode != 0 and "standing mode only" in r.stderr and "twin: serving" not in r.stdout
 

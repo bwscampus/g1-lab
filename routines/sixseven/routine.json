@@ -1,5 +1,6 @@
 {
   "notes": "The six-seven: palms up, elbows bent 90 degrees, the forearms see-saw three times each, then the arms go down.",
+  "modes": ["gantry", "standing"],
   "tracks": {
     "upper_body": {
       "keyframes": [

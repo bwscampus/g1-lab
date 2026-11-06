@@ -15,6 +15,7 @@ g1 run find_the_marker --mode standing        # on the robot
 ```json
 {
   "instruction": "find the marker and stop in front of it",
+  "modes": ["standing"],
   "scene": "room",
   "objects": ["marker@1.2,-0.8"],
   "safety_notes": ["never walk backward without looking back first"],
@@ -27,6 +28,9 @@ g1 run find_the_marker --mode standing        # on the robot
 | key | meaning |
 |---|---|
 | `instruction` | what the model is asked to do, one sentence (needs `HF_TOKEN`). |
+| `fill` | slots the instruction names as `{name}`: `{"object": {"note": "what to point at, as the person named it", "default": "laptop"}}`. g1 start fills them from the request (the model's `run_task` arguments, or `/task point_at water bottle`) and refuses the task without them; `g1 run` uses each `default`, so a `success` is scored on the default. Every `{name}` must be declared and every slot named. |
+| `session` | `false` keeps the task out of g1 start (its menu, `/skills`, the model's tools): one not yet tried on the robot. `g1 run` and `g1 bench` still run it. Default `true`. |
+| `modes` | required: the `--mode`s it runs in. `["standing"]` when it walks or sits (it commands the legs); `["gantry", "standing"]` when the arms and waist are enough (in gantry the legs are never commanded, so the walking tools are not offered). `g1 run` and `g1 start` refuse any other mode. |
 | `scene`, `objects` | the twin's room (`g1 twin fetch` once) and what to put in it: `name@x,y[,z]` (`mug`, `marker`, `cracker_box`, `mustard`, `pencil`, `chair`, `laptop`; chair and laptop face the start). z defaults to the floor; the table's top is at z = 0.77 (its centre is x 2.2, y −1.5, 1.2 × 0.7 m), so `laptop@1.75,-1.5,0.77` stands on it. The room spans x −2..4, y −3..3. Ignored on the robot. |
 | `start` | the twin only: where the robot starts, `[x, y, yaw_deg]` in the room (default the origin facing +x). Never sent to the model. |
 | `safety_notes` | rules for the robot's behaviour in this task ("do not walk", "never touch furniture"), added to the system prompt. Never claims about the world (where a chair or wall is): the model knows only what the robot can sense, and such a claim is false wherever the room differs. The same holds for `instruction`: a goal, never where its target is ("find a free-standing chair", not "the chair 1.5 m ahead"). World facts for people go in `notes`; `tests/agent/test_what_the_model_knows.py` fails a task whose text says where something is. |

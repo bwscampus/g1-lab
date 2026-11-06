@@ -9,12 +9,16 @@ Two modes, ``--mode`` (required, no default). FSM 200 is Unitree's *main
 operation* mode; entering it is what gives this process the arms (arm_sdk) and
 the base (LocoClient.Move) — "control mode" in the messages below.
 
-  gantry    full bring-up and shutdown, for a robot hanging in a gantry:
-            Damp -> FSM 4 (locked stand) -> FSM 200 (control mode) -> run
-            -> release arms -> Damp
-  standing  robot already standing under its own controller (any FSM):
-            remember the current FSM -> FSM 200 (skipped when already there)
-            -> run -> release arms -> back to the remembered FSM. Never damps.
+  gantry    we never command the legs or the base (Unitree's controller holds the legs in
+            FSM 200; no walking, no sit). Hanging in a gantry. Found limp (not a standing
+            FSM): Damp -> FSM 4 (locked stand) -> FSM 200 (control mode) -> run -> release
+            arms -> Damp. Found standing (4, 200, 500, 501; g1 start's gantry session rests
+            in 200): as standing below, no Damp.
+  standing  we command the legs through LocoClient (walks, sit). The robot already standing
+            under its own controller: remember the current FSM -> FSM 200 (skipped when
+            already there) -> run -> release arms -> back to the remembered FSM. Never damps.
+
+Either way a run leaves the robot in the FSM it found.
 
 The arms are taken where they are (a 2 s weight ramp, nothing moves) and
 released where the last tool left them; no move to a neutral pose, no
@@ -375,19 +379,21 @@ class RobotEnv(Env):
                       + ("" if getattr(self.args, "sim", False) else "; voice interaction must be on in the Unitree app")
                       + ")")
 
-        if self.args.mode == "gantry":
+        # The run leaves the robot as it found it: from a standing FSM straight to 200 and back at the
+        # end (g1 start's gantry session holds 200 between runs: no Damp, no locked-stand wait); a
+        # gantry robot found limp gets the full bring-up and is damped again at the end.
+        self.initial_fsm = self._fsm()
+        self._say(f"fsm at start: {sdk.fsm_name(self.initial_fsm)}")
+        if self.initial_fsm not in sdk.STANDING_FSMS:
+            if self.args.mode != "gantry":
+                raise SystemExit(f"--mode standing needs a robot standing under its own controller, but it "
+                                 f"reports FSM {sdk.fsm_name(self.initial_fsm)}; stand it up first (or use --mode gantry)")
             self._require(self._call(self.loco, "Damp")[0], "Damp")
             link.sleep(limits.get("gantry_damp_s"))
             self._require(self._call(self.loco, "SetFsmId", FSM_LOCKED_STAND)[0], "SetFsmId(4)")
             print(f"fsm: {sdk.fsm_name(FSM_LOCKED_STAND)}")
             link.sleep(limits.get("gantry_lock_stand_s"))
-            self.initial_fsm = None
-        else:  # standing
-            self.initial_fsm = self._fsm()
-            self._say(f"fsm at start: {sdk.fsm_name(self.initial_fsm)}")
-            if self.initial_fsm not in sdk.STANDING_FSMS:
-                raise SystemExit(f"--mode standing needs a robot standing under its own controller, but it "
-                                 f"reports FSM {sdk.fsm_name(self.initial_fsm)}; stand it up first (or use --mode gantry)")
+            self.initial_fsm = None                   # found limp: damped again at the end
         if self.initial_fsm == FSM_MAIN:
             print(f"already in control mode (FSM {FSM_MAIN}, main operation)")
         else:
@@ -475,12 +481,12 @@ class RobotEnv(Env):
             return
         if getattr(self, "seated", False):
             self._stand_up(loco)
-        if self.args.mode == "gantry":
+        initial = getattr(self, "initial_fsm", None)
+        if self.args.mode == "gantry" and initial is None:     # found limp (or the bring-up failed): limp again
             code, _ = self._call(loco, "Damp")
             print("Damp" if code == 0 else f"warning: Damp failed with {sdk.explain(code)}")
             self.link.sleep(limits.get("gantry_damp_s"))
-        else:  # standing
-            initial = getattr(self, "initial_fsm", None)
+        else:  # found standing: give back the FSM it was in
             if getattr(self, "seated", False):
                 print(f"warning: the robot is still seated; stand it up with the remote "
                       f"(SetFsmId({FSM_SIT_TO_STAND}), then FSM {FSM_MAIN})")

@@ -26,6 +26,7 @@
         "demo_images_max": 4,
         "demo_image_width_px": 320
     },
+    "web": {"max_results": 3},
 
     "notes": {
         "provider": "who serves the model: huggingface (HF_TOKEN in .env) or openrouter (OPENROUTER_API_KEY in .env); the model asked is models[provider]",
@@ -49,6 +50,7 @@
         "agent.demos_max": "count; in-context demos shown to a task's model, at most (tasks/<name>/demos/: successful runs a person promoted, same env only; g1/agent/demos.py); 0 turns them off. 2 since 2026-11-06, a first guess",
         "agent.demo_images_max": "count; camera images per demo, spread over its steps; the rest of its steps are one text line each; 0 sends text only",
         "agent.demo_image_width_px": "px; demo images are downscaled to this width (smaller than the live image: they are context, not the scene)",
+        "web.max_results": "count, 1-10; g1 start's look_up only (never a task's model): web results per search, through OpenRouter's web plugin (it searches, then the model answers from them; billed per result by OpenRouter). 3 on 2026-11-06, a first guess for the demo",
         "agent.history_full_turns": "count; earlier turns sent in full (observation, image if still in live_image_window, reply); older ones are replaced by one host-written line each, as GPT-Policy's Claude adapter does (a limit until 2026-10-29)"
     }
 }
