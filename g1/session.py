@@ -27,8 +27,9 @@ Unitree's controller holds the legs). A mode never changes the FSM; it **blocks*
 gantry allows only 0, 1, 4 and 200, standing every FSM but 0 and 1. ``/fsm ID`` switches the FSM (a
 person decides) and is refused for one the mode blocks ("switch modes first"); ``/mode`` is refused
 while the robot is in an FSM the new mode blocks; a skill is refused in one. The one switch the session
-makes itself is the start's bring-up, in both modes: 0 -> 1 -> 4 -> 200 from wherever the robot is on
-that way (after a y/N). Quitting leaves the FSM as it is. The settings:
+makes itself is the start's bring-up (``BRING_UP``): standing 0 -> 1 -> 4 -> 802, gantry 0 -> 1 -> 4 ->
+200, from wherever the robot is on that way (after a y/N). The menus (``/skills``, the model's tools)
+list what the mode allows whatever the FSM; a skill switches the FSM it needs when it runs. Quitting leaves the FSM as it is. The settings:
 the **mic** (speech handled like chat, or ignored), the **speaker** (replies said out loud, or only
 printed; tasks run here follow it too), the **camera** (opened once and served at
 ``view_port``; runs reuse it) and the **lidar** (a SLAM mapping session and its view, map saved when
@@ -56,8 +57,9 @@ MODES = ("standing", "gantry")
 
 GANTRY_FSMS = frozenset({0, 1, 4, 200})        # hanging: limp, locked stand, main operation
 STANDING_BLOCKED = frozenset({0, 1})            # on its feet: never zero torque or damp (it would fall)
-BRING_UP = (0, 1, 4, 200)                       # the start's bring-up, both modes
-MAIN_FSM = 200                                  # main operation: arm_sdk works; routines and tasks run (and stay) here
+BRING_UP = {"gantry": (0, 1, 4, 200),           # the start's bring-up: gantry to main operation (arm_sdk),
+            "standing": (0, 1, 4, 802)}         # standing to 802 (stored moves play from it; a run goes to 200 itself)
+MAIN_FSM = 200                                  # main operation: where a stored move is played from when not in a playing FSM
 
 
 def fsm_allowed(mode: str, fsm) -> bool:
@@ -314,8 +316,9 @@ class Session:
         self._seq = mic.seq if mic is not None else 0
 
     # -- what may run ------------------------------------------------------------------------------
-    def why_not(self, kind: str, name: str = "") -> Optional[str]:
-        """Why ``kind name`` may not run now (None: it may)."""
+    def why_not(self, kind: str, name: str = "", *, fsm: bool = True) -> Optional[str]:
+        """Why ``kind name`` may not run now (None: it may). ``fsm=False``: what the mode allows, whatever
+        FSM the robot is in now (the menus: a skill switches the FSM it needs when it runs)."""
         if kind == "move":
             if self.mode != "standing":
                 return "built-in moves need standing mode: /mode standing"
@@ -335,7 +338,7 @@ class Session:
                 return f"{kind} {name} runs in {' and '.join(modes)} mode only: /mode {modes[0]}"
             if self.runner is None:
                 return "no runner for routines and tasks"
-        return self.fsm_refusal(kind)
+        return self.fsm_refusal(kind) if fsm else None
 
     def fsm_refusal(self, kind: str) -> Optional[str]:
         """Why no ``kind`` may start from the FSM the robot reports (None: it may)."""
@@ -360,8 +363,8 @@ class Session:
 
     def offered(self) -> tuple[dict, dict]:
         """The routines and tasks the model is offered in this mode."""
-        routines = {n: r for n, r in self.routines.items() if self.why_not("routine", n) is None}
-        tasks = {n: t for n, t in self.tasks.items() if self.why_not("task", n) is None}
+        routines = {n: r for n, r in self.routines.items() if self.why_not("routine", n, fsm=False) is None}
+        tasks = {n: t for n, t in self.tasks.items() if self.why_not("task", n, fsm=False) is None}
         return routines, tasks
 
     def can_look_up(self) -> bool:
@@ -378,9 +381,10 @@ class Session:
         one it leaves out still says why it is refused."""
         groups = {
             "built-ins": [f"/move {mid}  {m['name']} ({m['duration']:.0f} s)" for mid, m in self.menu.items()
-                          if self.why_not("move", str(mid)) is None],
-            "routines": [f"/routine {n}  {r.notes}" for n, r in self.routines.items() if self.why_not("routine", n) is None],
-            "tasks": [f"/task {n}  {t.instruction}" for n, t in self.tasks.items() if self.why_not("task", n) is None],
+                          if self.why_not("move", str(mid), fsm=False) is None],
+            "routines": [f"/routine {n}  {r.notes}" for n, r in self.routines.items()
+                         if self.why_not("routine", n, fsm=False) is None],
+            "tasks": [f"/task {n}  {t.instruction}" for n, t in self.tasks.items() if self.why_not("task", n, fsm=False) is None],
         }
         lines = [f"mode: {self.mode}"]
         for title, items in groups.items():
@@ -671,10 +675,6 @@ class Session:
                 return
         elif say:
             self.speak(say)
-        if self.fsm != MAIN_FSM and not self._switch_to(MAIN_FSM, f"a {kind} runs in main operation"):
-            self._remember(heard, f"[{kind} {label}: could not run: not in FSM {MAIN_FSM}]")
-            self.speak(f"Sorry, I could not do the {name} {kind}.")
-            return
         self.counts["routines" if kind == "routine" else "tasks"] += 1
         settings = {"microphone": self.mic, "camera_shared": self.camera, "speaker": self.speaker_on}
         run = ((lambda: self.runner(kind, name, self.mode, settings, fill=fill)) if fill
@@ -746,7 +746,7 @@ class Session:
 
     def start(self) -> bool:
         """The session's first step: a person confirms the mode (hanging in the gantry, or on its own feet
-        with the area clear), then the bring-up 0 -> 1 -> 4 -> 200 from wherever the robot is on that way
+        with the area clear), then the bring-up (standing to 802, gantry to 200) from wherever the robot is on that way
         (both modes; elsewhere it is left as it is). False: not started."""
         self._refresh_fsm()
         if self.mode == "gantry":
@@ -754,15 +754,16 @@ class Session:
         else:
             question = ("Is the robot standing on its own feet, area clear, spotter and remote ready? Built-ins "
                         "(dances, gestures) play when asked; routines and tasks the model chooses are asked each time.")
-        up = self.fsm in BRING_UP and self.fsm != BRING_UP[-1]
+        bring_up = BRING_UP[self.mode]
+        up = self.fsm in bring_up and self.fsm != bring_up[-1]
         if up:
-            path = " -> ".join(sdk.fsm_name(f) for f in BRING_UP[BRING_UP.index(self.fsm):])
+            path = " -> ".join(sdk.fsm_name(f) for f in bring_up[bring_up.index(self.fsm):])
             question += f" Then the bring-up: FSM {path} (locked stand: feet just touching)."
         if not self.ui.confirm(question):
             return False
         if up:
             try:
-                self.moves.switch(BRING_UP[-1])
+                self.moves.switch(bring_up[-1])
             except SystemExit as e:
                 print(f"bring-up stopped: {e}")
             self._refresh_fsm()

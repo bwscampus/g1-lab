@@ -69,7 +69,7 @@ g1 start --mode standing|gantry      # the robot only: one interactive session (
                                      # /skills /mode /fsm /mic /speaker /camera /lidar /memory /soul /status /help /quit. Esc stops what runs, to
                                      # neutral; Ctrl-C clears the line (stops a running skill); Ctrl-C twice exits. Modes never change
                                      # the FSM, they block FSMs (gantry: only 0 1 4 200; standing: not 0 1); /fsm ID switches; the
-                                     # start brings it up 0 -> 1 -> 4 -> 200 (y/N); quitting changes no FSM
+                                     # start brings it up 0 -> 1 -> 4 -> 802 standing, -> 200 gantry (y/N); quitting changes no FSM
 g1 twin fetch|status
 g1 trace compare RUN_A RUN_B | show RUN   # two run dirs of the same task: tracking, sag, lag, A-B difference
 g1 limits [SOURCE]                   # every limit and default in configs/limits.json as one table, + the model in use
@@ -196,16 +196,17 @@ root via `pythonpath`. `limits.ROOT` is the repo root (configs/, tasks/, assets/
   through arm_sdk in FSM 200, where Unitree's controller holds the legs; hanging). `standing`: we do, through
   LocoClient only (no low-level leg control until a trained controller exists). Every task and routine declares
   `"modes"` in its json (required; anything that walks or sits lists only standing; a routine with a `base` track
-  may not list gantry), and `g1 run --mode X` and the session refuse the others before anything connects. A run works
-  in 200 and stays there: found in 200 it changes no FSM, from another standing FSM it enters 200 (and stops before
-  the arms if the robot does not take it), a gantry robot found limp gets Damp → 4 → 200 first; the teardown changes
-  no FSM (only a sit is stood up from). In `g1 start` **a mode never changes the
+  may not list gantry), and `g1 run --mode X` and the session refuse the others before anything connects. A run changes
+  no FSM: it runs and ends in the FSM it finds (`sdk.RUN_FSMS`: 4, 200, 500, 501, 801, 802; it warns outside 200,
+  where taking the arms is verified); only a gantry robot found limp gets Damp → 4 → 200 first, and only a sit is
+  stood up from. In `g1 start` **a mode never changes the
   FSM; it blocks FSMs** (`session.GANTRY_FSMS` 0, 1, 4, 200; `STANDING_BLOCKED` 0, 1). A person switches with
   `/fsm ID` (`SetFsmId` now, refused for an FSM the mode blocks: "switch modes first"; y/N for 0, 1, 3, 4, 801);
   `/mode` (y/N) is refused while the robot is in an FSM the new mode blocks; a skill is refused from a blocked FSM.
-  Both modes start with the bring-up 0 -> 1 -> 4 -> 200 (from wherever the robot is on that way, after a y/N), so
-  arm_sdk works at once. A **built-in move** switches to 200 first when not in a playing FSM and goes back to the FSM it was called from (`Session._return_to`); a **routine or task** goes to 200
-  first when not there (`_switch_to`; refused if the robot does not take it) and stays in 200. Quitting changes no FSM.
+  The start's bring-up (`session.BRING_UP`, from wherever the robot is on that way, after a y/N) ends in 802 standing
+  (stored moves play from it) and 200 gantry (arm_sdk). The menus (`/skills`, completion, the model's tools) list what
+  the mode allows whatever the FSM (`why_not(..., fsm=False)`); the FSM is checked when a skill runs. A **built-in move** switches to 200 first when not in a playing FSM and goes back to the FSM it was called from (`Session._return_to`); a **routine or task** runs in the
+  FSM the robot is in (no switch). Quitting changes no FSM.
 - **Routines compile to segments and are dry-run first.** A routine's timeline (upper body, base windows,
   onboard gestures at keyframe times; a smooth segment is never split) becomes the `Segment`s every tool plays
   (`ease`: smooth for keyframes, linear between dense samples), dry-run whole before the takeover. Full-body

@@ -40,7 +40,10 @@ FSM_NAMES = {0: "zero torque", 1: "damp", 2: "squat", 3: "sit", 4: "locked stand
              200: "main operation", 500: "walk, 1-DoF waist", 501: "walk, 3-DoF waist", 702: "lie to stand",
              706: "stand to squat", 801: "run (walk-run)", 550: "playing a stored move",
              802: "after a stored move"}
-STANDING_FSMS = frozenset({4, 200, 500, 501})        # states a standing run may start in and return to
+STANDING_FSMS = frozenset({4, 200, 500, 501})        # standing under Unitree's controller (g1 status's verdict)
+# where a run may start and stays (no FSM change): standing, plus run mode and after a stored move.
+# arm_sdk is verified in 200 only (2026-11-07); elsewhere the run warns
+RUN_FSMS = STANDING_FSMS | {801, 802}
 
 
 def fsm_name(fsm: Any) -> str:

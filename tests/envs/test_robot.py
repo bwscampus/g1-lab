@@ -148,7 +148,7 @@ def bring_up(monkeypatch, fsm, capsys, set_code=0, get_code=0, arm_cls=None, **s
 
 def test_standing_mode_skips_the_transition_when_already_in_control(monkeypatch, capsys):
     env, loco, out = bring_up(monkeypatch, 200, capsys)
-    assert loco.calls == [] and "already in control mode (FSM 200" in out
+    assert loco.calls == [] and "control mode in FSM 200 (main operation): no FSM change" in out and "warning" not in out
     assert "Taking over" not in out and "countdown" not in out
     env.arm.state = None
     env._teardown_robot()
@@ -157,26 +157,25 @@ def test_standing_mode_skips_the_transition_when_already_in_control(monkeypatch,
 
 def test_bring_up_stops_before_the_arms_on_a_failed_transition(monkeypatch, capsys):
     with pytest.raises(SystemExit, match="3104.*g1 status"):
-        bring_up(monkeypatch, 4, capsys, set_code=3104)                 # no reply: the link
+        bring_up(monkeypatch, 1, capsys, set_code=3104, mode="gantry")  # no reply: the link
     with pytest.raises(SystemExit, match="refused"):
-        bring_up(monkeypatch, 4, capsys, set_code=7001)                 # a service code: the robot refused
+        bring_up(monkeypatch, 1, capsys, set_code=7001, mode="gantry")  # a service code: the robot refused
     with pytest.raises(SystemExit, match="GetFsmId failed with 3102"):
         bring_up(monkeypatch, 500, capsys, get_code=3102)
     with pytest.raises(SystemExit, match="did not enter FSM 200"):
-        loco_stuck = Loco(4)
+        loco_stuck = Loco(1)
         loco_stuck.SetFsmId = lambda fsm: 0                             # accepted but never happens
         monkeypatch.setattr("tests.envs.test_robot.Loco", lambda *a: loco_stuck)
-        bring_up(monkeypatch, 4, capsys)
+        bring_up(monkeypatch, 1, capsys, mode="gantry")
 
 
-def test_a_run_enters_200_from_any_standing_fsm_and_stays_there(monkeypatch, capsys):
-    for fsm in (4, 500, 501):
+def test_a_run_stays_in_the_fsm_it_finds_and_warns_outside_200(monkeypatch, capsys):
+    for fsm in (4, 500, 501, 801, 802):
         env, loco, out = bring_up(monkeypatch, fsm, capsys)
-        assert loco.calls == [("SetFsmId", 200)] and "entering control mode (FSM 200" in out and "stays there" in out
+        assert loco.calls == [] and f"control mode in FSM {fsm}" in out and "verified only in FSM 200" in out
+        env.arm.state = None
         env._teardown_robot()
-        assert loco.calls == [("SetFsmId", 200)] and "fsm: 200 (main operation); done" in capsys.readouterr().out
-
-
+        assert loco.calls == [] and f"fsm: {fsm} (" in capsys.readouterr().out
 def test_standing_mode_refuses_a_robot_that_is_not_standing(monkeypatch, capsys):
     with pytest.raises(SystemExit, match="1 \\(damp\\)"):
         bring_up(monkeypatch, 1, capsys)
@@ -201,8 +200,8 @@ def test_teardown_never_raises(monkeypatch, capsys):
 
 
 def test_verbose_prints_every_call_and_the_health_line(monkeypatch, capsys):
-    env, loco, out = bring_up(monkeypatch, 4, capsys, verbose=True)
-    assert "sdk " in out and "LocoClient.GetFsmId() -> 0 (ok)" in out and "fsm at start: 4 (locked stand)" in out
+    env, loco, out = bring_up(monkeypatch, 1, capsys, verbose=True, mode="gantry")
+    assert "sdk " in out and "LocoClient.GetFsmId() -> 0 (ok)" in out and "fsm at start: 1 (damp)" in out
     assert "SetFsmId(200) -> 0 (ok)" in out and "dds: ChannelFactoryInitialize" in out
     env.arm, env.monitor, env.base = Arm(), None, None
     env.overruns, env.ticks = 0, 0
