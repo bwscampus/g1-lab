@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from g1 import session as session_module
+from g1.console import parse
 from g1.envs.moves import Moves, inventory
 from g1.microphone import Microphone
 from g1.session import (Command, rest_fsm, RoutineInfo, ScriptedUI, Session, TaskInfo, routine_menu, system_prompt, talk_menu,
@@ -49,12 +50,16 @@ class Audio:
 
 
 class Runner:
-    """Records each routine or task run (kind, name, mode, settings) and returns a result."""
+    """Records each routine or task run (kind, name, mode, settings; a task's slots in ``fills``) and
+    returns a result."""
     def __init__(self, result=None, raises=None, check=None):
         self.runs, self.result, self.raises, self.check = [], result or {"ok": True, "outcome": "success"}, raises, check
+        self.fills = []
 
-    def __call__(self, kind, name, mode, settings):
+    def __call__(self, kind, name, mode, settings, fill=None):
         self.runs.append((kind, name, mode, settings))
+        if fill:
+            self.fills.append(fill)
         if self.check:
             self.check()
         if self.raises:
@@ -77,7 +82,7 @@ def make(*replies, fsm=None, mode="standing", runner=None, ui=None, sleep_hook=N
     moves = Moves(loco, Arm(), sleep=sleep, now=now, confirm=lambda q: True)
     mic = Microphone(now)
     menu = talk_menu(inventory(loco, Arm(), []))
-    s = Session(mic, Audio(), moves, Model(*replies), menu, mode=mode, routines=dict(ROUTINES), tasks=dict(TASKS),
+    s = Session(mic, Audio(), moves, Model(*replies), menu, mode=mode, routines=dict(ROUTINES), tasks=kw.pop("tasks", dict(TASKS)),
                 runner=runner if runner is not None else Runner(), ui=ui or ScriptedUI(), sleep=sleep, now=now, **kw)
     s._refresh_fsm()                                              # as run() does first
     return s, mic, clock
@@ -103,7 +108,8 @@ def test_the_menus_offer_the_routines_and_tasks_that_exist():
     from g1.routines import routine_names
     routines, tasks = routine_menu(), task_menu()
     assert set(routines) == set(routine_names()) and "T" in routines["tpose"].notes
-    assert {"find_the_mug", "point_at_the_laptop"} <= set(tasks) and tasks["point_at_what_you_hear"].hears
+    assert set(tasks) == {"point_at", "point_at_the_laptop"}                       # the rest say "session": false
+    assert tasks["point_at"].instruction.startswith("find the {object}") and "object" in tasks["point_at"].fill
 
 
 def test_the_model_is_offered_what_the_mode_allows():
@@ -468,3 +474,74 @@ def test_a_routine_runs_for_real_on_the_twin_through_the_session(tmp_path):
     s, _, _ = make(runner=runner)
     s.handle(Command("routine", ["tpose"]))
     assert s.audio.said == ["Done."] and envs[0].actions[-1].weight == pytest.approx(0.0, abs=1e-3)
+
+
+# -- a task's slot (point at X) ---------------------------------------------------------------------
+
+POINT = TaskInfo("find the {object} and point at it", fill={"object": {"note": "what to point at", "default": "laptop"}})
+
+
+def test_the_model_fills_a_tasks_slot_and_the_question_and_runner_get_it(capsys):
+    runner, ui = Runner(), ScriptedUI(True)
+    s, _, _ = make(("run_task", {"name": "point_at", "object": "water bottle", "say": "Looking for it!"}),
+                   ("run_task", {"name": "point_at"}), runner=runner, ui=ui, tasks={**TASKS, "point_at": POINT})
+    run_task = next(t for t in s.model_tools() if t["function"]["name"] == "run_task")["function"]
+    assert "what to point at" in run_task["parameters"]["properties"]["object"]["description"]
+    s.chat("point at the water bottle")
+    assert "find the water bottle and point at it" in ui.asked[0]
+    assert runner.runs[0][:3] == ("task", "point_at", "standing") and runner.fills == [{"object": "water bottle"}]
+    assert "[task point_at (water bottle): success]" in [h["content"] for h in s.history]
+    s.chat("point at it")                                           # no object: asked again, nothing runs
+    assert len(runner.runs) == 1 and s.audio.said[-1] == "What should I point at? Please tell me again."
+
+
+def test_a_typed_task_takes_the_rest_of_the_line_as_its_slot(capsys):
+    runner = Runner()
+    s, _, _ = make(runner=runner, tasks={**TASKS, "point_at": POINT})
+    s.handle(parse("/task point_at the teacher's {red} cup"))
+    s.handle(parse("/task point_at"))
+    assert runner.fills == [{"object": "the teacher's red cup"}] and "needs its object" in capsys.readouterr().out
+
+
+# -- look_up ---------------------------------------------------------------------------------------
+
+class Searching(Model):
+    provider = "openrouter"
+
+    def __init__(self, *replies, found="It is sunny and 18 degrees in Boston today.", wait=None):
+        super().__init__(*replies)
+        self.found, self.wait, self.searched = found, wait, []
+
+    def search(self, query, timeout=None):
+        self.searched.append(query)
+        if self.wait is not None:
+            self.wait.wait(5)
+        if isinstance(self.found, Exception):
+            raise self.found
+        return self.found
+
+
+def test_look_up_says_its_line_searches_then_answers_from_the_results():
+    s, _, _ = make()
+    s.model = Searching(("look_up", {"query": "Boston weather today", "say": "Let me check."}),
+                        ("say", {"text": "It is sunny and eighteen degrees."}))
+    assert "look_up" in [t["function"]["name"] for t in s.model_tools()]
+    s.chat("what's the weather in Boston")
+    assert s.model.searched == ["Boston weather today"]
+    assert s.audio.said == ["Let me check.", "It is sunny and eighteen degrees."] and s.counts["looked_up"] == 1
+    second = s.model.asked[1]
+    assert "sunny and 18 degrees" in second[-1]["content"] and "look_up" not in s.model.tools[1]   # one look-up a turn
+
+
+def test_look_up_is_bounded_said_when_it_fails_and_only_offered_with_search(monkeypatch):
+    import threading
+    s, _, _ = make()
+    assert "look_up" not in [t["function"]["name"] for t in s.model_tools()]   # a model without search
+    hold = threading.Event()
+    monkeypatch.setitem(session_module.limits.LIMITS["look_up_timeout_s"], "value", 0.05)
+    s.model = Searching(("look_up", {"query": "news"}), wait=hold)
+    s.chat("any news today")
+    hold.set()
+    s.model = Searching(("look_up", {"query": "news"}), found=RuntimeError("quota"))
+    s.chat("any news today")
+    assert s.audio.said == ["Sorry, I could not look that up right now."] * 2 and len(s.model.asked) == 1

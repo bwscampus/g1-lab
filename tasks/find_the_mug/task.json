@@ -1,6 +1,7 @@
 {
   "instruction": "find the mug and stop in front of it",
   "modes": ["standing"],
+  "session": false,
   "scene": "room",
   "objects": ["mug@1.5,1.2"],
   "safety_notes": [],

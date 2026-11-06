@@ -125,8 +125,9 @@ g1/agent/          agent (Agent, build_agent), decider (AgentContext/AgentTurn/D
                    VLMDecider), episode (EpisodeWriter, load_episode), task (find, load_task, run_config, code_snapshot, record_result),
                    demos (promote, load_demos, render: in-context demos, host truth never copied)
 suites/            stationary/ (point_at_the_laptop x 10), point_on_request/ (point_at_what_you_hear x 5); runs/ inside are git-ignored
-tasks/             find_the_mug/, point_at_the_laptop/, find_and_point_at_the_laptop/, sit_in_the_chair/,
-                   point_at_what_you_hear/ (spoken requests, hears); runs and results.jsonl inside are git-ignored, demos/ is not
+tasks/             point_at/ (point at {object}: g1 start fills it), point_at_the_laptop/, and not in g1 start ("session":
+                   false): find_the_mug/, find_and_point_at_the_laptop/, sit_in_the_chair/, point_at_what_you_hear/
+                   (spoken requests, hears); runs and results.jsonl inside are git-ignored, demos/ is not
 routines/          tpose/, sixseven/ (routine.json: upper-body keyframes); runs/ inside are git-ignored
 docs/              architecture, writing-a-tool, writing-a-task, writing-a-routine, running-on-the-robot, vision-model
 tests/             mirrors g1/ (core, tools, envs, agent, twin) + test_camera, test_cli, test_vlm; doubles.py (RedBallDecider,
@@ -219,6 +220,14 @@ root via `pythonpath`. `limits.ROOT` is the repo root (configs/, tasks/, assets/
 - **The view never touches the tick.** `--view` (live runs) serves the env's camera slot (`Env.source()`)
   from its own threads; `cli.run` starts it after `env.reset()` and stops it inside `with env`. The robot
   takes one WebRTC client, so the live picture must come out of our process.
+- **A task may take a slot.** task.json `fill` declares each `{name}` its instruction names (a note and the
+  default `g1 run` uses, which the twin's `success` is scored on); `load_task(d, fill=...)` fills and cleans them
+  (`task_fill_max_chars`). In g1 start the model fills them through `run_task`'s arguments (`/task point_at water
+  bottle` when typed); a task with an unfilled slot is refused and asked again. `"session": false` keeps a task out
+  of g1 start (not yet tried on the robot); `g1 run` and `g1 bench` still run it.
+- **Only g1 start's chat searches the web.** Its `look_up(query)` tool runs `VLMClient.search` (OpenRouter's web
+  plugin, `web.max_results` in configs/model.json, bounded by `look_up_timeout_s`), then asks the model again with
+  the results and without `look_up`. A task's model never searches: it knows only what the robot senses.
 - **Hugging Face or OpenRouter** for the model, switched by `provider` in `configs/model.json` (`HF_TOKEN`,
   `VLM_BASE_URL` | `OPENROUTER_API_KEY`; a model id for each in `models`; `g1/vlm.py:PROVIDERS`, `load_model`); no other providers,
   no Anthropic SDK. Fakes are test doubles only (`tests/doubles.py`); `search` always uses the real model.

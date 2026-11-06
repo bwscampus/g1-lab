@@ -16,6 +16,7 @@ from g1.session import Command, RoutineInfo, Session, TaskInfo, rest_fsm
     ("/speaker off", "speaker", ["off"], ""), ("/speaker ON", "speaker", ["on"], ""),
     ("/routine tpose", "routine", ["tpose"], ""),
     ("/task find_the_mug", "task", ["find_the_mug"], ""),
+    ("/task point_at the teacher's water bottle", "task", ["point_at"], "the teacher's water bottle"),
     ("/move greet with both hands", "move", ["greet with both hands"], ""),
     ("/move 516", "move", ["516"], ""),
     ("/walk 0.3", "walk", ["0.3"], ""),

@@ -44,7 +44,7 @@ HISTORY = Path.home() / ".g1_history"
 COMMANDS: dict[str, tuple[str, str]] = {
     "skills": ("/skills", "the built-ins, routines and tasks this mode allows"),
     "routine": ("/routine NAME", "play a routine now"),
-    "task": ("/task NAME", "run a task now"),
+    "task": ("/task NAME [WHAT]", "run a task now (WHAT fills its slot: /task point_at water bottle)"),
     "move": ("/move ID|NAME", "play a built-in move now (standing)"),
     "walk": ("/walk FWD [SIDE [TURN]]", "a short built-in walk: metres forward, metres left, degrees left (standing)"),
     "say": ("/say TEXT", "the robot says it"),
@@ -84,11 +84,16 @@ def parse(line: str) -> Command:
         if not rest:
             raise ParseError(f"usage: {usage}")
         return Command(name, text=rest)
+    if name == "task":                             # the rest of the line is the task's slot, as typed
+        task, _, what = rest.partition(" ")
+        if not task:
+            raise ParseError(f"usage: {usage}")
+        return Command(name, [task], text=what.strip())
     try:
         args = shlex.split(rest)
     except ValueError as e:
         raise ParseError(f"{usage}: {e}") from None
-    if name in ("routine", "task"):
+    if name == "routine":
         if len(args) != 1:
             raise ParseError(f"usage: {usage}")
     elif name == "move":

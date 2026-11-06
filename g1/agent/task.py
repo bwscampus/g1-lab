@@ -15,6 +15,7 @@ A fixed motion with no model is a routine (routines/, g1/routines.py), not a tas
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -88,9 +89,32 @@ SCHEMA = {
                    "description": "sim only: a person speaking to the twin, at_s after the program takes over, heard "
                                   "as the robot's speech recognition would publish it. The model hears it; it never "
                                   "sees the script"},
+        "fill": {"type": "object", "default": {}, "additionalProperties": {
+                     "type": "object", "additionalProperties": False, "required": ["note", "default"],
+                     "properties": {"note": {"type": "string", "minLength": 1}, "default": {"type": "string", "minLength": 1}}},
+                 "propertyNames": {"pattern": "^[a-z_]+$"},
+                 "description": "slots the instruction names as {name}, filled when the task is started (g1 start: "
+                                "\"point at the water bottle\" fills object); each with a note for whoever fills it "
+                                "and the default g1 run uses (the twin's success is scored on the default)"},
+        "session": {"type": "boolean", "default": True,
+                    "description": "offered in g1 start (false: g1 run and g1 bench only, e.g. not yet tried on the robot)"},
         "notes": {"type": "string", "default": "", "description": "for people; the model never sees it"},
     },
 }
+
+_SLOT = re.compile(r"\{([a-z_]+)\}")
+
+
+def clean_fill(value: Any) -> str:
+    """A slot's value as a person or the model gave it: one line, no braces, at most task_fill_max_chars."""
+    text = " ".join(str(value or "").replace("{", " ").replace("}", " ").split())
+    return text[:int(limits.get("task_fill_max_chars"))].strip()
+
+
+def fill_instruction(template: str, slots: dict, given: Optional[dict] = None) -> tuple[str, dict]:
+    """``template`` with each ``{slot}`` replaced by its cleaned value from ``given``, else its default."""
+    values = {k: clean_fill((given or {}).get(k)) or spec["default"] for k, spec in slots.items()}
+    return _SLOT.sub(lambda m: values.get(m.group(1), m.group(0)), template), values
 
 
 def find(name_or_dir: str | Path) -> Path:
@@ -104,8 +128,9 @@ def find(name_or_dir: str | Path) -> Path:
     raise ValueError(f"no task {str(name_or_dir)!r}; tasks: {', '.join(known)}")
 
 
-def load_task(directory: Path | str) -> dict:
-    """``task.json`` validated and defaulted."""
+def load_task(directory: Path | str, fill: Optional[dict] = None) -> dict:
+    """``task.json`` validated and defaulted, its instruction's slots filled from ``fill`` (else their
+    defaults); ``task["template"]`` keeps the instruction as written."""
     d = Path(directory)
     path = d / "task.json"
     try:
@@ -132,6 +157,13 @@ def load_task(directory: Path | str) -> dict:
         if r["voice"] >= len(task["voices"]):
             raise ValueError(f"{path}: success.requests[{i}]: voice {r['voice']}, but there are "
                              f"{len(task['voices'])} voices")
+    named = set(_SLOT.findall(task["instruction"]))
+    if named - set(task["fill"]) or set(task["fill"]) - named:
+        raise ValueError(f"{path}: fill: the instruction's slots ({', '.join(sorted(named)) or 'none'}) and fill's "
+                         f"({', '.join(sorted(task['fill'])) or 'none'}) must be the same")
+    task["template"] = task["instruction"]
+    if task["fill"]:
+        task["instruction"], task["filled"] = fill_instruction(task["instruction"], task["fill"], fill)
     task["dir"] = d
     task["name"] = d.name
     if task["camera_size"]:

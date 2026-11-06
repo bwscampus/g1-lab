@@ -280,6 +280,9 @@ thing said or typed the model (`configs/model.json`) makes one choice:
   `talk_side_max_m` in walk mode (501, `walk_fsm`). It cannot see while it talks: it walks only when
   asked, and the cap is the only thing between a request and a wall;
 * `play_routine`: a **routine** from `routines/`; `run_task`: a **task** from `tasks/`, with the camera;
+* `look_up`: a web search (OpenRouter only) for facts it does not know or anything recent: it says a short line
+  ("Let me check."), searches (`web.max_results` results, at most `look_up_timeout_s`), then answers from the
+  results. Only the chat searches; a task never does;
 * `ignore`: not meant for it.
 
 It only chooses: it never writes a routine or a task. A routine or task **the model** chooses is
@@ -290,7 +293,7 @@ directly, without the model and without the question:
 |---|---|
 | `do a T-pose` (any plain text) | chat: as if said |
 | `/skills` | the built-ins, routines and tasks this mode allows (and the mic: a task that hears needs it on); typing one it leaves out says why it is refused |
-| `/routine NAME` · `/task NAME` | run one now |
+| `/routine NAME` · `/task NAME [WHAT]` | run one now; WHAT fills the task's slot (`/task point_at water bottle`). The session shows only tasks without `"session": false`: `point_at` and `point_at_the_laptop` |
 | `/move ID\|NAME` · `/walk FWD [SIDE [TURN]]` · `/say TEXT` | a built-in now; the robot says it |
 | `/mode gantry\|standing` | switch mode: it asks you to confirm it is hanging / standing (standing also needs a standing FSM), then switches to the new mode's resting FSM (table above). `/mode` with the current mode brings it back to its resting FSM |
 | `/mic on\|off` | handle what the robot hears like chat, or ignore it (a task that hears needs it on) |

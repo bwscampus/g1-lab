@@ -198,6 +198,8 @@ def test_a_bad_model_file_is_refused_with_the_name(tmp_path):
     broken(lambda d: d.update(max_tokns=1), "needs exactly")
     broken(lambda d: d.update(routing=["baseten"]), "routing must be an object")
     broken(lambda d: d["agent"].pop("step_timeout_s"), "agent needs exactly")
+    broken(lambda d: d.update(web={"max_results": 0}), "web needs exactly max_results")
+    broken(lambda d: d.pop("web"), "needs exactly")
     broken(lambda d: d["agent"].update(max_decisions=0), "agent.max_decisions must be a positive whole number")
     broken(lambda d: d["agent"].update(max_decisions=2.5), "agent.max_decisions must be a positive whole number")
     broken(lambda d: d["agent"].update(retry_delay_base_s=10.0), "must not exceed agent.retry_delay_cap_s")
@@ -242,3 +244,19 @@ def test_max_tokens_null_sends_no_limit():
     c.max_tokens = 500
     c.complete([], tools=[])
     assert calls[1]["max_tokens"] == 500
+
+
+def test_search_asks_openrouter_with_the_web_plugin_and_no_tools():
+    sent = []
+
+    def transport(url, headers, body, timeout):
+        sent.append((body, timeout))
+        return iter([json.dumps({"choices": [{"delta": {"content": "Sunny and\n 18 degrees."}}]}),
+                     json.dumps({"choices": [{"delta": {}, "finish_reason": "stop"}]}), "[DONE]"])
+    c = VLMClient("m", "k", provider="openrouter", transport=transport)
+    assert c.search("Boston weather", timeout=7) == "Sunny and 18 degrees."
+    body, timeout = sent[0]
+    assert body["plugins"] == [{"id": "web", "max_results": vlm.WEB["max_results"]}] and "tools" not in body
+    assert body["messages"][-1] == {"role": "user", "content": "Boston weather"} and timeout == 7 and c.timeout != 7
+    with pytest.raises(NotImplementedError):
+        VLMClient("m", "k", provider="huggingface", transport=transport).search("x")

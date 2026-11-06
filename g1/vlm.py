@@ -43,7 +43,7 @@ PROVIDERS = {
 }
 EFFORTS = ("none", "minimal", "low", "medium", "high", "default")
 MODEL_PATH = limits.ROOT / "configs" / "model.json"
-KEYS = ("version", "provider", "models", "routing", "reasoning_effort", "max_tokens", "temperature", "agent", "notes")
+KEYS = ("version", "provider", "models", "routing", "reasoning_effort", "max_tokens", "temperature", "agent", "web", "notes")
 # the agent loop's settings (g1/agent/): whole numbers are counts, the rest seconds or sizes; all > 0 but jitter
 AGENT = {"max_decisions": int, "step_timeout_s": float, "request_timeout_s": float, "retry_max": int,
          "retry_delay_base_s": float, "retry_delay_cap_s": float, "retry_jitter_s": float, "recovery_timeout_s": float,
@@ -95,6 +95,10 @@ def load_model(path: Path | str | None = None) -> dict:
         raise ValueError(f"model file {p}: agent.retry_delay_base_s must not exceed agent.retry_delay_cap_s")
     if a["jpeg_quality"] > 100:
         raise ValueError(f"model file {p}: agent.jpeg_quality must be 1-100")
+    w = m["web"]
+    if not isinstance(w, dict) or sorted(w) != ["max_results"] or isinstance(w["max_results"], bool) \
+            or not isinstance(w["max_results"], int) or not 1 <= w["max_results"] <= 10:
+        raise ValueError(f"model file {p}: web needs exactly max_results, a whole number 1-10")
     return m
 
 
@@ -113,6 +117,7 @@ ROUTING = MODEL["routing"]
 AGENT_SETTINGS = MODEL["agent"]           # the agent loop's budgets, timeouts, retries and image sizes
 # Settings that moved from .env to configs/model.json: refused if still set, so none is silently ignored.
 MOVED = {"VLM_MODEL": "models", "VLM_MAX_TOKENS": "max_tokens", "VLM_REASONING_EFFORT": "reasoning_effort"}
+WEB = MODEL["web"]                        # g1 start's look_up: OpenRouter's web search (results per search)
 IMAGE_WIDTH = AGENT_SETTINGS["image_width_px"]
 JPEG_QUALITY = AGENT_SETTINGS["jpeg_quality"]
 
@@ -284,6 +289,10 @@ class ToolCall:
     text: str = ""
 
 
+SEARCH_PROMPT = ("Answer the question from the web search results in two or three short, plain sentences that can be "
+                 "said out loud: no lists, links, citations or markdown. If the results do not answer it, say so.")
+
+
 class VLMClient:
     """One chat completion at a time against the provider's endpoint, answered with exactly
     one tool call (``tools``, ``tool_choice: required``, one call at a time): the model picks a
@@ -364,7 +373,40 @@ class VLMClient:
                     continue
                 raise
 
+    def search(self, query: str, *, max_results: int = WEB["max_results"], timeout: Optional[float] = None) -> str:
+        """A short answer to ``query`` from the web (OpenRouter's web plugin: it searches, then the
+        model answers from the results). No tools; ``NotImplementedError`` on other providers. For
+        g1 start's ``look_up`` only: a task's model never searches."""
+        if self.provider != "openrouter":
+            raise NotImplementedError("web search needs provider openrouter (configs/model.json)")
+        body = {"model": self.model, "stream": self.stream, "temperature": TEMPERATURE,
+                "plugins": [{"id": "web", "max_results": int(max_results)}],
+                "messages": [{"role": "system", "content": SEARCH_PROMPT}, {"role": "user", "content": query}]}
+        if self.routing:
+            body["provider"] = self.routing
+        if self.reasoning_effort is not None:
+            body["reasoning_effort"] = self.reasoning_effort
+        saved, self.timeout = self.timeout, (self.timeout if timeout is None else timeout)
+        try:
+            text, _, _ = self._stream(body)
+        finally:
+            self.timeout = saved
+        return " ".join(text.split())
+
     def _send(self, body: dict) -> ToolCall:
+        text, calls, finish = self._stream(body)
+        if finish == "length":
+            # A reasoning model thinks first and the thinking counts against max_tokens:
+            # a small budget is spent before the answer starts, and the reply comes back empty.
+            details = (self.last_usage or {}).get("completion_tokens_details") or {}
+            raise TruncatedReply(body.get("max_tokens"), details.get("reasoning_tokens"), text)
+        if len(calls) != 1:
+            raise NoToolCall(text, len(calls), [c["name"] for c in calls.values()])
+        call = next(iter(calls.values()))
+        return ToolCall(call["id"] or f"call_{self.calls}", call["name"], call["arguments"] or "{}", text)
+
+    def _stream(self, body: dict) -> tuple[str, dict, Optional[str]]:
+        """POST ``body``; the reply's text, its tool calls (joined by index) and finish reason."""
         headers = {"Content-Type": "application/json"}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
@@ -408,13 +450,4 @@ class VLMClient:
                     entry["arguments"] += args if isinstance(args, str) else (json.dumps(args) if args else "")
         finally:
             self.last_elapsed = time.monotonic() - t0
-        text = "".join(parts)
-        if finish == "length":
-            # A reasoning model thinks first and the thinking counts against max_tokens:
-            # a small budget is spent before the answer starts, and the reply comes back empty.
-            details = (self.last_usage or {}).get("completion_tokens_details") or {}
-            raise TruncatedReply(body.get("max_tokens"), details.get("reasoning_tokens"), text)
-        if len(calls) != 1:
-            raise NoToolCall(text, len(calls), [c["name"] for c in calls.values()])
-        call = next(iter(calls.values()))
-        return ToolCall(call["id"] or f"call_{self.calls}", call["name"], call["arguments"] or "{}", text)
+        return "".join(parts), calls, finish

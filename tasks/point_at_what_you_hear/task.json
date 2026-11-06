@@ -1,6 +1,7 @@
 {
   "instruction": "Listen for requests. When someone asks you to point at something, find it by turning your waist, point at it with your right arm, then lower your arm and listen for the next request. If you cannot find it or did not understand, say so and keep listening. When you are told to stop (for example \"stop\" or \"that's all\"), lower your arm if it is raised and finish with done.",
   "modes": ["gantry", "standing"],
+  "session": false,
   "scene": "room",
   "objects": ["mustard@2.0,-1.17,0.77", "mug@1.75,-1.36,0.77", "cracker_box@1.7,-1.55,0.77"],
   "start": [1.2, -0.95, 0],
