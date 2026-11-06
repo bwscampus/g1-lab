@@ -105,7 +105,7 @@ def test_the_menus_offer_the_routines_and_tasks_that_exist():
 def test_the_model_is_offered_what_the_mode_allows():
     s, _, _ = make()
     names = [t["function"]["name"] for t in s.model_tools()]
-    assert names == ["say", "move", "walk", "play_routine", "run_task", "ignore"]
+    assert names == ["say", "move", "walk", "play_routine", "run_task", "remember", "ignore"]
     g, _, _ = make(mode="gantry")
     tools_ = {t["function"]["name"]: t["function"] for t in g.model_tools()}
     assert "move" not in tools_ and "walk" not in tools_                           # hanging: no built-ins

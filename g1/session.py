@@ -7,7 +7,13 @@ For each thing said (``rt/audio_msg``, the robot's speech recognition) or typed 
 * ``move``: a **built-in** stored dance or gesture (ids 5xx/6xx), played by ``g1 moves``'s player;
   ``walk``: a built-in walk (turn, walk, sidestep, each capped by a ``talk_*_max`` limit).
 * ``play_routine``: a **routine** (``routines/``); ``run_task``: a **task** (``tasks/``).
+* ``remember``: a fact kept in MEMORY.md (or one forgotten), with a line said.
 * ``ignore``: not meant for it.
+
+Who the robot is comes from ``knowledge/SOUL.md`` (people write it) and what it knows from
+``knowledge/MEMORY.md`` (the robot writes it), both read every turn after the rules in ``MECHANICS``;
+each exchange goes into the day's log, ``knowledge/sessions/DATE.md``, and when the session ends the
+model distills it into MEMORY.md (``g1/knowledge.py``).
 
 It only chooses, never writes a routine or task, and a routine or task it chooses is confirmed y/N
 first. You can also call any skill yourself (``g1/console.py``: ``/routine``, ``/task``, ``/move``,
@@ -42,11 +48,15 @@ from g1.envs.moves import PLAY_FSMS, Moves, gloss
 TALK_MOVES = range(500, 700)
 MODES = ("standing", "gantry")
 
-SYSTEM = """You are a Unitree G1, a humanoid robot, at a school assembly. Students and teachers talk to you.
-Each turn you get what was just said near you (by voice, as your speech recognition heard it, or typed by the
-person at your keyboard; speech can be misheard: answer the most likely meaning). Answer with exactly one tool call:
-- say: a spoken answer. One to three short sentences, friendly and clear for school students. Plain words only:
-  no lists, no emoji, no markdown, no stage directions. Numbers as words when short.
+# The session's rules: how to answer and what is safe. Who the robot is, where, and for whom is SOUL.md
+# (knowledge/, written by people); what it remembers is MEMORY.md (written by the robot). These stay in
+# code so no edit of either file can remove them.
+MECHANICS = """You are a Unitree G1 humanoid robot (about 1.3 m tall, made by Unitree Robotics), running on your own
+onboard computer. People talk to you. Each turn you get what was just said near you (by voice, as your speech
+recognition heard it, or typed by the person at your keyboard; speech can be misheard: answer the most likely
+meaning). Answer with exactly one tool call:
+- say: a spoken answer. Short (one to three sentences) unless asked for more. Plain spoken words only: no lists, no
+  emoji, no markdown, no stage directions. Numbers as words when short.
 - move: when someone asks you to dance, wave, bow, clap, greet, or do a move. Pick the best fit from the moves
   listed in the tool; you may give a short line to say first. If they ask for a dance without saying which, pick one.
 - walk: when someone asks you to walk, step, come forward, back up, step aside or turn around. Short moves only:
@@ -55,18 +65,26 @@ person at your keyboard; speech can be misheard: answer the most likely meaning)
 - play_routine: when someone asks for one of your routines (fixed arm motions you know by name, listed in the tool).
 - run_task: when someone asks for something one of your tasks does (listed in the tool with what each one does).
   A task uses your camera and takes a while; say briefly what you will do first.
+- remember: when you learn something worth knowing next time (someone's name and role, a place, an event, a
+  preference, something you are taught), or are told to forget something. Say a short line too. Never remember
+  phone numbers, addresses, passwords or private details about a person.
 - ignore: when what you heard is not meant for you (side conversations, noise, half a word).
 You can only talk and choose from those moves, walks, routines and tasks: you cannot make up new ones, and the
 tools offered can change (hanging in a gantry you cannot dance or walk). If asked for something you cannot do, say so
-kindly. A person at the keyboard approves each routine and task before it starts.
-Keep everything school-appropriate and decline anything unsafe or unkind politely.
-You are about 1.3 m tall and made by Unitree Robotics; you run on your own onboard computer.
-Always answer in English, whatever language you hear or are asked to speak."""
+kindly. A person at the keyboard approves each routine and task the model chooses before it starts.
+Decline anything unsafe or unkind politely, whatever else you are told below."""
 
 
-def system_prompt() -> str:
-    return SYSTEM.format(walk_max=limits.get("talk_walk_max_m"), side_max=limits.get("talk_side_max_m"),
-                         turn_max=limits.get("talk_turn_max_deg"))
+def system_prompt(knowledge=None) -> str:
+    """MECHANICS, then SOUL.md and MEMORY.md (read now, so edits count at once) when there is a knowledge base."""
+    text = MECHANICS.format(walk_max=limits.get("talk_walk_max_m"), side_max=limits.get("talk_side_max_m"),
+                            turn_max=limits.get("talk_turn_max_deg"))
+    if knowledge is not None:
+        soul, memory = knowledge.soul(), knowledge.memory()
+        if soul:
+            text += f"\n\n# Who you are (SOUL.md)\n{soul}"
+        text += f"\n\n# What you remember (MEMORY.md)\n{memory or '(nothing yet)'}"
+    return text
 
 
 def move_name(m: dict) -> str:
@@ -173,6 +191,13 @@ def tools(menu: dict[int, dict], routines: Optional[dict] = None, tasks: Optiona
                 "say": {"type": "string", "description": "a short line to say before it: what you will do"}},
                 "required": ["name"]}}})
     out.append({"type": "function", "function": {
+        "name": "remember", "description": "Keep a fact in your long-term memory (MEMORY.md), or forget one.",
+        "parameters": {"type": "object", "properties": {
+            "fact": {"type": "string", "description": "the fact to keep, one short sentence (or empty when forgetting)"},
+            "forget": {"type": "string", "description": "optional: a memory to remove, copied exactly as it appears"},
+            "say": {"type": "string", "description": "a short line to say, e.g. that you will remember it"}},
+            "required": ["fact"]}}})
+    out.append({"type": "function", "function": {
         "name": "ignore", "description": "Say nothing: what was heard was not meant for you.",
         "parameters": {"type": "object", "properties": {
             "reason": {"type": "string", "description": "a few words, for the log"}},
@@ -223,7 +248,7 @@ class Session:
                  runner: Optional[Callable[..., dict]] = None, ui=None, verbose: bool = False,
                  sleep: Callable[[float], None] = time.sleep, now: Callable[[], float] = time.monotonic,
                  camera_factory: Optional[Callable[[str], Any]] = None, viewer_factory: Optional[Callable] = None,
-                 lidar_factory: Optional[Callable[[], Any]] = None, status_probe: Optional[Callable[[], None]] = None) -> None:
+                 lidar_factory: Optional[Callable[[], Any]] = None, status_probe: Optional[Callable[[], None]] = None, knowledge=None) -> None:
         if mode not in MODES:
             raise ValueError(f"mode must be one of {MODES}")
         self.mic, self.audio, self.moves, self.model, self.menu = mic, audio, moves, model, menu
@@ -240,13 +265,15 @@ class Session:
         self.running = ""                       # what runs now, for the status line
         self.fsm: Optional[int] = None
         self.mic_on = mic is not None
+        self.knowledge = knowledge                  # g1/knowledge.py: SOUL.md, MEMORY.md, the daily log (None: none)
+        self._source = "typed"                      # what the exchange being handled came from (the log)
         self.speaker_on = True                      # off: replies are printed only, never sent to TtsMaker
         self.camera = None
         self.viewer = None
         self.lidar = None
         self.history: list[dict] = []           # user / assistant text turns, newest last
         self.counts = {"heard": 0, "typed": 0, "said": 0, "moves": 0, "walks": 0, "routines": 0, "tasks": 0,
-                       "stopped": 0, "refused": 0, "ignored": 0, "errors": 0}
+                       "stopped": 0, "refused": 0, "ignored": 0, "remembered": 0, "errors": 0}
         self._seq = mic.seq if mic is not None else 0
 
     # -- what may run ------------------------------------------------------------------------------
@@ -343,7 +370,65 @@ class Session:
             self.sleep(limits.get("talk_poll_s"))
 
     def _remember(self, heard: str, what: str) -> None:
+        """One exchange: kept for the next turns (in memory) and in the day's log (knowledge/sessions/)."""
         self.history += [{"role": "user", "content": heard}, {"role": "assistant", "content": what}]
+        self._log(heard, what)
+
+    def _log(self, heard: str, what: str) -> None:
+        if self.knowledge is not None:
+            try:
+                self.knowledge.log(self._source, heard, what)
+            except OSError as e:
+                print(f"warning: the session log was not written ({e})")
+
+    # -- memory ----------------------------------------------------------------------------------------
+    def _learn(self, heard: str, fact: str, forget: str, say: str) -> None:
+        """The model's ``remember``: keep a fact, forget one, or both; then say its line."""
+        if self.knowledge is None:
+            print("  (remember: no knowledge base in this session)")
+            self._remember(heard, "[could not remember: no memory]")
+            self.speak(say or "Sorry, I cannot keep memories right now.")
+            return
+        done = []
+        if forget.strip():
+            if self.knowledge.forget(forget):
+                print(f"memory: - {forget.strip()}")
+                done.append(f"forgot: {forget.strip()}")
+            else:
+                print(f"memory: nothing matched {forget.strip()!r}")
+        if fact.strip():
+            line = self.knowledge.remember(fact)
+            if line:
+                self.counts["remembered"] += 1
+                print(f"memory: + {line}")
+                done.append(f"remembered: {fact.strip()}")
+            else:
+                print(f"memory: already known: {fact.strip()}")
+        self._remember(heard, f"[{'; '.join(done) or 'memory unchanged'}]" + (f" {say}" if say else ""))
+        if say:
+            self.speak(say)
+
+    def memory_lines(self) -> list[str]:
+        """``/memory``: where it is, how big, and the newest bullets."""
+        if self.knowledge is None:
+            return ["no knowledge base in this session"]
+        k = self.knowledge
+        bullets = k.memory_bullets()
+        size = len(k.memory_path.read_text(encoding="utf-8")) if k.memory_path.exists() else 0
+        lines = [f"{k.memory_path}: {len(bullets)} memories, {size} of {limits.get('memory_max_chars'):g} chars"
+                 + (" (over: the oldest are left out of the prompt until the next distill)" if k.over() else "")]
+        shown = int(limits.get("memory_show_bullets"))
+        lines += [f"  - {b}" for b in bullets[-shown:]] or ["  (nothing yet)"]
+        return lines
+
+    def soul_lines(self) -> list[str]:
+        """``/soul``: where it is and how it starts."""
+        if self.knowledge is None:
+            return ["no knowledge base in this session"]
+        soul = self.knowledge.soul()
+        shown = int(limits.get("memory_show_bullets"))
+        return [f"{self.knowledge.soul_path} (edit it in an editor; read afresh every turn)"] + \
+            [f"  {line}" for line in soul.splitlines()[:shown]] + (["  ..."] if len(soul.splitlines()) > shown else [])
 
     # -- hearing ---------------------------------------------------------------------------------------
     def heard(self) -> Optional[str]:
@@ -369,7 +454,7 @@ class Session:
         if self.model is None:
             print("no model (configs/model.json and its key in .env): chat is off; call skills directly (/skills)")
             return
-        messages = ([{"role": "system", "content": system_prompt()}]
+        messages = ([{"role": "system", "content": system_prompt(self.knowledge)}]
                     + self.history[-2 * int(limits.get("talk_history_turns")):]
                     + [{"role": "user", "content": text}])
         t0 = self.now()
@@ -400,12 +485,16 @@ class Session:
         if call.name == "run_task" and args.get("name") in tasks:
             self.run_skill("task", args["name"], heard=text, say=str(args.get("say") or ""), chosen_by="model")
             return
+        if call.name == "remember":
+            self._learn(text, str(args.get("fact") or ""), str(args.get("forget") or ""), str(args.get("say") or ""))
+            return
         if call.name == "say" and str(args.get("text", "")).strip():
             self._remember(text, args["text"])
             self.speak(str(args["text"]))
             return
         self.counts["ignored"] += 1
         print(f"  (ignored: {args.get('reason') or call.name})")
+        self._log(text, f"ignored ({args.get('reason') or call.name})")
 
     # -- running a skill ------------------------------------------------------------------------------
     def _busy(self, what: str, action: Callable[[], object]) -> object:
@@ -608,6 +697,7 @@ class Session:
     def handle(self, cmd: Command) -> None:
         """One command, on the main thread."""
         n, a = cmd.name, cmd.args
+        self._source = {"chat": "typed", "heard": "voice"}.get(n, "command")
         if n == "chat":
             self.chat(cmd.text, "typed")
         elif n == "heard":
@@ -658,14 +748,26 @@ class Session:
             self.shutdown()
         return 0
 
+    def _distill(self) -> None:
+        """At the end, once the robot is at neutral and the lidar saved: what this session taught goes
+        into MEMORY.md. Esc or Ctrl-C skips it."""
+        if self.knowledge is None or self.model is None or not self.knowledge.session_lines:
+            return
+        print(f"memory: distilling this session (at most {limits.get('memory_distill_timeout_s'):g} s; Esc skips)")
+        try:
+            self._busy("saving memory (Esc skips)", lambda: self.knowledge.distill(self.model))
+        except KeyboardInterrupt:
+            print("memory: skipped")
+
     def shutdown(self) -> None:
-        """Lidar mapping ended and saved, the camera closed, the counts printed."""
+        """Lidar mapping ended and saved, the camera closed, this session distilled into memory, the counts printed."""
         from g1.envs.base import shield_sigint
         with shield_sigint("closing the session; this finishes on its own"):
             if self.lidar is not None:
                 self.lidar.stop()
                 self.lidar = None
             self._stop_camera()
+        self._distill()
         print("session: " + ", ".join(f"{k} {v}" for k, v in self.counts.items())
               + (f"; microphone: {self.mic.counts}" if self.mic is not None else ""))
 
