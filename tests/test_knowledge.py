@@ -56,7 +56,7 @@ def test_the_prompt_is_the_rules_then_soul_then_memory_and_nothing_about_a_schoo
     text = system_prompt(kb)
     rules, soul, memory = text.index("exactly one tool call"), text.index("# Who you are"), text.index("# What you remember")
     assert rules < soul < memory and "I am Unit 7" in text and "- Alex runs the robotics club. (2026-11-06)" in text
-    assert "never toward people" in text and "Decline anything unsafe" in text   # the soul cannot remove the rules
+    assert "You cannot walk" in text and "Decline anything unsafe" in text       # the soul cannot remove the rules
     assert "# Who you are" not in system_prompt() and "(nothing yet)" in system_prompt(Knowledge(kb.root / "empty"))
 
 

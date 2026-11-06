@@ -6,7 +6,7 @@ import time
 import pytest
 
 from g1.console import COMMANDS, Console, ParseError, completions, help_lines, parse
-from g1.session import Command, RoutineInfo, Session, TaskInfo, rest_fsm
+from g1.session import Command, RoutineInfo, Session, TaskInfo
 
 
 # -- parsing -------------------------------------------------------------------------------------
@@ -19,10 +19,9 @@ from g1.session import Command, RoutineInfo, Session, TaskInfo, rest_fsm
     ("/task point_at the teacher's water bottle", "task", ["point_at"], "the teacher's water bottle"),
     ("/move greet with both hands", "move", ["greet with both hands"], ""),
     ("/move 516", "move", ["516"], ""),
-    ("/walk 0.3", "walk", ["0.3"], ""),
-    ("/walk 0.3 -0.1 45", "walk", ["0.3", "-0.1", "45"], ""),
     ("/say hello everyone", "say", [], "hello everyone"),
     ("/mode Gantry", "mode", ["gantry"], ""),
+    ("/fsm 200", "fsm", ["200"], ""),
     ("/mic off", "mic", ["off"], ""),
     ("/camera on", "camera", ["on"], ""),
     ("/lidar on", "lidar", ["on"], ""),
@@ -36,8 +35,8 @@ def test_every_command_parses(line, name, args, text):
 
 @pytest.mark.parametrize("line, match", [
     ("/fly", "unknown command /fly"), ("/routine", "usage: /routine NAME"), ("/routine a b", "usage"),
-    ("/walk", "usage: /walk"), ("/walk fast", "numbers"), ("/walk 1 2 3 4", "usage"), ("/mode sitting", "usage"),
-    ("/mic maybe", "usage"), ("/say", "usage"), ("/chat hi", "unknown command /chat"),
+    ("/walk 0.3", "unknown command /walk"), ("/mode sitting", "usage"),
+    ("/mic maybe", "usage"), ("/fsm walk", "a number"), ("/fsm", "usage"), ("/say", "usage"), ("/chat hi", "unknown command /chat"),
     ("/speaker maybe", "usage"), ("/skills now", "usage"), ("   ", "^$"),
 ])
 def test_a_bad_line_says_why(line, match):
@@ -58,7 +57,7 @@ def console(busy=False, **kw):  # kw: Session settings (mode=...)
                 routines={"tpose": RoutineInfo("arms out in a T"), "walkabout": RoutineInfo("a step", uses_base=True,
                                                                                          modes=("standing",))},
                 tasks={"find_it": TaskInfo("find it")}, runner=lambda *a: {"ok": True}, **kw)
-    s.fsm = rest_fsm(s.mode)                                        # resting where its mode rests
+    s.fsm = 200                                                     # main operation: both modes allow it
     if busy:
         s.busy.set()
     out, stops = [], []

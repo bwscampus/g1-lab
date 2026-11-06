@@ -43,7 +43,7 @@ def test_sim_runs_a_task_against_the_twin_and_stops_it():
 def test_sim_gantry_hangs_it_and_never_walks(tmp_path):
     r = g1("run", "tpose", "--sim", "--mode", "gantry")
     assert r.returncode == 0, r.stdout + r.stderr
-    assert "fsm: 4 (locked stand)" in r.stdout and "fsm: 1 (damp); done" in r.stdout and "FELL" not in r.stdout
+    assert "fsm: 4 (locked stand)" in r.stdout and "fsm: 200 (main operation); done" in r.stdout and "FELL" not in r.stdout
     walk = tmp_path / "routines" / "walk"
     walk.mkdir(parents=True)
     (walk / "routine.json").write_text(json.dumps({"modes": ["standing"], "tracks": {"base": [{"t0": 0.0, "t1": 1.5, "vx": 0.2}]}}))

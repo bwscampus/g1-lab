@@ -139,4 +139,4 @@ def test_the_session_offers_only_the_tasks_that_say_so():
     for d in (ROOT / "tasks").iterdir():
         if (d / "task.json").is_file():
             assert (d.name in shown) == load_task(d)["session"], d.name
-    assert shown == {"point_at", "point_at_the_laptop"}
+    assert shown == {"point_at"}

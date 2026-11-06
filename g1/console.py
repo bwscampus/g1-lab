@@ -8,9 +8,10 @@ call things directly:
 
     /skills                     the built-ins, routines and tasks this mode allows
     /routine NAME · /task NAME  run one now (no y/N: you asked for it)
-    /move ID|NAME · /walk FWD [SIDE [TURN]]   a built-in now (standing mode)
+    /move ID|NAME               a built-in move now (standing mode)
     /say TEXT                   the robot says it
-    /mode gantry|standing       switch mode (y/N), then to its resting FSM: gantry 200, standing 501
+    /mode gantry|standing       switch mode (y/N); never changes the FSM (gantry allows 0, 1, 4, 200; standing all but 0, 1)
+    /fsm ID                     switch the FSM now, if the mode allows it
     /mic on|off · /speaker on|off · /camera on|off · /lidar on|off
     /memory · /soul             what the robot remembers, who it is (knowledge/)
     /status · /stop · /help · /quit
@@ -46,15 +47,15 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "routine": ("/routine NAME", "play a routine now"),
     "task": ("/task NAME [WHAT]", "run a task now (WHAT fills its slot: /task point_at water bottle)"),
     "move": ("/move ID|NAME", "play a built-in move now (standing)"),
-    "walk": ("/walk FWD [SIDE [TURN]]", "a short built-in walk: metres forward, metres left, degrees left (standing)"),
     "say": ("/say TEXT", "the robot says it"),
-    "mode": ("/mode gantry|standing", "switch mode (y/N), then to its resting FSM: gantry 200, standing 501"),
+    "mode": ("/mode gantry|standing", "switch mode (y/N); never changes the FSM. gantry allows FSM 0, 1, 4, 200; standing all but 0, 1"),
     "mic": ("/mic on|off", "handle what the robot hears like chat, or ignore it"),
     "speaker": ("/speaker on|off", "say replies out loud, or only here (tasks' say too)"),
     "camera": ("/camera on|off", "the head camera, live at http://127.0.0.1:<view_port>; tasks use it"),
     "lidar": ("/lidar on|off", "SLAM mapping and its live view; off saves the map"),
     "memory": ("/memory", "what the robot remembers (knowledge/MEMORY.md, the newest)"),
     "soul": ("/soul", "who the robot is (knowledge/SOUL.md; edit it in an editor)"),
+    "fsm": ("/fsm ID", "switch the robot to FSM ID now (SetFsmId; refused if the mode blocks it; y/N for damp, sit, stand-up)"),
     "status": ("/status", "the link, the FSM and the battery (read-only)"),
     "stop": ("/stop", "stop what the robot is doing (Esc)"),
     "help": ("/help", "this list"),
@@ -100,13 +101,9 @@ def parse(line: str) -> Command:
         if not args:
             raise ParseError(f"usage: {usage}")
         args = [" ".join(args)]
-    elif name == "walk":
-        if not 1 <= len(args) <= 3:
-            raise ParseError(f"usage: {usage}")
-        try:
-            [float(a) for a in args]
-        except ValueError:
-            raise ParseError(f"usage: {usage} (numbers)") from None
+    elif name == "fsm":
+        if len(args) != 1 or not args[0].isdigit():
+            raise ParseError(f"usage: {usage} (a number, e.g. /fsm 200)")
     elif name in CHOICES:
         if len(args) != 1 or args[0].lower() not in CHOICES[name]:
             raise ParseError(f"usage: {usage}")
@@ -192,8 +189,8 @@ class Console:
             self.stop()
         elif cmd.name == "quit":
             self.request_quit("/quit")
-        elif cmd.name == "mode" and busy:
-            self.out("a skill is running: Esc to stop it first, then /mode")
+        elif cmd.name in ("mode", "fsm") and busy:
+            self.out(f"a skill is running: Esc to stop it first, then /{cmd.name}")
         else:
             if busy:
                 self.out(f"queued: /{cmd.name} runs when the current skill ends (Esc stops it)")
@@ -372,9 +369,9 @@ def start_main(argv: list[str]) -> int:
     load_dotenv()
     p = argparse.ArgumentParser(prog="g1 start", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--mode", choices=MODES, required=True,
-                   help="standing: on its own feet, we command the legs (built-ins, walks); rests in walk mode (501). "
-                        "gantry: hanging, the legs never commanded; rests in 200, damped at quit. /mode switches later "
-                        "(after a y/N, to the new mode's resting FSM)")
+                   help="standing: on its own feet, we command the legs (built-in moves); FSM 0 and 1 blocked. "
+                        "gantry: hanging, the legs never commanded; only FSM 0, 1, 4, 200. Both start with the bring-up "
+                        "0 -> 1 -> 4 -> 200 (y/N); /fsm ID switches the FSM, /mode the mode; neither mode changes the FSM")
     a = p.parse_args(argv)
     iface = os.environ.get("UNITREE_IFACE")
     if not iface:
@@ -433,7 +430,8 @@ def start_main(argv: list[str]) -> int:
         console.start()
         try:
             print(f"g1 start: {a.mode} mode; model {model.model if model else 'none'}; "
-                  f"{len(menu)} built-in moves, {len(session.routines)} routines, {len(session.tasks)} tasks. /help")
+                  f"{len(menu)} built-in moves, {len(session.routines)} routines, {len(session.tasks)} tasks. "
+                  "The mic is off: /mic on. /help")
             moves.confirm = lambda question: True    # the session asks (start, /mode); FSM switches follow its yes
             if session.start():
                 session.run()

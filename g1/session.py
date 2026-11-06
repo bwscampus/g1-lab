@@ -5,7 +5,6 @@ For each thing said (``rt/audio_msg``, the robot's speech recognition) or typed 
 
 * ``say``: an answer, spoken with ``TtsMaker``; no action.
 * ``move``: a **built-in** stored dance or gesture (ids 5xx/6xx), played by ``g1 moves``'s player;
-  ``walk``: a built-in walk (turn, walk, sidestep, each capped by a ``talk_*_max`` limit).
 * ``play_routine``: a **routine** (``routines/``); ``run_task``: a **task** (``tasks/``).
 * ``remember``: a fact kept in MEMORY.md (or one forgotten), with a line said.
 * ``ignore``: not meant for it.
@@ -17,18 +16,19 @@ model distills it into MEMORY.md (``g1/knowledge.py``).
 
 It only chooses, never writes a routine or task, and a routine or task it chooses is confirmed y/N
 first. You can also call any skill yourself (``g1/console.py``: ``/routine``, ``/task``, ``/move``,
-``/walk``, ``/say``), which runs without asking. Everything runs here, on the main thread, one event
+``/say``), which runs without asking. Everything runs here, on the main thread, one event
 at a time (``events``), so Ctrl-C, Esc and quitting all stop a skill the one way the safe returns are
 shielded on: SIGINT.
 
-The **mode** is who commands the legs. ``standing``: we do, through LocoClient (built-ins, walks; the
+The **mode** is who commands the legs. ``standing``: we do, through LocoClient (built-in moves; the
 routines and tasks whose ``modes`` list standing run in ``--mode standing``). ``gantry``: never (no
 built-ins, no base motion; only the routines and tasks listing gantry, the arms through arm_sdk while
-Unitree's controller holds the legs). Each mode has a **resting FSM** (``REST_FSM``: gantry 200,
-standing ``walk_fsm``, 501): the session brings the robot there at the start and on ``/mode`` (after
-a y/N), every skill starts there (a skill is refused anywhere else) and ends there (a run leaves the
-robot as it found it; a built-in move's 802 is taken back to 501 at once). Quitting a gantry session
-damps it (it hangs); quitting a standing one leaves it standing in 501 for the remote. The settings:
+Unitree's controller holds the legs). A mode never changes the FSM; it **blocks** FSMs (``MODE_FSMS``):
+gantry allows only 0, 1, 4 and 200, standing every FSM but 0 and 1. ``/fsm ID`` switches the FSM (a
+person decides) and is refused for one the mode blocks ("switch modes first"); ``/mode`` is refused
+while the robot is in an FSM the new mode blocks; a skill is refused in one. The one switch the session
+makes itself is the start's bring-up, in both modes: 0 -> 1 -> 4 -> 200 from wherever the robot is on
+that way (after a y/N). Quitting leaves the FSM as it is. The settings:
 the **mic** (speech handled like chat, or ignored), the **speaker** (replies said out loud, or only
 printed; tasks run here follow it too), the **camera** (opened once and served at
 ``view_port``; runs reuse it) and the **lidar** (a SLAM mapping session and its view, map saved when
@@ -46,19 +46,28 @@ from typing import Any, Callable, Optional
 
 from g1.core import limits
 from g1.envs import sdk
-from g1.envs.moves import PLAY_FSMS, Moves, fsm_path, gloss
+from g1.envs.moves import FSM_WARN, PLAY_FSMS, Moves, gloss
 
 # The moves the model may play: the gestures and dances (mimic ids 5xx, 6xx). Never the get-up and
 # lie-down motions (4xx) or the stance (101), whatever the robot lists.
 TALK_MOVES = range(500, 700)
 MODES = ("standing", "gantry")
-FSM_MAIN, FSM_DAMP = 200, 1
 
 
-def rest_fsm(mode: str) -> int:
-    """Where the robot waits between skills: gantry in main operation (200: the arms ready for arm_sdk,
-    the legs held by Unitree's controller, never commanded by us); standing in walk mode (walk_fsm)."""
-    return FSM_MAIN if mode == "gantry" else int(limits.get("walk_fsm"))
+GANTRY_FSMS = frozenset({0, 1, 4, 200})        # hanging: limp, locked stand, main operation
+STANDING_BLOCKED = frozenset({0, 1})            # on its feet: never zero torque or damp (it would fall)
+BRING_UP = (0, 1, 4, 200)                       # the start's bring-up, both modes
+MAIN_FSM = 200                                  # main operation: arm_sdk works; routines and tasks run (and stay) here
+
+
+def fsm_allowed(mode: str, fsm) -> bool:
+    """Whether ``mode`` lets the robot be in ``fsm`` (gantry: 0, 1, 4, 200; standing: all but 0, 1)."""
+    return fsm in GANTRY_FSMS if mode == "gantry" else fsm not in STANDING_BLOCKED
+
+
+def allowed_text(mode: str) -> str:
+    return "0, 1, 4 and 200" if mode == "gantry" else "any FSM but 0 and 1"
+
 
 # The session's rules: how to answer and what is safe. Who the robot is, where, and for whom is SOUL.md
 # (knowledge/, written by people); what it remembers is MEMORY.md (written by the robot). These stay in
@@ -71,9 +80,7 @@ meaning). Answer with exactly one tool call:
   emoji, no markdown, no stage directions. Numbers as words when short.
 - move: when someone asks you to dance, wave, bow, clap, greet, or do a move. Pick the best fit from the moves
   listed in the tool; you may give a short line to say first. If they ask for a dance without saying which, pick one.
-- walk: when someone asks you to walk, step, come forward, back up, step aside or turn around. Short moves only:
-  forward or back up to {walk_max:g} m, sideways up to {side_max:g} m, turning up to {turn_max:g} degrees. Say a short
-  warning first ("Stepping forward!"). You cannot see while you talk, so never walk unless asked, and never toward people.
+- You cannot walk: if asked to walk, step or turn around, say kindly that you stay where you are.
 - play_routine: when someone asks for one of your routines (fixed arm motions you know by name, listed in the tool).
 - run_task: when someone asks for something one of your tasks does (listed in the tool with what each one does).
   A task uses your camera and takes a while; say briefly what you will do first. A task that names a slot (point_at:
@@ -84,16 +91,15 @@ meaning). Answer with exactly one tool call:
   preference, something you are taught), or are told to forget something. Say a short line too. Never remember
   phone numbers, addresses, passwords or private details about a person.
 - ignore: when what you heard is not meant for you (side conversations, noise, half a word).
-You can only talk and choose from those moves, walks, routines and tasks: you cannot make up new ones, and the
-tools offered can change (hanging in a gantry you cannot dance or walk). If asked for something you cannot do, say so
+You can only talk and choose from those moves, routines and tasks: you cannot make up new ones, and the
+tools offered can change (hanging in a gantry you cannot dance). If asked for something you cannot do, say so
 kindly. A person at the keyboard approves each routine and task the model chooses before it starts.
 Decline anything unsafe or unkind politely, whatever else you are told below."""
 
 
 def system_prompt(knowledge=None) -> str:
     """MECHANICS, then SOUL.md and MEMORY.md (read now, so edits count at once) when there is a knowledge base."""
-    text = MECHANICS.format(walk_max=limits.get("talk_walk_max_m"), side_max=limits.get("talk_side_max_m"),
-                            turn_max=limits.get("talk_turn_max_deg"))
+    text = MECHANICS.format()
     if knowledge is not None:
         soul, memory = knowledge.soul(), knowledge.memory()
         if soul:
@@ -181,19 +187,7 @@ def tools(menu: dict[int, dict], routines: Optional[dict] = None, tasks: Optiona
                 "parameters": {"type": "object", "properties": {
                     "move_id": {"type": "integer", "enum": list(menu), "description": "the move's number"},
                     "say": {"type": "string", "description": "optional: a short line to say before the move"}},
-                    "required": ["move_id"]}}},
-            {"type": "function", "function": {
-                "name": "walk", "description": "Take a short walk: turn first, then walk forward or back, then sidestep. "
-                                               "Leave the parts you do not need at 0.",
-                "parameters": {"type": "object", "properties": {
-                    "turn_deg": {"type": "number", "minimum": -limits.get("talk_turn_max_deg"),
-                                 "maximum": limits.get("talk_turn_max_deg"), "description": "turn: positive left, negative right"},
-                    "forward_m": {"type": "number", "minimum": -limits.get("talk_walk_max_m"),
-                                  "maximum": limits.get("talk_walk_max_m"), "description": "walk: positive forward, negative back"},
-                    "side_m": {"type": "number", "minimum": -limits.get("talk_side_max_m"),
-                               "maximum": limits.get("talk_side_max_m"), "description": "sidestep: positive left, negative right"},
-                    "say": {"type": "string", "description": "a short warning to say before walking"}},
-                    "required": ["turn_deg", "forward_m", "side_m"]}}}]
+                    "required": ["move_id"]}}}]
     if routines:
         listing = "; ".join(f"{n} ({_notes(r)})" for n, r in routines.items())
         out.append({"type": "function", "function": {
@@ -263,17 +257,10 @@ def speech_pieces(text: str, size: int) -> list[str]:
     return pieces
 
 
-def _clamp(value, cap: float) -> float:
-    try:
-        return max(-cap, min(cap, float(value or 0.0)))
-    except (TypeError, ValueError):
-        return 0.0
-
-
 @dataclass
 class Command:
     """One thing to do, from the console (typed) or the session itself."""
-    name: str                      # chat | routine | task | move | walk | say | mode | mic | camera | lidar | status
+    name: str                      # chat | routine | task | move | say | fsm | mode | mic | camera | lidar | status
     args: list[str] = field(default_factory=list)
     text: str = ""                 # chat and say: the words
 
@@ -314,25 +301,24 @@ class Session:
         self.busy = threading.Event()
         self.running = ""                       # what runs now, for the status line
         self.fsm: Optional[int] = None
-        self.confirmed: Optional[str] = None      # the mode a person confirmed (hanging / on its feet): quit damps only a confirmed gantry
-        self.mic_on = mic is not None
+        self.mic_on = False                         # off at the start: /mic on handles what it hears like chat
         self.knowledge = knowledge                  # g1/knowledge.py: SOUL.md, MEMORY.md, the daily log (None: none)
         self._source = "typed"                      # what the exchange being handled came from (the log)
-        self.speaker_on = True                      # off: replies are printed only, never sent to TtsMaker
+        self.speaker_on = True                      # off: replies printed only, never sent to TtsMaker
         self.camera = None
         self.viewer = None
         self.lidar = None
         self.history: list[dict] = []           # user / assistant text turns, newest last
-        self.counts = {"heard": 0, "typed": 0, "said": 0, "moves": 0, "walks": 0, "routines": 0, "tasks": 0,
+        self.counts = {"heard": 0, "typed": 0, "said": 0, "moves": 0, "routines": 0, "tasks": 0,
                        "stopped": 0, "refused": 0, "ignored": 0, "remembered": 0, "looked_up": 0, "errors": 0}
         self._seq = mic.seq if mic is not None else 0
 
     # -- what may run ------------------------------------------------------------------------------
     def why_not(self, kind: str, name: str = "") -> Optional[str]:
         """Why ``kind name`` may not run now (None: it may)."""
-        if kind in ("move", "walk"):
+        if kind == "move":
             if self.mode != "standing":
-                return "built-ins (moves, walks) need standing mode: /mode standing"
+                return "built-in moves need standing mode: /mode standing"
             if kind == "move" and name and self.resolve_move(name) is None:
                 return f"no built-in move {name!r} (/skills lists them)"
         if kind == "routine":
@@ -349,17 +335,16 @@ class Session:
                 return f"{kind} {name} runs in {' and '.join(modes)} mode only: /mode {modes[0]}"
             if self.runner is None:
                 return "no runner for routines and tasks"
-        return self.off_rest()
+        return self.fsm_refusal(kind)
 
-    def off_rest(self) -> Optional[str]:
-        """Why no skill may start from the FSM the robot reports (None: it rests where its mode rests)."""
-        rest = rest_fsm(self.mode)
-        if self.fsm == rest:
-            return None
+    def fsm_refusal(self, kind: str) -> Optional[str]:
+        """Why no ``kind`` may start from the FSM the robot reports (None: it may)."""
         if self.fsm is None:
             return "the robot's FSM is unknown (no reply to GetFsmId): /status"
-        return (f"the robot is in FSM {sdk.fsm_name(self.fsm)}, not {self.mode} mode's resting FSM "
-                f"{sdk.fsm_name(rest)}: /mode {self.mode} brings it there")
+        here = sdk.fsm_name(self.fsm)
+        if not fsm_allowed(self.mode, self.fsm):
+            return f"the robot is in FSM {here}, which {self.mode} mode blocks ({allowed_text(self.mode)}): /fsm first"
+        return None
 
     def resolve_move(self, name: str) -> Optional[int]:
         """A built-in move by id or by (part of) its name."""
@@ -393,8 +378,7 @@ class Session:
         one it leaves out still says why it is refused."""
         groups = {
             "built-ins": [f"/move {mid}  {m['name']} ({m['duration']:.0f} s)" for mid, m in self.menu.items()
-                          if self.why_not("move", str(mid)) is None]
-                         + (["/walk FWD [SIDE [TURN]]  a short walk"] if self.why_not("walk") is None else []),
+                          if self.why_not("move", str(mid)) is None],
             "routines": [f"/routine {n}  {r.notes}" for n, r in self.routines.items() if self.why_not("routine", n) is None],
             "tasks": [f"/task {n}  {t.instruction}" for n, t in self.tasks.items() if self.why_not("task", n) is None],
         }
@@ -408,8 +392,7 @@ class Session:
     def status(self) -> str:
         parts = [self.mode]
         if self.fsm is not None:
-            rest = rest_fsm(self.mode)
-            parts.append(f"FSM {self.fsm}" + ("" if self.fsm == rest else f" (rests in {rest})"))
+            parts.append(f"FSM {self.fsm}" + ("" if fsm_allowed(self.mode, self.fsm) else f" (blocked in {self.mode})"))
         parts.append(f"mic {'on' if self.mic_on else 'off'}")
         parts.append(f"speaker {'on' if self.speaker_on else 'off'}")
         parts.append(f"camera {self.viewer.url if self.viewer is not None else 'off'}")
@@ -553,12 +536,6 @@ class Session:
         if name == "move" and self.mode == "standing" and int(args.get("move_id", -1)) in self.menu:
             self.run_skill("move", str(int(args["move_id"])), heard=text, say=str(args.get("say") or ""), chosen_by="model")
             return
-        if name == "walk" and self.mode == "standing":
-            amounts = {k: _clamp(args.get(k), limits.get(cap)) for k, cap in
-                       (("turn_deg", "talk_turn_max_deg"), ("forward_m", "talk_walk_max_m"), ("side_m", "talk_side_max_m"))}
-            if any(amounts.values()):
-                self.run_skill("walk", "", heard=text, say=str(args.get("say") or ""), chosen_by="model", walk=amounts)
-                return
         routines, tasks = self.offered()
         if name == "play_routine" and args.get("name") in routines:
             self.run_skill("routine", args["name"], heard=text, say=str(args.get("say") or ""), chosen_by="model")
@@ -635,7 +612,7 @@ class Session:
         print(f"stopped {what}: the robot is back to neutral")
 
     def run_skill(self, kind: str, name: str, *, heard: str = "", say: str = "", chosen_by: str = "user",
-                  walk: Optional[dict] = None, fill: Optional[dict] = None) -> None:
+                  fill: Optional[dict] = None) -> None:
         """One skill, the one way: checked against the mode, confirmed when the model chose a routine
         or task, run, and its result said. ``fill``: a task's slots (what to point at); each must be given."""
         heard = heard or (f"/{kind} {name} " + " ".join((fill or {}).values())).strip()
@@ -665,20 +642,15 @@ class Session:
                 self.speak(say)
             self.counts["moves"] += 1
             move = {"kind": "mimic", "id": mid, "label": m["name"], "duration": m["duration"]}
-            if self._busy(f"move {m['name']} (Esc stops)", lambda: self.moves.play([move])) == 130:
-                self._stopped("the move")
-            self.rest()                                  # a stored move ends in 802: back to walk mode at once
-            return
-        if kind == "walk":
-            amounts = walk or {}
-            what = ", ".join(f"{k} {v:+g}" for k, v in amounts.items() if v)
-            self._remember(heard, f"[walked: {what}]")
-            if say:
-                self.speak(say)
-            self.counts["walks"] += 1
-            if self._busy(f"walk {what} (Esc stops)", lambda: self.moves.walk(**amounts)) == 130:
-                self._stopped("the walk")
-            self.rest()
+            caller = self.fsm
+            if self.fsm not in PLAY_FSMS and not self._switch_to(MAIN_FSM, "a stored move plays from standing"):
+                self.speak("Sorry, I cannot do that right now.")
+                return
+            try:
+                if self._busy(f"move {m['name']} (Esc stops)", lambda: self.moves.play([move])) == 130:
+                    self._stopped("the move")
+            finally:
+                self._return_to(caller)                  # a stored move ends in 802: back where it was called from
             return
         self._run_on_robot(kind, name, heard, say, chosen_by, fill or {})
 
@@ -699,6 +671,10 @@ class Session:
                 return
         elif say:
             self.speak(say)
+        if self.fsm != MAIN_FSM and not self._switch_to(MAIN_FSM, f"a {kind} runs in main operation"):
+            self._remember(heard, f"[{kind} {label}: could not run: not in FSM {MAIN_FSM}]")
+            self.speak(f"Sorry, I could not do the {name} {kind}.")
+            return
         self.counts["routines" if kind == "routine" else "tasks"] += 1
         settings = {"microphone": self.mic, "camera_shared": self.camera, "speaker": self.speaker_on}
         run = ((lambda: self.runner(kind, name, self.mode, settings, fill=fill)) if fill
@@ -735,88 +711,113 @@ class Session:
         except Exception:
             self.fsm = None
 
-    def rest(self) -> bool:
-        """Bring the robot to this mode's resting FSM along the allowed order (``Moves.switch``, which
-        prints the path and its warnings). Callers ask the person first where a person must say yes
-        (``start``, ``set_mode``). False when it is not there afterwards: skills are refused until ``/mode``."""
-        rest = rest_fsm(self.mode)
+    def _switch_to(self, target: int, why: str = "") -> bool:
+        """``SetFsmId(target)`` now and wait (``fsm_enter_timeout_s``) for the robot to report it; prints
+        what happened. True when it is there. Never asks: callers check the mode and ask first."""
         self._refresh_fsm()
-        if self.fsm == rest:
+        if self.fsm == target:
             return True
-        if self.fsm is None:
-            print(f"the robot's FSM is unknown; it was not brought to {sdk.fsm_name(rest)}")
+        before = sdk.fsm_name(self.fsm) if self.fsm is not None else "unknown"
+        print(f"FSM {before} -> {sdk.fsm_name(target)}: SetFsmId({target})" + (f" ({why})" if why else ""))
+        code, _ = self.moves._call(self.moves.loco, "SetFsmId", target)
+        if code != 0:
+            print(f"refused: SetFsmId({target}) -> {sdk.explain(code)}")
+            self._refresh_fsm()
             return False
-        if fsm_path(self.fsm, rest) is None:
-            print(f"no allowed way from FSM {sdk.fsm_name(self.fsm)} to {sdk.fsm_name(rest)}: use the remote")
-            return False
-        print(f"{self.mode} mode rests in FSM {sdk.fsm_name(rest)}")
+        t0 = self.now()
+        while True:
+            self._refresh_fsm()
+            if self.fsm == target or self.now() - t0 > limits.get("fsm_enter_timeout_s"):
+                break
+            self.sleep(limits.get("fsm_poll_s"))
+        now = sdk.fsm_name(self.fsm) if self.fsm is not None else "unknown"
+        print(f"FSM {now} after {self.now() - t0:.1f} s" + ("" if self.fsm == target else
+              f": SetFsmId returned 0 but the robot did not enter {sdk.fsm_name(target)}"))
+        return self.fsm == target
+
+    def _return_to(self, caller) -> None:
+        """After a built-in: back to the FSM it was called from (when it left it). Never raises."""
         try:
-            self.moves.switch(rest)
-        except SystemExit as e:
-            print(f"could not reach FSM {rest}: {e}")
-        self._refresh_fsm()
-        return self.fsm == rest
+            self._refresh_fsm()
+            if caller is not None and self.fsm != caller and not self._switch_to(caller, "back where the built-in started"):
+                print(f"warning: still in FSM {self.fsm}, not {caller}: /fsm {caller}")
+        except Exception as e:
+            print(f"warning: could not return to FSM {caller}: {e}")
 
     def start(self) -> bool:
         """The session's first step: a person confirms the mode (hanging in the gantry, or on its own feet
-        with the area clear) and the robot is brought to its resting FSM. False: not started."""
+        with the area clear), then the bring-up 0 -> 1 -> 4 -> 200 from wherever the robot is on that way
+        (both modes; elsewhere it is left as it is). False: not started."""
+        self._refresh_fsm()
         if self.mode == "gantry":
-            question = ("Is the robot hanging in the gantry (feet just touching or off the floor)? Its legs are "
-                        "never commanded here, and it is damped when the session ends.")
+            question = "Is the robot hanging in the gantry (feet just touching or off the floor)?"
         else:
             question = ("Is the robot standing on its own feet, area clear, spotter and remote ready? Built-ins "
-                        "(dances, walks) play when asked; routines and tasks the model chooses are asked each time.")
+                        "(dances, gestures) play when asked; routines and tasks the model chooses are asked each time.")
+        up = self.fsm in BRING_UP and self.fsm != BRING_UP[-1]
+        if up:
+            path = " -> ".join(sdk.fsm_name(f) for f in BRING_UP[BRING_UP.index(self.fsm):])
+            question += f" Then the bring-up: FSM {path} (locked stand: feet just touching)."
         if not self.ui.confirm(question):
             return False
-        self.confirmed = self.mode
-        self.rest()
+        if up:
+            try:
+                self.moves.switch(BRING_UP[-1])
+            except SystemExit as e:
+                print(f"bring-up stopped: {e}")
+            self._refresh_fsm()
+        here = sdk.fsm_name(self.fsm) if self.fsm is not None else "unknown"
+        print(f"FSM {here}" + ("" if fsm_allowed(self.mode, self.fsm) else
+                               f": {self.mode} mode blocks it ({allowed_text(self.mode)}); /fsm or /mode first"))
         return True
 
-    def park(self) -> None:
-        """At quit, with nothing running: gantry (confirmed hanging) is damped; standing goes back to its
-        resting FSM and stays standing for the remote. Never raises."""
-        try:
-            self._refresh_fsm()
-            if self.mode == "gantry":
-                if self.confirmed != "gantry":
-                    print("not damped: no one confirmed it hangs in the gantry")
-                elif self.fsm not in (0, FSM_DAMP):
-                    print(f"gantry: damping (FSM {self.fsm} -> {sdk.fsm_name(FSM_DAMP)}); it hangs limp")
-                    self.moves.switch(FSM_DAMP)
-            else:
-                self.rest()
-                print(f"left standing in FSM {sdk.fsm_name(self.fsm)}: the remote has it now")
-        except (SystemExit, Exception) as e:
-            print(f"warning: at quit the FSM was left as it is: {e}")
+    def set_fsm(self, target: int) -> None:
+        """``/fsm ID``: try ``SetFsmId(ID)`` now, outside the allowed order (to find out what the robot
+        takes), and report the FSM it reaches. A y/N first for the states that can drop or seat it."""
+        if not fsm_allowed(self.mode, target):
+            other = "standing" if self.mode == "gantry" else "gantry"
+            print(f"refused: {self.mode} mode blocks FSM {sdk.fsm_name(target)} ({self.mode} allows "
+                  f"{allowed_text(self.mode)}); switch modes first: /mode {other}")
+            return
+        warning = {0: "zero torque: every motor goes off; a standing robot falls. Only hanging in the gantry",
+                   **FSM_WARN}.get(target)
+        self._refresh_fsm()
+        before = sdk.fsm_name(self.fsm) if self.fsm is not None else "unknown"
+        if warning and not self.ui.confirm(f"Switch FSM {before} -> {sdk.fsm_name(target)}? {warning}"):
+            print("not switched")
+            return
+        if self.fsm == target:
+            print(f"already in FSM {before}")
+            return
+        self._switch_to(target)
+        now = sdk.fsm_name(self.fsm) if self.fsm is not None else "unknown"
+        self._remember(f"/fsm {target}", f"[FSM {now}]")
 
     # -- mode and settings ----------------------------------------------------------------------------
     def set_mode(self, mode: str) -> None:
-        """Change what may run and how, after a y/N, and bring the robot to the new mode's resting FSM
-        (gantry 200, standing walk mode)."""
+        """Change what may run and which FSMs are allowed, after a y/N. Never changes the FSM: refused
+        while the robot is in one the new mode blocks."""
         if mode not in MODES:
             print(f"mode is standing or gantry, not {mode!r}")
             return
         if mode == self.mode:
             print(f"already in {mode} mode")
-            if self.confirmed == mode:
-                self.rest()                          # back to its resting FSM if it left it
             return
-        if mode == "standing":
-            fsm = self.moves.fsm()
-            if fsm not in sdk.STANDING_FSMS | PLAY_FSMS:
-                print(f"refused: the robot reports FSM {sdk.fsm_name(fsm)}, not standing; stand it up with the remote "
-                      "(or g1 moves fsm walk), then /mode standing")
-                return
-            question = "Is the robot standing on its own feet, area clear, spotter and remote ready?"
-        else:
-            question = "Is the robot hanging in the gantry (feet just touching or off the floor)?"
+        self._refresh_fsm()
+        if self.fsm is None or not fsm_allowed(mode, self.fsm):
+            here = sdk.fsm_name(self.fsm) if self.fsm is not None else "unknown"
+            print(f"refused: the robot is in FSM {here}, which {mode} mode blocks ({mode} allows {allowed_text(mode)}); "
+                  "/fsm to one it allows first (or the remote)")
+            return
+        question = ("Is the robot standing on its own feet, area clear, spotter and remote ready?" if mode == "standing"
+                    else "Is the robot hanging in the gantry (feet just touching or off the floor)?")
         if not self.ui.confirm(question):
             print("mode unchanged")
             return
-        self.mode, self.confirmed = mode, mode
-        print(f"mode: {mode}" + (" (we command the legs: built-ins and walks)" if mode == "standing" else
-                                 " (the legs are never commanded: no built-ins or base motion)"))
-        self.rest()
+        self.mode = mode
+        print(f"mode: {mode}, FSMs allowed: {allowed_text(mode)}" + (
+            " (we command the legs: built-in moves)" if mode == "standing" else
+            " (the legs are never commanded: no built-ins or base motion)"))
         self._remember(f"/mode {mode}", f"[now in {mode} mode]")
 
     def set_mic(self, on: bool) -> None:
@@ -905,17 +906,12 @@ class Session:
             self.run_skill(n, name, fill={k: cmd.text for k in slots} if slots else None)
         elif n == "move":
             self.run_skill("move", " ".join(a))
-        elif n == "walk":
-            amounts = {"forward_m": float(a[0]) if a else 0.0, "side_m": float(a[1]) if len(a) > 1 else 0.0,
-                       "turn_deg": float(a[2]) if len(a) > 2 else 0.0}
-            if self.why_not("walk") is None:
-                amounts = {k: _clamp(v, limits.get(cap)) for (k, v), cap in
-                           zip(amounts.items(), ("talk_walk_max_m", "talk_side_max_m", "talk_turn_max_deg"))}
-            self.run_skill("walk", "", walk=amounts)
         elif n == "say":
             self.speak(cmd.text)
         elif n == "mode":
             self.set_mode(a[0] if a else "")
+        elif n == "fsm":
+            self.set_fsm(int(a[0]))
         elif n in ("mic", "speaker", "camera", "lidar"):
             getattr(self, f"set_{n}")(bool(a) and a[0] == "on")
         elif n == "status":
@@ -958,15 +954,16 @@ class Session:
             print("memory: skipped")
 
     def shutdown(self) -> None:
-        """Lidar mapping ended and saved, the camera closed, the robot parked (``park``), this session
-        distilled into memory, the counts printed."""
+        """Lidar mapping ended and saved, the camera closed (the FSM left as it is), this session distilled
+        into memory, the counts printed."""
         from g1.envs.base import shield_sigint
         with shield_sigint("closing the session; this finishes on its own"):
             if self.lidar is not None:
                 self.lidar.stop()
                 self.lidar = None
             self._stop_camera()
-            self.park()
+        self._refresh_fsm()
+        print(f"left in FSM {sdk.fsm_name(self.fsm) if self.fsm is not None else 'unknown'} (quitting changes no FSM)")
         self._distill()
         print("session: " + ", ".join(f"{k} {v}" for k, v in self.counts.items())
               + (f"; microphone: {self.mic.counts}" if self.mic is not None else ""))
