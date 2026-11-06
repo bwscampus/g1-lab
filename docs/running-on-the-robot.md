@@ -85,7 +85,7 @@ The mode is who commands the legs, and each task and routine lists the modes it 
   no stored moves): the arms go through arm_sdk in FSM 200 while Unitree's controller holds
   the legs. Found limp: Damp → FSM 4 (locked stand) → FSM 200 (main operation) → run →
   release the arms → Damp. Found standing (4, 200, 500, 501, as in a `g1 start` gantry
-  session, which rests in 200): straight to 200, and back to that FSM at the end; no Damp.
+  session, which rests in 200): it stays in 200, 500 or 501 (no FSM change; our G1 refuses 501 → 200), from 4 it enters 200 and goes back; no Damp.
 * `standing`: on its own feet; we command the legs through LocoClient (walks, sit). Records
   the current FSM, goes to FSM 200, runs, releases the arms, returns to the recorded FSM.
   Never damps.
@@ -262,7 +262,7 @@ Each mode has a **resting FSM**, and the robot waits there between skills:
 | when | gantry | standing |
 |---|---|---|
 | start (after you confirm it hangs / stands with the area clear) | → 200 (from limp: 1 → 4 → 200) | → 501 (walk mode) |
-| a routine or task | 200 → run → 200 (no Damp, no locked-stand wait) | 501 → 200 → run → 501 |
+| a routine or task | runs in 200 (no Damp, no locked-stand wait) | runs in 501 (arm_sdk and Move work there; no FSM change) |
 | a built-in move or walk | refused (it would command the legs) | 501 → 550 → 802 → back to 501 at once |
 | `/mode` (after its question) | standing → gantry: 501 → 200 | gantry → standing: 200 → 501 |
 | robot not in the resting FSM (the remote moved it) | every skill refused: `/mode gantry` brings it back | every skill refused: `/mode standing` brings it back |

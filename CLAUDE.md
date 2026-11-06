@@ -196,7 +196,8 @@ root via `pythonpath`. `limits.ROOT` is the repo root (configs/, tasks/, assets/
   LocoClient only (no low-level leg control until a trained controller exists). Every task and routine declares
   `"modes"` in its json (required; anything that walks or sits lists only standing; a routine with a `base` track
   may not list gantry), and `g1 run --mode X` and the session refuse the others before anything connects. A run
-  leaves the robot in the FSM it found: from a standing FSM (4, 200, 500, 501) straight to 200 and back; only a
+  leaves the robot in the FSM it found: in a control FSM (`sdk.CONTROL_FSMS`: 200, 500, 501, where arm_sdk blends and
+  Move walks) it stays, with no FSM change (our G1 refuses 501 -> 200); from 4 it enters 200 and goes back; only a
   gantry robot found limp gets Damp → 4 → 200 and is damped again. `g1 start` owns a **resting FSM** per mode
   (`session.rest_fsm`: gantry 200, standing `walk_fsm` 501): a person confirms the mode at the start and on
   `/mode` (hanging / on its feet), then the session switches there (`Moves.switch`, along `moves.FSM_NEXT`); every
