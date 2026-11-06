@@ -360,8 +360,15 @@ def stop_like_ctrl_c() -> dict:
     """SIGINT, SIGTERM and SIGHUP all end the session as Ctrl-C does (end mapping, close SLAM, save the
     map): a dropped ssh (SIGHUP) or a kill (SIGTERM) must not leave SLAM mapping and the map unsaved,
     and a shell that started us in the background had set SIGINT to ignored. Returns the old handlers.
-    Main thread only (a no-op elsewhere)."""
+    Main thread only (a no-op elsewhere). It fires once: a second signal before the teardown's shield
+    is up (``timeout`` signals the process and then its whole group) is ignored, never a second
+    KeyboardInterrupt into the teardown."""
+    fired = []
+
     def handler(signum, frame):
+        if fired:
+            return
+        fired.append(signum)
         raise KeyboardInterrupt
     old = {}
     for sig in (signal.SIGINT, signal.SIGTERM, getattr(signal, "SIGHUP", None)):

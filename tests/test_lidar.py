@@ -420,6 +420,22 @@ def test_a_kill_or_a_dropped_ssh_ends_mapping_and_saves_the_map_like_ctrl_c(robo
     assert signal.getsignal(getattr(signal, sig)) == before             # the old handler is back
 
 
+def test_the_stop_signal_fires_once_so_a_repeat_cannot_reach_the_teardown():
+    import os
+    import signal
+    from g1.lidar import stop_like_ctrl_c
+    previous = stop_like_ctrl_c()
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            os.kill(os.getpid(), signal.SIGTERM)
+            time.sleep(1)
+        os.kill(os.getpid(), signal.SIGTERM)                           # timeout's second, to the group
+        time.sleep(0.05)                                               # ignored: no KeyboardInterrupt
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
 def test_a_second_signal_during_the_teardown_does_not_cut_it_short(robot, capsys, tmp_path, monkeypatch):
     import os
     import signal
