@@ -36,6 +36,9 @@ class Arm:
     def release(self, duration=1.0):
         self.sent.append("release")
 
+    def close(self):
+        self.sent.append("close")
+
 
 def robot(**settings):
     env = RobotEnv(run_settings(iface="lo", **{"mode": "standing", **settings}))
@@ -263,3 +266,34 @@ def test_settings_come_from_the_environment(monkeypatch):
         RobotEnv(run_settings(mode="standing"))._check_args()
     with pytest.raises(TypeError, match="no setting"):
         run_settings(walk=True)
+
+
+def test_the_run_closes_its_lowstate_subscriber_after_the_release(monkeypatch, capsys):
+    from g1.envs.robot import ArmSdk
+
+    class Sub:
+        closed = False
+
+        def Close(self):
+            Sub.closed = True
+
+    class Link:
+        def crc(self): return None
+        def lowstate(self, cb): return Sub()
+        def arm_sdk(self): return None
+        def lowcmd(self):
+            class M:
+                q = dq = tau = kp = kd = 0.0
+            return type("C", (), {"motor_cmd": [M() for _ in range(NUM_JOINTS + 6)]})()
+    arm = ArmSdk(link=Link())
+    arm.close()
+    assert Sub.closed and arm.sub is None              # in g1 start the process outlives the run
+    env, loco, out = bring_up(monkeypatch, 200, capsys, arm_cls=lambda health=None, link=None: Arm())
+    env._teardown_robot()
+    assert env.arm.sent[-2:] == ["release", "close"]
+
+
+def test_a_session_run_uses_the_sessions_clients(monkeypatch, capsys):
+    shared_loco, shared_audio = Loco(200), Client()
+    env, loco, out = bring_up(monkeypatch, 200, capsys, loco_shared=shared_loco, audio_shared=shared_audio)
+    assert env.loco is shared_loco and env.audio is shared_audio and "audio: volume" not in out

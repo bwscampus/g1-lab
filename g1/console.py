@@ -191,6 +191,8 @@ class Console:
             self.request_quit("/quit")
         elif cmd.name in ("mode", "fsm") and busy:
             self.out(f"a skill is running: Esc to stop it first, then /{cmd.name}")
+        elif cmd.name == "chat" and busy and self.session.tell_task(cmd.text):
+            self.out(f"to {self.session.listening_task}: {cmd.text}")
         else:
             if busy:
                 self.out(f"queued: /{cmd.name} runs when the current skill ends (Esc stops it)")

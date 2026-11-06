@@ -123,7 +123,7 @@ def test_the_model_is_offered_what_the_mode_allows():
     assert tools_["play_routine"]["parameters"]["properties"]["name"]["enum"] == ["tpose"]   # no base routine
     assert set(tools_["run_task"]["parameters"]["properties"]["name"]["enum"]) == {"find_it", "point_on_request"}
     s.set_mic(False)
-    assert s.offered()[1].keys() == {"find_it", "walk_to_it"}                       # a hearing task needs the mic
+    assert s.offered()[1].keys() == {"find_it", "walk_to_it", "point_on_request"}   # a hearing task hears with the mic off too
     assert "Answer with exactly one tool call" in system_prompt()
 
 
@@ -135,7 +135,7 @@ def test_skills_lists_only_what_this_mode_allows():
     assert "✗" not in text
     assert "· /routine tpose" in text and "· /task find_it" in text and "· /task point_on_request" in text
     g.set_mic(False)
-    assert "point_on_request" not in "\n".join(g.skills())                         # a hearing task needs the mic
+    assert "point_on_request" in "\n".join(g.skills())                             # the mic setting is chat's only
     s, _, _ = make()
     text = "\n".join(s.skills())
     assert all(f"/move {m}" in text for m in (516, 553, 604)) and "/walk" not in text and "· /routine walkabout" in text
@@ -196,7 +196,8 @@ def test_a_routine_and_a_task_the_model_chooses_are_confirmed_run_and_reported()
     s.chat("can you find the laptop")
     assert len(ui.asked) == 2 and "tpose routine" in ui.asked[0] and "standing mode" in ui.asked[0]
     assert [(k, n, m) for k, n, m, _ in runner.runs] == [("routine", "tpose", "standing"), ("task", "find_it", "standing")]
-    assert runner.runs[0][3] == {"microphone": s.mic, "camera_shared": None, "speaker": True}   # the mic; no camera
+    assert runner.runs[0][3] == {"microphone": s.mic, "camera_shared": None, "speaker": True,   # the mic; no camera
+                                 "loco_shared": s.moves.loco, "audio_shared": s.audio}         # and its clients
     assert s.audio.said == ["Watch my T-pose!", "Done.", "I will find the laptop and point at it.", "I found it."]
 
 
@@ -243,14 +244,14 @@ def test_a_refusal_keeps_the_session_going():
 
 # -- mode and settings --------------------------------------------------------------------------
 
-def test_with_the_mic_off_speech_is_ignored_and_a_hearing_task_refused(capsys):
+def test_with_the_mic_off_speech_is_not_chat_but_a_hearing_task_still_hears(capsys):
     s, mic, clock = make()
     s.set_mic(False)
     heard(mic, "do a dance")
     clock["t"] += 5.0
     assert s.heard() is None
     s.handle(Command("task", ["point_on_request"]))
-    assert "/mic on first" in capsys.readouterr().out
+    assert s.runner.runs[-1][3]["microphone"] is mic and "say or type \"stop\"" in capsys.readouterr().out
     s.set_mic(True)
     heard(mic, "hello")
     assert s.heard() is None                                      # not yet quiet long enough
@@ -563,3 +564,34 @@ def test_the_menus_list_what_the_mode_allows_whatever_the_fsm(capsys):
     assert {"move", "play_routine", "run_task"} <= {t["function"]["name"] for t in s.model_tools()}
     s.handle(Command("routine", ["tpose"]))                         # running one still checks the FSM
     assert s.runner.runs == [] and "standing mode blocks" in capsys.readouterr().out
+
+
+def test_a_line_typed_while_a_hearing_task_runs_reaches_it_and_is_not_chat_afterwards():
+    from g1.console import Console
+    seen, out = [], []
+    s = None
+
+    def task_hears(kind, name, mode, settings, fill=None):
+        c.submit("stop now")                                        # typed while it runs
+        seen.append([h.text for h in settings["microphone"].since(0)])
+        return {"ok": True, "outcome": "success"}
+    s, mic, clock = make(runner=task_hears)
+    c = Console(s, interrupt=lambda: None, out=out.append)
+    s.busy.set()                                                    # as _busy does while the task runs
+    s.handle(Command("task", ["point_on_request"]))
+    assert seen == [["stop now"]] and "to point_on_request: stop now" in out and s.events.empty()
+    clock["t"] += 5.0
+    assert s.heard() is None and not s.listening_task                # not answered as chat once it ended
+    s.busy.clear()
+    c.submit("hello")                                               # nothing listening: chat, queued as usual
+    assert s.events.get_nowait().text == "hello"
+
+
+def test_an_unknown_fsm_never_refuses_a_skill_and_runs_get_the_sessions_clients():
+    runner = Runner()
+    s, _, _ = make(runner=runner)
+    s.moves.loco.GetFsmId = lambda: (3104, None)                     # no reply (the 3104s seen on the robot)
+    s.handle(Command("routine", ["tpose"]))
+    assert runner.runs[0][:2] == ("routine", "tpose")
+    settings = runner.runs[0][3]
+    assert settings["loco_shared"] is s.moves.loco and settings["audio_shared"] is s.audio

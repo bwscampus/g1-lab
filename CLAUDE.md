@@ -126,7 +126,7 @@ g1/agent/          agent (Agent, build_agent), decider (AgentContext/AgentTurn/D
                    VLMDecider), episode (EpisodeWriter, load_episode), task (find, load_task, run_config, code_snapshot, record_result),
                    demos (promote, load_demos, render: in-context demos, host truth never copied)
 suites/            stationary/ (point_at_the_laptop x 10), point_on_request/ (point_at_what_you_hear x 5); runs/ inside are git-ignored
-tasks/             point_at/ (point at {object}: g1 start fills it), and not in g1 start ("session": false):
+tasks/             point_at/ (point at {object}, g1 start fills it; keeps pointing until told to stop), and not in g1 start ("session": false):
                    point_at_the_laptop/, find_the_mug/, find_and_point_at_the_laptop/, sit_in_the_chair/, point_at_what_you_hear/
                    (spoken requests, hears); runs and results.jsonl inside are git-ignored, demos/ is not
 routines/          tpose/, sixseven/ (routine.json: upper-body keyframes); runs/ inside are git-ignored
@@ -272,6 +272,9 @@ root via `pythonpath`. `limits.ROOT` is the repo root (configs/, tasks/, assets/
   (`session.MECHANICS`: the tools and the safety lines, in code so no file can remove them); tasks and
   `g1/agent/` never import `g1.knowledge` (`tests/test_knowledge.py` guards it). Persona and setting
   (the school, the audience) belong in SOUL.md, never in code.
+- **A line typed while a hearing task runs in g1 start is heard.** `Microphone.typed` logs it as an utterance
+  (`Session.tell_task`), so "stop" works typed as well as said; afterwards nothing said to the task is chat. A task that
+  hears runs with the mic off too (`/mic` governs chat only).
 - **Hearing is a sense like the camera.** A task with `hears` subscribes `rt/audio_msg` (the robot's own
   speech recognition; voice interaction on in the app) through the link (`g1/microphone.py`), and each
   observation carries `heard`: what was said since the last one, other languages and the robot's own speech
