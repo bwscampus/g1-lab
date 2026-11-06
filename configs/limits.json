@@ -118,6 +118,8 @@
     "lidar_print_period_s":       {"value": 1.0,   "unit": "s",     "source": "repo",       "note": "g1 lidar prints one scan line this often"},
     "lidar_view_port":            {"value": 8766,  "unit": "port",  "source": "repo",       "note": "g1 lidar: the live 3D view at http://127.0.0.1:<port> (a free port when this one is taken)"},
     "lidar_view_points_max":      {"value": 200000, "unit": "count", "source": "guess",     "note": "g1 lidar view: most map points sent to the browser a refresh (every other one beyond it, and so on); 6 bytes each"},
+    "lidar_service_start_s":      {"value": 30.0,  "unit": "s",     "source": "guess",      "note": "longest wait for lidar_driver and unitree_slam to report running after the lidar switches them on"},
+    "lidar_service_poll_s":       {"value": 0.5,   "unit": "s",     "source": "repo",       "note": "how often the lidar re-reads the service list while it waits for them to start"},
     "lidar_timeout_s":            {"value": 20.0,  "unit": "s",     "source": "guess",      "note": "g1 lidar: longest wait for the first scan after SLAM starts mapping"},
     "lidar_voxel_m":              {"value": 0.05,  "unit": "m",     "source": "guess",      "note": "the map accumulator keeps one point per cube of this size"},
     "slam_type":                  {"value": "indoor", "unit": "text", "choices": ["indoor"], "source": "unitree", "note": "Unitree SLAM start-mapping (1801) slam_type; Unitree documents indoor only"},

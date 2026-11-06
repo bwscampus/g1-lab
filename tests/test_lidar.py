@@ -154,17 +154,34 @@ def test_a_subscriber_that_dies_before_a_scan_is_an_error():
 # -- g1 lidar ---------------------------------------------------------------------------
 
 class FakeState:
-    def __init__(self, statuses, code=0):
+    """The robot's service list; a switched service reports running after ``lists_to_start`` reads
+    (never, with None), and one in ``refuse`` is refused."""
+    def __init__(self, statuses, code=0, lists_to_start=1, refuse_switch=()):
         self.statuses, self.code = statuses, code
+        self.lists_to_start, self.refuse = lists_to_start, refuse_switch
+        self.switches: list[tuple[str, bool]] = []
+        self.pending: dict[str, int] = {}
 
     def SetTimeout(self, s): pass
     def Init(self): pass
 
     def ServiceList(self):
+        for name in list(self.pending):
+            self.pending[name] -= 1
+            if self.pending[name] <= 0:
+                self.statuses[name] = 0
+                del self.pending[name]
         return self.code, [NS(name=n, status=s, protect=0) for n, s in self.statuses.items()]
 
-    def ServiceSwitch(self, name, on):            # must never be called
-        raise AssertionError("g1 lidar switched a service")
+    def ServiceSwitch(self, name, on):            # the SDK returns a bare int here
+        self.switches.append((name, on))
+        if name in self.refuse:
+            return 4101
+        if not on:
+            self.statuses[name] = 1
+        elif self.lists_to_start is not None:
+            self.pending[name] = self.lists_to_start
+        return 0
 
 
 class FakeSlam:
@@ -184,9 +201,9 @@ class FakeSlam:
 
 
 class FakeLink:
-    def __init__(self, statuses=None, refuse=(), list_code=0):
+    def __init__(self, statuses=None, refuse=(), list_code=0, **state):
         self.calls = []
-        self.state = FakeState(statuses or {"lidar_driver": 0, "unitree_slam": 0, "video_hub_pc4": 0}, list_code)
+        self.state = FakeState(statuses or {"lidar_driver": 0, "unitree_slam": 0, "video_hub_pc4": 0}, list_code, **state)
         self.slam_client = FakeSlam(self.calls, refuse)
 
     def init(self, domain, iface): self.calls.append(("init", domain, iface))
@@ -233,6 +250,8 @@ def robot(monkeypatch):
     monkeypatch.delenv("UNITREE_DOMAIN", raising=False)
     monkeypatch.setitem(limits.LIMITS["lidar_max_s"], "value", 0.3)
     monkeypatch.setitem(limits.LIMITS["lidar_view_port"], "value", 0)
+    monkeypatch.setitem(limits.LIMITS["lidar_service_start_s"], "value", 0.2)
+    monkeypatch.setitem(limits.LIMITS["lidar_service_poll_s"], "value", 0.01)
     FakeLidar.fail = None
 
 
@@ -248,19 +267,57 @@ def test_g1_lidar_checks_starts_serves_prints_ends_and_saves_the_map(robot, caps
     saved = list(tmp_path.glob("*/map.pcd"))
     assert len(saved) == 1 and len(read_pcd(saved[0])) > 0 and f"map saved: {saved[0]}" in out
     assert {c[0] for c in link.calls} - {"init"} <= config.SLAM_METHODS
+    assert link.state.switches == []                                 # both were on: nothing switched
 
 
-@pytest.mark.parametrize("statuses, named", [
-    ({"lidar_driver": 1, "unitree_slam": 0}, "lidar_driver is off"),
-    ({"lidar_driver": 0, "unitree_slam": 1}, "unitree_slam is off"),
-    ({"lidar_driver": 1}, "lidar_driver and unitree_slam are off"),
+@pytest.mark.parametrize("statuses, switched", [
+    ({"lidar_driver": 1, "unitree_slam": 0}, ["lidar_driver"]),
+    ({"lidar_driver": 0, "unitree_slam": 1}, ["unitree_slam"]),
+    ({"lidar_driver": 1, "unitree_slam": 1, "video_hub_pc4": 1}, ["lidar_driver", "unitree_slam"]),
 ])
-def test_a_service_that_is_off_stops_before_any_slam_call(robot, capsys, statuses, named):
-    link = FakeLink(statuses)
+def test_a_service_that_is_off_is_switched_on_and_off_again_at_the_end(robot, capsys, tmp_path, statuses, switched):
+    link = FakeLink(dict(statuses), lists_to_start=3)
+    assert lidar_main([], link=link, lidar_cls=FakeLidar, runs=tmp_path) == 0
+    out = capsys.readouterr().out
+    assert link.state.switches == [(n, True) for n in switched] + [(n, False) for n in switched]
+    assert "switching" in out and "off again (as found)" in out
+    assert [c[0] for c in link.calls[1:]] == ["StartMapping", "EndMapping", "CloseSlam"]
+    assert link.state.statuses == statuses                           # left as it was found
+    assert all(n in ("lidar_driver", "unitree_slam") for n, _ in link.state.switches)
+
+
+@pytest.mark.parametrize("state, said", [
+    ({"lists_to_start": None}, "did not start within"),             # switched, never comes up
+    ({"refuse_switch": ("lidar_driver",)}, "did not start within"),         # the robot refuses the switch
+])
+def test_a_service_that_will_not_start_fails_before_any_slam_call_and_is_restored(robot, capsys, state, said):
+    link = FakeLink({"lidar_driver": 1, "unitree_slam": 1}, **state)
     assert lidar_main([], link=link, lidar_cls=FakeLidar) == 1
     out = capsys.readouterr().out
-    assert named in out and "Unitree app" in out
+    assert said in out and "Unitree app" in out
     assert link.calls == [("init", 0, "eth0")]
+    ons = [n for n, on in link.state.switches if on]
+    offs = [n for n, on in link.state.switches if not on]
+    assert ons == ["lidar_driver", "unitree_slam"]
+    assert offs == [n for n in ons if n not in state.get("refuse_switch", ())]   # only what it switched on
+
+
+def test_an_unreadable_service_list_stops_before_anything(robot, capsys):
+    link = FakeLink(list_code=3104)
+    assert lidar_main([], link=link, lidar_cls=FakeLidar) == 1
+    assert "service list" in capsys.readouterr().out and link.state.switches == []
+
+
+def test_only_the_lidar_services_can_be_switched():
+    from g1.lidar import switch_services
+    with pytest.raises(ValueError, match="not one the lidar may switch"):
+        switch_services(FakeState({}), ["video_hub_pc4"], False, log=[], verbose=False)
+
+
+def test_a_refused_start_after_switching_on_switches_off_again(robot, capsys):
+    link = FakeLink({"lidar_driver": 1, "unitree_slam": 0}, refuse=("StartMapping",))
+    assert lidar_main([], link=link, lidar_cls=FakeLidar) == 1
+    assert link.state.switches == [("lidar_driver", True), ("lidar_driver", False)]
 
 
 def test_a_refused_start_closes_slam_and_fails(robot, capsys):

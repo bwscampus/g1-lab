@@ -185,7 +185,8 @@ root via `pythonpath`. `limits.ROOT` is the repo root (configs/, tasks/, assets/
   The session runs a routine or task only through `cli.run_once` (never arm_sdk, the FSM or a tool itself;
   `tests/test_session.py` guards it); one the model chooses is confirmed y/N, one you type is not.
   `g1 lidar` makes only `config.SLAM_METHODS` (start mapping 1801, end mapping 1802, close SLAM 1901) and
-  only reads the service list: it never switches a service (the app does) and never navigates.
+  switches only `lidar.SERVICES` (`lidar_driver`, `unitree_slam`): on when off, and off again at the end
+  only those it switched on (the robot is left as found). It never navigates.
 - **Routines compile to segments and are dry-run first.** A routine's timeline (upper body, base windows,
   onboard gestures at keyframe times; a smooth segment is never split) becomes the `Segment`s every tool plays
   (`ease`: smooth for keyframes, linear between dense samples), dry-run whole before the takeover. Full-body
