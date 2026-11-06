@@ -267,12 +267,13 @@ directly, without the model and without the question:
 
 | command | does |
 |---|---|
-| `do a T-pose`, `/chat ...` | chat: as if said |
-| `/skills` | everything, marked available or not in this mode, and why |
+| `do a T-pose` (any plain text) | chat: as if said |
+| `/skills` | the built-ins, routines and tasks this mode allows (and the mic: a task that hears needs it on); typing one it leaves out says why it is refused |
 | `/routine NAME` · `/task NAME` | run one now |
 | `/move ID\|NAME` · `/walk FWD [SIDE [TURN]]` · `/say TEXT` | a built-in now; the robot says it |
 | `/mode gantry\|standing` | switch mode: it **never moves the robot**; it asks you to confirm it is hanging / standing (standing also needs a standing FSM) |
 | `/mic on\|off` | handle what the robot hears like chat, or ignore it (a task that hears needs it on) |
+| `/speaker on\|off` | say replies out loud (`TtsMaker`), or only print them here; tasks and routines run from the session follow it (their `say` is printed as `robot (speaker off): ...`). Default on |
 | `/camera on\|off` | the head camera, live at `http://127.0.0.1:8765` (`ssh -L 8765:...` from a laptop); tasks reuse it |
 | `/lidar on\|off` | SLAM mapping and its live 3D view at `:8766`; off (and exit) saves `runs/lidar/<time>/map.pcd` |
 | `/status` · `/stop` · `/help` · `/quit` | the `g1 status` probe; Esc; the list; exit |

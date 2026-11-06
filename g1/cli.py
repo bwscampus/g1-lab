@@ -175,7 +175,7 @@ def run_settings(task: Optional[dict] = None, *, sim: bool = False, mode: Option
         sim=sim, mode=mode, view=view,
         iface=os.environ.get("UNITREE_IFACE"), domain=None,
         camera_ip=os.environ.get("UNITREE_ROBOT_IP"), camera_timeout=limits.get("camera_timeout_s"),
-        camera_source="auto", camera="auto", trace=None, microphone=None, camera_shared=None,
+        camera_source="auto", camera="auto", trace=None, microphone=None, camera_shared=None, speaker=True,
         verbose=os.environ.get("G1_VERBOSE", "") not in ("", "0"),
         scene=task.get("scene") or "none", sim_objects=[parse_object(o) for o in task.get("objects") or []],
         camera_size=task.get("camera_size"), sim_start=task.get("start"), success=task.get("success"),

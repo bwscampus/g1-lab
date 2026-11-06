@@ -68,6 +68,14 @@ def test_commands_are_routed_by_their_allow_list(capsys):
     assert "audio: 1 call(s)" in capsys.readouterr().out
 
 
+def test_with_the_speaker_off_speech_is_printed_never_said(capsys):
+    env = robot(speaker=False)                                    # g1 start's /speaker off
+    env.step(act(("TtsMaker", {"text": "I found it", "speaker_id": 0})))
+    env.step(act(("WaveHand", {"turn_flag": True})))
+    assert env.audio.calls == [] and env.audio_calls == 0 and env.loco.calls == [("WaveHand", {"turn_flag": True})]
+    assert "robot (speaker off): I found it" in capsys.readouterr().out and len(env.arm.sent) == 2
+
+
 def test_a_missing_or_failing_speaker_never_stops_the_run(capsys):
     env = robot()
     env.audio = None

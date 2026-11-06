@@ -13,7 +13,7 @@ from g1.session import Command, RoutineInfo, Session, TaskInfo
 
 @pytest.mark.parametrize("line, name, args, text", [
     ("do a T-pose", "chat", [], "do a T-pose"),
-    ("/chat wave at them", "chat", [], "wave at them"),
+    ("/speaker off", "speaker", ["off"], ""), ("/speaker ON", "speaker", ["on"], ""),
     ("/routine tpose", "routine", ["tpose"], ""),
     ("/task find_the_mug", "task", ["find_the_mug"], ""),
     ("/move greet with both hands", "move", ["greet with both hands"], ""),
@@ -36,7 +36,8 @@ def test_every_command_parses(line, name, args, text):
 @pytest.mark.parametrize("line, match", [
     ("/fly", "unknown command /fly"), ("/routine", "usage: /routine NAME"), ("/routine a b", "usage"),
     ("/walk", "usage: /walk"), ("/walk fast", "numbers"), ("/walk 1 2 3 4", "usage"), ("/mode sitting", "usage"),
-    ("/mic maybe", "usage"), ("/say", "usage"), ("/chat", "usage"), ("/skills now", "usage"), ("   ", "^$"),
+    ("/mic maybe", "usage"), ("/say", "usage"), ("/chat hi", "unknown command /chat"),
+    ("/speaker maybe", "usage"), ("/skills now", "usage"), ("   ", "^$"),
 ])
 def test_a_bad_line_says_why(line, match):
     with pytest.raises(ParseError, match=match):
@@ -46,13 +47,15 @@ def test_a_bad_line_says_why(line, match):
 def test_help_covers_every_command_and_the_keys():
     text = "\n".join(help_lines())
     assert all(usage in text for usage, _ in COMMANDS.values()) and "Esc stops" in text and "L2+B" in text
+    assert "/chat" not in text and "/speaker on|off" in text
 
 
 # -- the console's logic ----------------------------------------------------------------------------
 
-def console(busy=False, **kw):
+def console(busy=False, **kw):  # kw: Session settings (mode=...)
     s = Session(None, None, None, None, {516: {"name": "bow", "duration": 4.9}},
-                routines={"tpose": RoutineInfo("arms out in a T")}, tasks={"find_it": TaskInfo("find it")})
+                routines={"tpose": RoutineInfo("arms out in a T"), "walkabout": RoutineInfo("a step", uses_base=True)},
+                tasks={"find_it": TaskInfo("find it")}, runner=lambda *a: {"ok": True}, **kw)
     if busy:
         s.busy.set()
     out, stops = [], []
@@ -131,10 +134,14 @@ def test_completion_offers_commands_then_names():
     c, _, _, _, _ = console()
     assert ("/routine", COMMANDS["routine"][1]) in completions(c, "/ro")
     assert completions(c, "/routine t") == [("tpose", "arms out in a T")]
+    assert [n for n, _ in completions(c, "/routine ")] == ["tpose", "walkabout"]
     assert completions(c, "/task ") == [("find_it", "find it")]
     assert completions(c, "/move b") == [("bow", "built-in 516")]
     assert [n for n, _ in completions(c, "/mode ")] == ["standing", "gantry"]
     assert completions(c, "hello") == []
+    g, _, _, _, _ = console(mode="gantry")                          # only what the mode allows
+    assert [n for n, _ in completions(g, "/routine ")] == ["tpose"] and completions(g, "/move b") == []
+    assert [n for n, _ in completions(g, "/speaker ")] == ["on", "off"]
 
 
 # -- the app, keystrokes piped in -----------------------------------------------------------------
