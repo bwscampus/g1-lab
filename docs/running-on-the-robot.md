@@ -245,6 +245,7 @@ service list and lidar parameters read from this robot.
 
 ## The session (`g1 start`)
 
+
 ```
 g1 start --mode gantry           # hanging: routines and tasks only (each damps at the end)
 g1 start --mode standing         # on its own feet: built-ins, walking, everything
@@ -256,6 +257,7 @@ speech recognition) and you type: **plain text is chat**, exactly as if you had 
 thing said or typed the model (`configs/model.json`) makes one choice:
 
 * `say`: an answer (spoken with `TtsMaker`, English voice: `tts_speaker_id` 1), and nothing else;
+* `remember`: a fact kept in `knowledge/MEMORY.md` (or one forgotten), with a short line said;
 * `move` / `walk`: a **built-in**, standing mode only: a stored gesture or dance (ids 5xx/6xx, never
   a get-up or lie-down), or a turn, walk and sidestep capped by `talk_turn_max_deg`, `talk_walk_max_m`,
   `talk_side_max_m` in walk mode (501, `walk_fsm`). It cannot see while it talks: it walks only when
@@ -278,6 +280,7 @@ directly, without the model and without the question:
 | `/speaker on\|off` | say replies out loud (`TtsMaker`), or only print them here; tasks and routines run from the session follow it (their `say` is printed as `robot (speaker off): ...`). Default on |
 | `/camera on\|off` | the head camera, live at `http://127.0.0.1:8765` (`ssh -L 8765:...` from a laptop); tasks reuse it |
 | `/lidar on\|off` | switches the lidar services on if needed, SLAM mapping and its live 3D view at `:8766`; off (and exit) saves `runs/lidar/<time>/map.pcd` and switches off the services it switched on |
+| `/memory` · `/soul` | what the robot remembers (the newest of `knowledge/MEMORY.md`) · who it is (`knowledge/SOUL.md`) |
 | `/status` · `/stop` · `/help` · `/quit` | the `g1 status` probe; Esc; the list; exit |
 
 A routine or task runs through `g1 run`'s own path in the session's mode (standing: back to walk
@@ -301,6 +304,22 @@ thread), the path the safe return is shielded on: a stop or exit pressed during 
 the robot is back to neutral. On exit the lidar's mapping ends and its map is saved and the camera
 closes. Needs voice interaction on in the app for the mic, the model's key in `.env` for chat (without
 it, only direct commands work), and `prompt_toolkit` (in `pip install -e .`).
+
+### Its knowledge: `knowledge/SOUL.md` and `MEMORY.md`
+
+Who the robot is and what it knows live in `knowledge/` on the machine that runs `g1 start`
+(on the Jetson: `~/g1-lab/knowledge/`), git-ignored, one robot's own (`knowledge/README.md`):
+
+- **`SOUL.md`**: its personality, how it talks, where it is and who it talks to. Made from the tracked
+  `SOUL.example.md` on the first start; edit it with any editor, and the next answer uses it.
+- **`MEMORY.md`**: what it has learned, one dated bullet each. The robot writes it itself: when someone
+  tells it something worth keeping (the model's `remember`), and at the end of each session, when the
+  model reads that session's log and adds or removes bullets (Esc skips it; at most
+  `memory_distill_timeout_s`). Its newest `memory_max_chars` go into every prompt.
+- **`sessions/DATE.md`**: one line per exchange (`[voice]`, `[typed]` or `[command]`, and what it did).
+
+The rules (its tools, never walking unless asked or toward people, declining what is unsafe) stay in
+code (`g1/session.py`, `MECHANICS`) before both files, so neither can remove them. Tasks never see them.
 
 ## Ctrl-C
 

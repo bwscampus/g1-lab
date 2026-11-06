@@ -66,7 +66,7 @@ g1 start --mode standing|gantry      # the robot only: one interactive session (
                                      # (rt/audio_msg) and you type: plain text is chat (as if said); the model answers or
                                      # chooses a built-in (5xx/6xx move, capped walk; standing only), a routine or a task
                                      # (model-chosen ones confirmed y/N). /routine /task /move /walk /say call one directly;
-                                     # /skills /mode /mic /speaker /camera /lidar /status /help /quit. Esc stops what runs, to
+                                     # /skills /mode /mic /speaker /camera /lidar /memory /soul /status /help /quit. Esc stops what runs, to
                                      # neutral; Ctrl-C clears the line (stops a running skill); Ctrl-C twice exits
 g1 twin fetch|status
 g1 trace compare RUN_A RUN_B | show RUN   # two run dirs of the same task: tracking, sag, lag, A-B difference
@@ -115,6 +115,8 @@ g1/microphone.py   Microphone (rt/audio_msg: the robot's speech recognition, an 
 g1/vlm.py          VLMClient (Hugging Face or OpenRouter), load_dotenv
 g1/session.py      g1 start's engine (Session: mode, mic/speaker/camera/lidar, the events queue, chat -> the model's one choice,
                    run_skill: the one executor; robot_runner: cli.run_once in the session's mode, its mic and camera)
+g1/knowledge.py    g1 start's knowledge base (knowledge/: SOUL.md by people, MEMORY.md by the robot, sessions/DATE.md;
+                   the prompt's soul and memory, remember/forget, the daily log, the end-of-session distill)
 g1/console.py      g1 start's terminal (prompt_toolkit in its own thread: input box, status line, / completion;
                    parse, Console: Esc/Ctrl-C/y-N/quit, start_main)
 g1/routines.py     routines: SCHEMA, load_routine, routine_names, compile_segments (the timeline as Segments), run_spec
@@ -237,6 +239,13 @@ root via `pythonpath`. `limits.ROOT` is the repo root (configs/, tasks/, assets/
   furniture, wall or object positions or sizes) and never the twin's truth (true base pose, contacts), in sim
   or on the robot: `Obs.base_pose` reaches only the records. Task `safety_notes` are behaviour rules; world
   facts go in `notes` (never sent). `tests/agent/test_what_the_model_knows.py` guards it.
+- **The knowledge base is the session's only.** `knowledge/SOUL.md` (who the robot is; people write it,
+  the robot never does), `knowledge/MEMORY.md` (what it learned; the robot writes it freely: the model's
+  `remember` tool and the distill at the end of a session) and `knowledge/sessions/` are per robot and
+  git-ignored (`SOUL.example.md` and the README are tracked). Only `g1 start` reads them, after its rules
+  (`session.MECHANICS`: the tools and the safety lines, in code so no file can remove them); tasks and
+  `g1/agent/` never import `g1.knowledge` (`tests/test_knowledge.py` guards it). Persona and setting
+  (the school, the audience) belong in SOUL.md, never in code.
 - **Hearing is a sense like the camera.** A task with `hears` subscribes `rt/audio_msg` (the robot's own
   speech recognition; voice interaction on in the app) through the link (`g1/microphone.py`), and each
   observation carries `heard`: what was said since the last one, other languages and the robot's own speech

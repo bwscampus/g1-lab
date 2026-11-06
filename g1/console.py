@@ -12,6 +12,7 @@ call things directly:
     /say TEXT                   the robot says it
     /mode gantry|standing       switch mode; it never moves the robot
     /mic on|off · /speaker on|off · /camera on|off · /lidar on|off
+    /memory · /soul             what the robot remembers, who it is (knowledge/)
     /status · /stop · /help · /quit
 
 Keys: **Esc stops** what the robot is doing (to its safe neutral; the session goes on). **Ctrl-C**
@@ -52,6 +53,8 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "speaker": ("/speaker on|off", "say replies out loud, or only here (tasks' say too)"),
     "camera": ("/camera on|off", "the head camera, live at http://127.0.0.1:<view_port>; tasks use it"),
     "lidar": ("/lidar on|off", "SLAM mapping and its live view; off saves the map"),
+    "memory": ("/memory", "what the robot remembers (knowledge/MEMORY.md, the newest)"),
+    "soul": ("/soul", "who the robot is (knowledge/SOUL.md; edit it in an editor)"),
     "status": ("/status", "the link, the FSM and the battery (read-only)"),
     "stop": ("/stop", "stop what the robot is doing (Esc)"),
     "help": ("/help", "this list"),
@@ -175,8 +178,10 @@ class Console:
         if cmd.name == "help":
             for line in help_lines():
                 self.out(line)
-        elif cmd.name == "skills":
-            for line in self.session.skills():
+        elif cmd.name in ("skills", "memory", "soul"):
+            lines = {"skills": self.session.skills, "memory": self.session.memory_lines,
+                     "soul": self.session.soul_lines}[cmd.name]()
+            for line in lines:
                 self.out(line)
         elif cmd.name == "stop":
             self.stop()
@@ -409,9 +414,13 @@ def start_main(argv: list[str]) -> int:
         from g1.envs.robot import status_main
         status_main([])
 
+    from g1.knowledge import Knowledge
+    knowledge = Knowledge()
+    for note in knowledge.ensure():
+        print(note)
     session = Session(mic, audio, moves, model, menu, mode=a.mode, routines=routine_menu(), tasks=task_menu(),
                       runner=robot_runner(), verbose=verbose, camera_factory=open_camera, viewer_factory=view,
-                      lidar_factory=lidar, status_probe=status)
+                      lidar_factory=lidar, status_probe=status, knowledge=knowledge)
     console = Console(session)
     quit_on_signals(console)
     from prompt_toolkit.patch_stdout import patch_stdout

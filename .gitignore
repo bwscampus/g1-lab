@@ -225,3 +225,8 @@ tasks/*/results.jsonl
 routines/*/runs/
 routines/*/results.jsonl
 suites/*/runs/
+
+# the robot's knowledge base: per robot (g1/knowledge.py); README and SOUL.example are tracked
+knowledge/SOUL.md
+knowledge/MEMORY.md
+knowledge/sessions/
