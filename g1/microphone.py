@@ -54,7 +54,7 @@ class Microphone:
         self._log: list[Heard] = []
         self.speaking = False                  # the robot's speaker is playing (play_state)
         self._quiet_at = -math.inf             # when it last stopped
-        self.counts = {"messages": 0, "heard": 0, "other_language": 0, "while_speaking": 0, "unreadable": 0}
+        self.counts = {"messages": 0, "heard": 0, "typed": 0, "other_language": 0, "while_speaking": 0, "unreadable": 0}
 
     def __call__(self, msg) -> None:
         """The subscriber callback: a ``std_msgs String`` (its ``data``) or the JSON text."""
@@ -89,6 +89,16 @@ class Microphone:
                 return
             self.counts["heard"] += 1
             self._log.append(Heard(text, language, now, len(self._log) + 1))
+
+    def typed(self, text: str) -> None:
+        """A line the person at the keyboard typed while a task listens: heard as if said (no language or
+        echo filter: it was not picked up by the microphone)."""
+        text = " ".join(str(text).split())
+        if not text:
+            return
+        with self._lock:
+            self.counts["typed"] += 1
+            self._log.append(Heard(text, "en", self.clock(), len(self._log) + 1))
 
     @property
     def seq(self) -> int:

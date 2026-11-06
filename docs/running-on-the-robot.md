@@ -294,13 +294,13 @@ directly, without the model and without the question:
 | command | does |
 |---|---|
 | `do a T-pose` (any plain text) | chat: as if said |
-| `/skills` | the built-ins, routines and tasks this mode allows (and the mic: a task that hears needs it on); typing one it leaves out says why it is refused |
-| `/routine NAME` · `/task NAME [WHAT]` | run one now; WHAT fills the task's slot (`/task point_at water bottle`). The session shows only tasks without `"session": false`: `point_at` |
+| `/skills` | the built-ins, routines and tasks this mode allows; typing one it leaves out says why it is refused |
+| `/routine NAME` · `/task NAME [WHAT]` | run one now; WHAT fills the task's slot (`/task point_at water bottle`). The session shows only tasks without `"session": false`: `point_at`, which finds the object, points, and keeps pointing (re-aiming after each short listen) until you say or type "stop" (Esc stops at once) |
 | `/move ID\|NAME` · `/say TEXT` | a built-in move now · the robot says it |
 | `/mode gantry\|standing` | switch mode: it asks you to confirm it is hanging / standing; refused while the robot is in an FSM the new mode blocks. Never changes the FSM |
 | `/fsm ID` | `SetFsmId(ID)` now, outside the usual order, and print the FSM the robot reaches (y/N first for 0, 1, 3, 4, 801); refused for an FSM the mode blocks |
-| `/mic on\|off` | handle what the robot hears like chat, or ignore it (a task that hears needs it on). Off at the start |
-| `/speaker on\|off` | say replies out loud (`TtsMaker`), or only print them here; tasks and routines run from the session follow it (their `say` is printed as `robot (speaker off): ...`). Off at the start |
+| `/mic on\|off` | handle what the robot hears like chat, or ignore it. Off at the start. A task that hears (`point_at`) hears either way, and while it runs a line you type goes to it as if said ("stop") |
+| `/speaker on\|off` | say replies out loud (`TtsMaker`), or only print them here; tasks and routines run from the session follow it (their `say` is printed as `robot (speaker off): ...`). On at the start |
 | `/camera on\|off` | the head camera, live at `http://127.0.0.1:8765` (`ssh -L 8765:...` from a laptop); tasks reuse it |
 | `/lidar on\|off` | switches the lidar services on if needed, SLAM mapping and its live 3D view at `:8766`; off (and exit) saves `runs/lidar/<time>/map.pcd` and switches off the services it switched on |
 | `/memory` · `/soul` | what the robot remembers (the newest of `knowledge/MEMORY.md`) · who it is (`knowledge/SOUL.md`) |

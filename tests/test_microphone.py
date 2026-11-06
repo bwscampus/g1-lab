@@ -41,7 +41,7 @@ def test_utterances_are_logged_and_other_languages_and_echoes_dropped():
     mic.on_message("not json")
     assert [h.text for h in mic.since(0)] == ["Point at the mug.", "Now the laptop."]
     assert [h.text for h in mic.since(1)] == ["Now the laptop."] and mic.seq == 2
-    assert mic.counts == {"messages": 8, "heard": 2, "other_language": 1, "while_speaking": 2, "unreadable": 1}
+    assert mic.counts == {"messages": 8, "heard": 2, "typed": 0, "other_language": 1, "while_speaking": 2, "unreadable": 1}
 
 
 def test_heard_view_keeps_the_newest_within_its_limits():
@@ -104,3 +104,11 @@ def test_task_rules_for_hearing(tmp_path, bad, match):
     (d / "task.json").write_text(json.dumps({k: v for k, v in spec.items() if v is not None}))
     with pytest.raises(ValueError, match=match):
         load_task(d)
+
+
+def test_a_typed_line_is_heard_as_if_said_whatever_the_speaker_does():
+    from g1.microphone import Microphone
+    mic = Microphone(lambda: 3.0)
+    mic.on_message(json.dumps({"play_state": 1}))                   # the robot is talking: speech would be dropped
+    mic.typed("  stop   now ")
+    assert [(h.text, h.language) for h in mic.since(0)] == [("stop now", "en")] and mic.counts["typed"] == 1

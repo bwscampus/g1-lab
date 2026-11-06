@@ -145,6 +145,14 @@ class ArmSdk:
             self.pub.Write(self.cmd)
             self.link.sleep(CONTROL_DT)
 
+    def close(self) -> None:
+        """Stop the LowState subscriber. In g1 start the process outlives the run: left open, its
+        500 Hz Python callback starves the session's RPC replies on the Jetson (3104 on every call)."""
+        close = getattr(self.sub, "Close", None)
+        if close is not None:
+            close()
+        self.sub = None
+
     def send(self, action: Action) -> None:
         for j in action.joints:
             mc = self.cmd.motor_cmd[j]
@@ -346,25 +354,33 @@ class RobotEnv(Env):
         self._say(f"dds: ChannelFactoryInitialize({domain}, {self.args.iface!r})")
         link.init(domain, self.args.iface)
         self.link_health = Health(clock=link.now)     # the live link monitor (self.health is report()'s summary)
-        self.loco = link.loco()
-        self.loco.SetTimeout(limits.get("rpc_timeout_s"))
-        self.loco.Init()
+        shared_loco = getattr(self.args, "loco_shared", None)
+        if shared_loco is not None:            # g1 start's clients: no second client in its process
+            self.loco = shared_loco
+        else:
+            self.loco = link.loco()
+            self.loco.SetTimeout(limits.get("rpc_timeout_s"))
+            self.loco.Init()
         self.seated = False                    # a sit tool sat it down: the teardown stands it up
         self.audio = None
         self.audio_calls = 0
         self._audio_warned = False
-        try:
-            self.audio = link.audio()
-            self.audio.SetTimeout(limits.get("rpc_timeout_s"))
-            self.audio.Init()
-            code, volume = self._call(self.audio, "GetVolume")
-            if code == 0:
-                print(f"audio: volume {volume}")
-            else:
-                raise RuntimeError(sdk.explain(code))
-        except Exception as e:                  # a robot without the voice service still runs
-            print(f"warning: audio service unavailable ({e}); say will be skipped")
-            self.audio = None
+        shared_audio = getattr(self.args, "audio_shared", None)
+        if shared_audio is not None:
+            self.audio = shared_audio
+        else:
+            try:
+                self.audio = link.audio()
+                self.audio.SetTimeout(limits.get("rpc_timeout_s"))
+                self.audio.Init()
+                code, volume = self._call(self.audio, "GetVolume")
+                if code == 0:
+                    print(f"audio: volume {volume}")
+                else:
+                    raise RuntimeError(sdk.explain(code))
+            except Exception as e:              # a robot without the voice service still runs
+                print(f"warning: audio service unavailable ({e}); say will be skipped")
+                self.audio = None
         self.microphone = None
         shared = getattr(self.args, "microphone", None)
         self._microphone_shared = False
@@ -478,6 +494,9 @@ class RobotEnv(Env):
         if arm is not None:
             print("leaving control mode: releasing the arms")
             arm.release()
+            close = getattr(arm, "close", None)
+            if close is not None:
+                close()                          # the LowState subscriber ends with the run
         loco = getattr(self, "loco", None)
         if loco is None:
             return

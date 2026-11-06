@@ -302,6 +302,7 @@ class Session:
         self.quit = threading.Event()
         self.busy = threading.Event()
         self.running = ""                       # what runs now, for the status line
+        self.listening_task = ""                # a task that hears is running: typed lines go to it (tell_task)
         self.fsm: Optional[int] = None
         self.mic_on = False                         # off at the start: /mic on handles what it hears like chat
         self.knowledge = knowledge                  # g1/knowledge.py: SOUL.md, MEMORY.md, the daily log (None: none)
@@ -330,8 +331,6 @@ class Session:
         if kind == "task":
             if name not in self.tasks:
                 return f"no task {name!r} (/skills lists them)"
-            if self.tasks[name].hears and not self.mic_on:
-                return f"task {name} listens: /mic on first"
         if kind in ("routine", "task"):
             modes = (self.routines if kind == "routine" else self.tasks)[name].modes
             if self.mode not in modes:
@@ -343,7 +342,7 @@ class Session:
     def fsm_refusal(self, kind: str) -> Optional[str]:
         """Why no ``kind`` may start from the FSM the robot reports (None: it may)."""
         if self.fsm is None:
-            return "the robot's FSM is unknown (no reply to GetFsmId): /status"
+            return None                              # not known (no reply): it runs, and the run itself reports
         here = sdk.fsm_name(self.fsm)
         if not fsm_allowed(self.mode, self.fsm):
             return f"the robot is in FSM {here}, which {self.mode} mode blocks ({allowed_text(self.mode)}): /fsm first"
@@ -668,7 +667,7 @@ class Session:
             what = (f"the {name} routine ({self.routines[name].notes})" if kind == "routine"
                     else f"the task {name}: {instruction}")
             self.speak(say or (f"I will play my {name} routine." if kind == "routine"
-                               else f"I will {instruction.split(';')[0]}."))
+                               else f"I will {re.split(r'[.;]', instruction)[0]}."))
             if not self.ui.confirm(f"Start {what}? It takes over the arms ({self.mode} mode)."):
                 self._remember(heard, f"[{kind} {name}: not approved at the keyboard]")
                 self.speak("Okay, I will not do that.")
@@ -676,9 +675,14 @@ class Session:
         elif say:
             self.speak(say)
         self.counts["routines" if kind == "routine" else "tasks"] += 1
-        settings = {"microphone": self.mic, "camera_shared": self.camera, "speaker": self.speaker_on}
+        settings = {"microphone": self.mic, "camera_shared": self.camera, "speaker": self.speaker_on,
+                    "loco_shared": getattr(self.moves, "loco", None), "audio_shared": self.audio}
         run = ((lambda: self.runner(kind, name, self.mode, settings, fill=fill)) if fill
                else (lambda: self.runner(kind, name, self.mode, settings)))
+        hears = kind == "task" and self.tasks[name].hears and self.mic is not None
+        if hears:
+            self.listening_task = name
+            print(f"{name} listens: say or type \"stop\" to end it (Esc stops it at once)")
         try:
             result = self._busy(f"{kind} {label} (Esc stops)", run)
         except KeyboardInterrupt:
@@ -692,6 +696,9 @@ class Session:
             self.speak(f"Sorry, I could not do the {name} {kind}.")
             return
         finally:
+            self.listening_task = ""
+            if self.mic is not None:
+                self._seq = self.mic.seq                # what was said to the task is not chat afterwards
             self._refresh_fsm()
         if result.get("stopped"):
             self._stopped(f"{kind} {label}")
@@ -703,6 +710,13 @@ class Session:
             self.speak(str(result["summary"]))
         else:
             self.speak("Done." if result.get("ok") else "That did not go as planned.")
+
+    def tell_task(self, text: str) -> bool:
+        """A line typed while a task that hears runs: it hears it as if said (True), else False."""
+        if not self.listening_task or self.mic is None:
+            return False
+        self.mic.typed(text)
+        return True
 
     def _refresh_fsm(self) -> None:
         try:
