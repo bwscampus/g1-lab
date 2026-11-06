@@ -41,6 +41,9 @@ FSM_NAMES = {0: "zero torque", 1: "damp", 2: "squat", 3: "sit", 4: "locked stand
              706: "stand to squat", 801: "run (walk-run)", 550: "playing a stored move",
              802: "after a stored move"}
 STANDING_FSMS = frozenset({4, 200, 500, 501})        # states a standing run may start in and return to
+# Unitree's controller balancing and walking the legs: arm_sdk blends into the upper body and Move walks,
+# so a run found in one stays in it (on our G1, 501 -> 200 is refused, 2026-11-07); from 4 it enters 200
+CONTROL_FSMS = frozenset({200, 500, 501})
 
 
 def fsm_name(fsm: Any) -> str:

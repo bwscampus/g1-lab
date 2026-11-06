@@ -545,3 +545,16 @@ def test_look_up_is_bounded_said_when_it_fails_and_only_offered_with_search(monk
     s.model = Searching(("look_up", {"query": "news"}), found=RuntimeError("quota"))
     s.chat("any news today")
     assert s.audio.said == ["Sorry, I could not look that up right now."] * 2 and len(s.model.asked) == 1
+
+
+
+def test_a_long_reply_is_spoken_whole_in_sentence_pieces(monkeypatch, capsys):
+    monkeypatch.setitem(session_module.limits.LIMITS["say_max_chars"], "value", 40)
+    text = ("Brentwood School is in Los Angeles. It has two campuses! The upper school offers many courses in "
+            "science and the arts.")
+    pieces = session_module.speech_pieces(text, 40)
+    assert " ".join(pieces) == text and all(len(p) <= 40 for p in pieces)
+    assert pieces[:2] == ["Brentwood School is in Los Angeles.", "It has two campuses!"]
+    s, _, _ = make()
+    s.speak(text)
+    assert " ".join(s.audio.said) == text and len(s.audio.said) == len(pieces) and f"robot: {text}" in capsys.readouterr().out

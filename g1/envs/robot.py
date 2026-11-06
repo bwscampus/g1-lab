@@ -15,8 +15,9 @@ the base (LocoClient.Move) — "control mode" in the messages below.
             arms -> Damp. Found standing (4, 200, 500, 501; g1 start's gantry session rests
             in 200): as standing below, no Damp.
   standing  we command the legs through LocoClient (walks, sit). The robot already standing
-            under its own controller: remember the current FSM -> FSM 200 (skipped when
-            already there) -> run -> release arms -> back to the remembered FSM. Never damps.
+            under its own controller: in a control FSM (200, 500, 501: arm_sdk and Move work
+            there) it stays; from 4 it enters 200 -> run -> release arms -> back to the FSM
+            it was in. Never damps.
 
 Either way a run leaves the robot in the FSM it found.
 
@@ -394,8 +395,8 @@ class RobotEnv(Env):
             print(f"fsm: {sdk.fsm_name(FSM_LOCKED_STAND)}")
             link.sleep(limits.get("gantry_lock_stand_s"))
             self.initial_fsm = None                   # found limp: damped again at the end
-        if self.initial_fsm == FSM_MAIN:
-            print(f"already in control mode (FSM {FSM_MAIN}, main operation)")
+        if self.initial_fsm in sdk.CONTROL_FSMS:
+            print(f"already in control mode (FSM {sdk.fsm_name(self.initial_fsm)}): no FSM change")
         else:
             print(f"entering control mode (FSM {FSM_MAIN}, main operation)"
                   + (f"; will return to FSM {self.initial_fsm} after the run" if self.initial_fsm is not None else ""))
@@ -490,7 +491,7 @@ class RobotEnv(Env):
             if getattr(self, "seated", False):
                 print(f"warning: the robot is still seated; stand it up with the remote "
                       f"(SetFsmId({FSM_SIT_TO_STAND}), then FSM {FSM_MAIN})")
-            elif initial is not None and initial != FSM_MAIN:
+            elif initial is not None and self._fsm_now(loco) != initial:
                 if initial in sdk.STANDING_FSMS:
                     code, _ = self._call(loco, "SetFsmId", initial)
                     self.link.sleep(limits.get("restore_fsm_s"))
@@ -501,6 +502,11 @@ class RobotEnv(Env):
                           f"{sdk.fsm_name(initial)}, which is not a standing state")
         code, fsm = self._call(loco, "GetFsmId")
         print(f"fsm: {sdk.fsm_name(fsm) if code == 0 else sdk.explain(code)}; done")
+
+    def _fsm_now(self, loco):
+        """The FSM the robot reports now (None when it does not answer); never raises."""
+        code, fsm = self._call(loco, "GetFsmId")
+        return fsm if code == 0 else None
 
     def _stand_up(self, loco) -> None:
         """After a sit: SetFsmId(801), wait for a standing FSM, then back to main operation.

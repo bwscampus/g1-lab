@@ -245,6 +245,24 @@ def _instruction(t) -> str:
     return t.instruction if isinstance(t, TaskInfo) else str(t)
 
 
+def speech_pieces(text: str, size: int) -> list[str]:
+    """``text`` as pieces of at most ``size`` characters, split after sentence ends (else at a word,
+    else hard), nothing dropped."""
+    sentences = [s for s in re.split(r"(?<=[.!?;:])\s+", text.strip()) if s]
+    pieces: list[str] = []
+    for s in sentences:
+        while len(s) > size:                         # one long sentence: at the last space that fits
+            cut = s.rfind(" ", 0, size + 1)
+            cut = cut if cut > 0 else size
+            pieces.append(s[:cut].strip())
+            s = s[cut:].strip()
+        if pieces and len(pieces[-1]) + 1 + len(s) <= size:
+            pieces[-1] += " " + s
+        elif s:
+            pieces.append(s)
+    return pieces
+
+
 def _clamp(value, cap: float) -> float:
     try:
         return max(-cap, min(cap, float(value or 0.0)))
@@ -402,23 +420,26 @@ class Session:
 
     # -- speaking ------------------------------------------------------------------------------------
     def speak(self, text: str) -> None:
-        text = text.strip()[: int(limits.get("say_max_chars"))]
+        """Say all of ``text``: printed whole, spoken in pieces of at most ``say_max_chars`` split at
+        sentence ends (one TtsMaker call each, the next after the speaker is quiet), never cut off."""
+        text = " ".join(text.split())
         if not text:
             return
         print(f"robot: {text}")
         if self.audio is None or not self.speaker_on:
             return
-        code, _ = sdk.call(self.audio, "TtsMaker", text, int(limits.get("tts_speaker_id")),
-                           log=self.moves.log, verbose=self.verbose, label="AudioClient")
-        if code != 0:
-            print(f"warning: TtsMaker failed ({sdk.explain(code)}); voice interaction on in the app?")
-            return
         self.counts["said"] += 1
-        # The robot speaks on its own; wait out the words, then until its speaker reports quiet.
-        self.sleep(max(limits.get("say_min_s"), len(text) / limits.get("speech_chars_per_s")))
-        t0 = self.now()
-        while self.mic is not None and self.mic.speaking and self.now() - t0 < limits.get("talk_speech_timeout_s"):
-            self.sleep(limits.get("talk_poll_s"))
+        for piece in speech_pieces(text, int(limits.get("say_max_chars"))):
+            code, _ = sdk.call(self.audio, "TtsMaker", piece, int(limits.get("tts_speaker_id")),
+                               log=self.moves.log, verbose=self.verbose, label="AudioClient")
+            if code != 0:
+                print(f"warning: TtsMaker failed ({sdk.explain(code)}); voice interaction on in the app?")
+                return
+            # The robot speaks on its own; wait out the words, then until its speaker reports quiet.
+            self.sleep(max(limits.get("say_min_s"), len(piece) / limits.get("speech_chars_per_s")))
+            t0 = self.now()
+            while self.mic is not None and self.mic.speaking and self.now() - t0 < limits.get("talk_speech_timeout_s"):
+                self.sleep(limits.get("talk_poll_s"))
 
     def _remember(self, heard: str, what: str) -> None:
         """One exchange: kept for the next turns (in memory) and in the day's log (knowledge/sessions/)."""

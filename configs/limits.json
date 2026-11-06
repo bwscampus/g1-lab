@@ -65,7 +65,7 @@
     "sit_seconds_max":            {"value": 10.0,   "unit": "s",      "source": "guess",      "note": "sit: longest wait for the onboard sit"},
     "sit_line_up_m":              {"value": 0.5,    "unit": "m",      "source": "guess",      "note": "sit: stand this far in front of the seat's front edge, facing it, before turning around"},
     "sit_back_m":                 {"value": 0.3,    "unit": "m",      "source": "measured",   "note": "sit: back up this far after turning around, leaving the seat's edge about 0.1 m behind the heels (twin, 2026-10-20: it sits with the edge from 0.03 m under the heels to 0.25 m behind them; check on the robot)"},
-    "say_max_chars":              {"value": 200,   "unit": "chars", "source": "guess",      "note": "longest text one say may speak"},
+    "say_max_chars":              {"value": 200,   "unit": "chars", "source": "guess",      "note": "a task's say: the longest text one call may speak. g1 start speaks a longer reply whole, split at sentence ends into TtsMaker calls of at most this (2026-11-07: replies were cut off here)"},
     "speech_chars_per_s":         {"value": 12,    "unit": "1/s",   "source": "guess",      "note": "how fast the onboard TTS speaks; say waits len(text)/this; time the real voice and correct this"},
     "say_min_s":                  {"value": 1.0,   "unit": "s",     "source": "guess",      "note": "shortest wait for a say, so a one-word text still lets the TTS start"},
     "say_pause_max_s":            {"value": 10.0,  "unit": "s",     "source": "guess",      "note": "longest extra pause the model may ask for after speaking"},
