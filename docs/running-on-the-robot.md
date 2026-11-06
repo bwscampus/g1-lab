@@ -85,10 +85,11 @@ The mode is who commands the legs, and each task and routine lists the modes it 
   no stored moves): the arms go through arm_sdk in FSM 200 while Unitree's controller holds
   the legs. Found limp: Damp → FSM 4 (locked stand) → FSM 200 (main operation) → run →
   release the arms. Found standing: as below.
-* `standing`: on its own feet; we command the legs through LocoClient (walks, sit). Goes to
-  FSM 200 (nothing to do when already there, as after `g1 start`'s bring-up), runs, releases the arms.
+* `standing`: on its own feet; we command the legs through LocoClient (walks, sit). Runs in the
+  FSM it finds (4, 200, 500, 501, 801, 802) and releases the arms there.
 
-Either way a run ends in FSM 200; it never damps or restores another FSM.
+Either way a run changes no FSM (only a sit is stood up from). Taking the arms is verified only in
+FSM 200; in another FSM the run warns, and `/fsm 200` first is the fix if the arms do not move.
   Never damps.
 
 Entering FSM 200 is what gives this process the arms and the base, so the bring-up prints
@@ -263,11 +264,12 @@ A mode never changes the FSM; it **blocks** FSMs. You switch them with `/fsm ID`
 | when | gantry | standing |
 |---|---|---|
 | FSMs allowed | 0, 1, 4, 200 | every FSM but 0 and 1 (they would drop it) |
-| start (after you confirm it hangs / stands with the area clear) | the bring-up 0 → 1 → 4 → 200 from wherever it is on that way | the same bring-up; a robot already in another FSM (501) is left there |
+| start (after you confirm it hangs / stands with the area clear) | the bring-up 0 → 1 → 4 → 200 from wherever it is on that way | the bring-up 0 → 1 → 4 → 802; a robot already in another FSM (200, 501) is left there |
+| `/skills`, the model's tools | what the mode allows, whatever the FSM (each skill switches what it needs when it runs) | the same |
 | `/fsm ID` | refused for 500, 501, 801, ...: `/mode standing` first | refused for 0 and 1: `/mode gantry` first |
 | `/mode` | refused while the robot is in an FSM the new mode blocks (`/fsm` first) | the same |
 | a built-in move | refused (it would command the legs) | switches to 200 first when not in 200/500/501/801/802, plays (it ends in 802), then goes back to the FSM it was called from |
-| a routine or task | to 200 first when not there, then runs and stays in 200 | the same (refused if the robot does not take 200) |
+| a routine or task | runs in the FSM it finds (from limp: the run's own bring-up to 200) | runs in the FSM it finds; warns outside 200 (arms verified only in 200) |
 | quit | the FSM is left as it is | the same |
 
 A Claude-Code-style terminal: an input box at the bottom, output scrolling above it, a status line

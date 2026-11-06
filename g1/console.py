@@ -266,11 +266,11 @@ def completions(console: Console, text: str) -> list[tuple[str, str]]:
     s = console.session
     options: dict[str, str] = {}
     if head == "routine":                          # only what this mode allows, as /skills
-        options = {n: r.notes for n, r in s.routines.items() if s.why_not("routine", n) is None}
+        options = {n: r.notes for n, r in s.routines.items() if s.why_not("routine", n, fsm=False) is None}
     elif head == "task":
-        options = {n: t.instruction for n, t in s.tasks.items() if s.why_not("task", n) is None}
+        options = {n: t.instruction for n, t in s.tasks.items() if s.why_not("task", n, fsm=False) is None}
     elif head == "move":
-        options = {m["name"]: f"built-in {mid}" for mid, m in s.menu.items() if s.why_not("move", str(mid)) is None}
+        options = {m["name"]: f"built-in {mid}" for mid, m in s.menu.items() if s.why_not("move", str(mid), fsm=False) is None}
     elif head in CHOICES:
         options = {c: "" for c in CHOICES[head]}
     return [(n, d) for n, d in options.items() if n.lower().startswith(rest.lower())]
@@ -370,8 +370,8 @@ def start_main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(prog="g1 start", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--mode", choices=MODES, required=True,
                    help="standing: on its own feet, we command the legs (built-in moves); FSM 0 and 1 blocked. "
-                        "gantry: hanging, the legs never commanded; only FSM 0, 1, 4, 200. Both start with the bring-up "
-                        "0 -> 1 -> 4 -> 200 (y/N); /fsm ID switches the FSM, /mode the mode; neither mode changes the FSM")
+                        "gantry: hanging, the legs never commanded; only FSM 0, 1, 4, 200. Bring-up (y/N): standing "
+                        "0 -> 1 -> 4 -> 802, gantry 0 -> 1 -> 4 -> 200; /fsm ID switches the FSM, /mode the mode; neither mode changes the FSM")
     a = p.parse_args(argv)
     iface = os.environ.get("UNITREE_IFACE")
     if not iface:

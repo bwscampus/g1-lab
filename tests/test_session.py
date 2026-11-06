@@ -485,11 +485,12 @@ def test_a_long_reply_is_spoken_whole_in_sentence_pieces(monkeypatch, capsys):
 def test_the_start_brings_it_up_from_limp_in_both_modes_and_quit_changes_no_fsm(capsys):
     for mode in ("gantry", "standing"):
         ui = ScriptedUI(True)
+        end = 200 if mode == "gantry" else 802                     # standing ends where stored moves play
         s, _, _ = make(fsm=0, mode=mode, ui=ui)
-        assert s.start() and "0 (zero torque) -> 1 (damp) -> 4 (locked stand) -> 200" in ui.asked[0]
-        assert s.moves.loco.calls == [1, 4, 200] and s.fsm == 200
+        assert s.start() and f"0 (zero torque) -> 1 (damp) -> 4 (locked stand) -> {end}" in ui.asked[0]
+        assert s.moves.loco.calls == [1, 4, end] and s.fsm == end
         s.shutdown()
-        assert s.moves.loco.calls == [1, 4, 200] and "left in FSM 200" in capsys.readouterr().out
+        assert s.moves.loco.calls == [1, 4, end] and f"left in FSM {end}" in capsys.readouterr().out
     s, _, _ = make(fsm=501, ui=ScriptedUI(True))                     # standing already: left as it is
     assert s.start() and s.moves.loco.calls == []
     s, _, _ = make(fsm=1, mode="gantry", ui=ScriptedUI(False))       # declined: not started, nothing switched
@@ -533,28 +534,32 @@ def test_the_mic_starts_off_and_the_speaker_on():
     assert not s.mic_on and s.speaker_on and "mic off" in s.status() and "speaker on" in s.status()
 
 
-def test_built_ins_switch_as_they_need_and_go_back_and_runs_go_to_200_and_stay(capsys):
+def test_built_ins_switch_as_they_need_and_go_back_and_runs_stay_in_the_fsm(capsys):
     runner = Runner()
     s, _, _ = make(fsm=501, runner=runner)
     s.handle(Command("move", ["bow"]))                              # plays from 501, ends in 802: back to 501
     assert s.moves.loco.calls == [550516, 501] and s.fsm == 501
-    s.handle(Command("routine", ["tpose"]))                         # a run: to 200 first, and it stays there
-    assert s.moves.loco.calls[-1] == 200 and runner.runs[0][:2] == ("routine", "tpose") and s.fsm == 200
+    s.handle(Command("routine", ["tpose"]))                         # a run: no FSM change from the session
+    assert s.moves.loco.calls == [550516, 501] and runner.runs[0][:2] == ("routine", "tpose") and s.fsm == 501
     s.moves.loco.fsm = 4
     s.handle(Command("move", ["bow"]))                              # 4 does not play moves: 200 first, then back to 4
     assert s.moves.loco.calls[-3:] == [200, 550516, 4]
 
 
-def test_a_run_is_refused_when_the_robot_will_not_take_200_and_a_blocked_fsm_refuses_everything(capsys):
+def test_a_blocked_fsm_refuses_a_run_and_gantry_runs_from_damp(capsys):
     runner = Runner()
-    s, _, _ = make(fsm=501, runner=runner)
-    s.moves.loco.SetFsmId = lambda fsm: 0                           # accepted, never entered (501 -> 200 on our G1)
-    s.handle(Command("routine", ["tpose"]))
-    out = capsys.readouterr().out
-    assert runner.runs == [] and "did not enter 200" in out and s.audio.said[-1] == "Sorry, I could not do the tpose routine."
-    g, _, _ = make(fsm=1, mode="gantry", runner=runner)             # gantry from damp: 200 first, then the run
+    g, _, _ = make(fsm=1, mode="gantry", runner=runner)             # gantry from damp: the run brings it up itself
     g.handle(Command("task", ["find_it"]))
-    assert g.moves.loco.calls == [200] and runner.runs[-1][:3] == ("task", "find_it", "gantry")
+    assert g.moves.loco.calls == [] and runner.runs[-1][:3] == ("task", "find_it", "gantry")
     s2, _, _ = make(fsm=0, runner=runner)                           # limp while standing: blocked
     s2.handle(Command("routine", ["tpose"]))
     assert len(runner.runs) == 1 and "standing mode blocks" in capsys.readouterr().out
+
+
+def test_the_menus_list_what_the_mode_allows_whatever_the_fsm(capsys):
+    s, _, _ = make(fsm=1)                                           # standing, but damp: nothing may run now
+    text = "\n".join(s.skills())
+    assert "/move 516" in text and "/routine tpose" in text and "/task find_it" in text and "(none" not in text
+    assert {"move", "play_routine", "run_task"} <= {t["function"]["name"] for t in s.model_tools()}
+    s.handle(Command("routine", ["tpose"]))                         # running one still checks the FSM
+    assert s.runner.runs == [] and "standing mode blocks" in capsys.readouterr().out

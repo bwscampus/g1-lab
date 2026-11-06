@@ -14,10 +14,11 @@ the base (LocoClient.Move) — "control mode" in the messages below.
             FSM): Damp -> FSM 4 (locked stand) -> FSM 200 (control mode) -> run -> release
             arms. Found standing: as standing below.
   standing  we command the legs through LocoClient (walks, sit). The robot already standing
-            under its own controller (4, 200, 500, 501): FSM 200 (skipped when already there,
-            as g1 start brings it up to 200) -> run -> release arms. Never damps.
+            under its own controller (4, 200, 500, 501, 801, 802): run -> release arms, in
+            that FSM. Never damps.
 
-Either way a run ends in 200, where it ran (a sit is stood up from, back to 200).
+A run changes no FSM: it runs and ends in the FSM it found (only a sit is stood up from,
+to 200). arm_sdk is verified in FSM 200 only; in another the run warns.
 
 The arms are taken where they are (a 2 s weight ramp, nothing moves) and
 released where the last tool left them; no move to a neutral pose, no
@@ -378,12 +379,11 @@ class RobotEnv(Env):
                       + ("" if getattr(self.args, "sim", False) else "; voice interaction must be on in the Unitree app")
                       + ")")
 
-        # A run works in 200 and stays there: found in 200 (g1 start brings the robot up to 200) it
-        # changes no FSM; from another standing FSM it tries 200 (and stops, nothing touched, if the
-        # robot does not take it); a gantry robot found limp gets the full bring-up first.
+        # A run stays in the FSM it finds (g1 start brings the robot up; /fsm switches it): no FSM change,
+        # before or after. Only a gantry robot found limp gets the full bring-up first (Damp -> 4 -> 200).
         self.initial_fsm = self._fsm()
         self._say(f"fsm at start: {sdk.fsm_name(self.initial_fsm)}")
-        if self.initial_fsm not in sdk.STANDING_FSMS:
+        if self.initial_fsm not in sdk.RUN_FSMS:
             if self.args.mode != "gantry":
                 raise SystemExit(f"--mode standing needs a robot standing under its own controller, but it "
                                  f"reports FSM {sdk.fsm_name(self.initial_fsm)}; stand it up first (or use --mode gantry)")
@@ -392,23 +392,11 @@ class RobotEnv(Env):
             self._require(self._call(self.loco, "SetFsmId", FSM_LOCKED_STAND)[0], "SetFsmId(4)")
             print(f"fsm: {sdk.fsm_name(FSM_LOCKED_STAND)}")
             link.sleep(limits.get("gantry_lock_stand_s"))
-            self.initial_fsm = None                   # found limp: brought up
-        if self.initial_fsm == FSM_MAIN:
-            print(f"already in control mode (FSM {FSM_MAIN}, main operation)")
+            self._enter_main(link)
         else:
-            print(f"entering control mode (FSM {FSM_MAIN}, main operation); it stays there after the run")
-            self._require(self._call(self.loco, "SetFsmId", FSM_MAIN)[0], f"SetFsmId({FSM_MAIN})")
-            t0 = link.now()
-            while True:
-                fsm = self._fsm()
-                self._say(f"fsm: {sdk.fsm_name(fsm)} after {link.now() - t0:.1f}s")
-                if fsm == FSM_MAIN:
-                    break
-                if link.now() - t0 > limits.get("fsm_enter_timeout_s"):
-                    raise SystemExit(f"the robot did not enter FSM {FSM_MAIN} within {limits.get('fsm_enter_timeout_s'):g} s (reports "
-                                     f"{sdk.fsm_name(fsm)}): another controller may own the FSM, or it is in "
-                                     "a protection state; check the app and the remote, run g1 status")
-                link.sleep(limits.get("fsm_poll_s"))
+            print(f"control mode in FSM {sdk.fsm_name(self.initial_fsm)}: no FSM change"
+                  + ("" if self.initial_fsm == FSM_MAIN else
+                     f" (warning: taking the arms is verified only in FSM {FSM_MAIN}; if they do not move, /fsm {FSM_MAIN})"))
         self.arm = ArmSdk(self.link_health, link=link)
         self.monitor = self._make_monitor()
         self.base = None
@@ -433,6 +421,22 @@ class RobotEnv(Env):
                 "the robot refused: the app or the remote may own the FSM, or it is in a protection state "
                 "(g1 status shows what it reports)")
         raise SystemExit(f"{what} failed with {sdk.explain(code)}; {hint}")
+
+    def _enter_main(self, link) -> None:
+        """SetFsmId(200) and wait for it (the gantry bring-up from limp); stops before the arms if not."""
+        print(f"entering control mode (FSM {FSM_MAIN}, main operation)")
+        self._require(self._call(self.loco, "SetFsmId", FSM_MAIN)[0], f"SetFsmId({FSM_MAIN})")
+        t0 = link.now()
+        while True:
+            fsm = self._fsm()
+            self._say(f"fsm: {sdk.fsm_name(fsm)} after {link.now() - t0:.1f}s")
+            if fsm == FSM_MAIN:
+                return
+            if link.now() - t0 > limits.get("fsm_enter_timeout_s"):
+                raise SystemExit(f"the robot did not enter FSM {FSM_MAIN} within {limits.get('fsm_enter_timeout_s'):g} s (reports "
+                                 f"{sdk.fsm_name(fsm)}): another controller may own the FSM, or it is in "
+                                 "a protection state; check the app and the remote, run g1 status")
+            link.sleep(limits.get("fsm_poll_s"))
 
     def _fsm(self):
         code, fsm = self._call(self.loco, "GetFsmId")
