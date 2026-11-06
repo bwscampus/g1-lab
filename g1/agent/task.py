@@ -25,10 +25,27 @@ from g1.core import limits
 from g1.vlm import AGENT_SETTINGS
 
 ROOT = limits.ROOT
+MODES = ("standing", "gantry")
+# Which --mode a task (or routine) runs in. gantry: we never command the legs or the base (the arms
+# through arm_sdk, Unitree's controller holding the legs in FSM 200); standing: we do, through
+# LocoClient (walks, sit, stored moves). Anything that needs the legs lists only standing.
+MODES_SCHEMA = {"type": "array", "minItems": 1, "uniqueItems": True, "items": {"enum": list(MODES)}, "default": None,
+                "description": "the modes it runs in: [\"standing\"] when it walks or sits, else [\"gantry\", \"standing\"]"}
+
+
+def mode_refusal(task: dict, mode: str) -> Optional[str]:
+    """Why ``task`` (a task or a routine's run spec) may not run in ``mode`` (None: it may)."""
+    modes = task.get("modes") or MODES
+    if mode in modes:
+        return None
+    return f"{task['name']} runs in {' and '.join(modes)} mode only, not {mode}"
+
+
 SCHEMA = {
-    "type": "object", "additionalProperties": False, "required": ["instruction"],
+    "type": "object", "additionalProperties": False, "required": ["instruction", "modes"],
     "properties": {
         "instruction": {"type": "string", "minLength": 1, "description": "what the model is asked to do"},
+        "modes": MODES_SCHEMA,
         "scene": {"type": "string", "enum": ["none", "room"], "default": "none", "description": "the sim scene"},
         "objects": {"type": "array", "items": {"type": "string"}, "default": [],
                     "description": "sim objects to place, name@x,y[,z] (needs scene room)"},

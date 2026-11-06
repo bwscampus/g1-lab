@@ -36,7 +36,7 @@ class FakeClient:
 def task_folder(tmp_path, name="find_it"):
     d = tmp_path / "tasks" / name
     d.mkdir(parents=True, exist_ok=True)
-    (d / "task.json").write_text(json.dumps({"instruction": "find the laptop and point at it"}))
+    (d / "task.json").write_text(json.dumps({"instruction": "find the laptop and point at it", "modes": ["gantry", "standing"]}))
     return load_task(d)
 
 

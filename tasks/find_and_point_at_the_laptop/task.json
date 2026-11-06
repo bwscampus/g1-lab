@@ -1,5 +1,6 @@
 {
   "instruction": "find the laptop in the room, walk until you are close enough to see it clearly, then point at it with your right arm",
+  "modes": ["standing"],
   "scene": "room",
   "objects": ["laptop@1.75,-1.5,0.77"],
   "safety_notes": ["Things on furniture can be above the top of the image from more than about 1.5 m away: walk closer to inspect.",

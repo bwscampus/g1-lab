@@ -17,7 +17,7 @@ from g1.tools.routines import RoutineTool, routine_program
 def write(tmp_path, tracks, name="r", notes="a test routine"):
     d = tmp_path / name
     d.mkdir(parents=True, exist_ok=True)
-    (d / "routine.json").write_text(json.dumps({"notes": notes, "tracks": tracks}))
+    (d / "routine.json").write_text(json.dumps({"notes": notes, "modes": ["standing"] if "base" in tracks else ["gantry", "standing"], "tracks": tracks}))
     return d
 
 
@@ -169,3 +169,30 @@ def test_g1_run_falls_back_to_routines_and_names_both(capsys):
         main(["run", "no_such_thing", "--sim"])
     err = capsys.readouterr().err
     assert "routines: " in err and "tpose" in err and "tasks: " in err
+
+
+def test_a_routine_declares_its_modes_and_one_that_drives_the_base_is_standing_only(tmp_path):
+    arms = {"upper_body": {"keyframes": [{"t": 1.0, "joints": {"waist_yaw": 0.1}}]}}
+    d = write(tmp_path, arms)
+    assert load_routine(d).modes == ("gantry", "standing")
+    (d / "routine.json").write_text(json.dumps({"tracks": arms}))
+    with pytest.raises(RoutineError, match="modes"):
+        load_routine(d)
+    base = {**arms, "base": [{"t0": 0.0, "t1": 1.0, "vx": 0.2}]}
+    (d / "routine.json").write_text(json.dumps({"modes": ["gantry", "standing"], "tracks": base}))
+    with pytest.raises(RoutineError, match="standing mode only"):
+        load_routine(d)
+    from g1.agent.task import mode_refusal
+    spec = run_spec(write(tmp_path, base, name="walker"))
+    assert spec["modes"] == ["standing"] and "standing mode only, not gantry" in mode_refusal(spec, "gantry")
+
+
+def test_every_shipped_task_and_routine_says_its_modes():
+    from g1.agent.task import load_task
+    from g1.routines import routine_names
+    for name in routine_names():
+        assert load_routine(name).modes
+    for d in (limits.ROOT / "tasks").iterdir():
+        if (d / "task.json").is_file():
+            assert load_task(d)["modes"], d
+    assert load_task(limits.ROOT / "tasks" / "find_the_mug")["modes"] == ["standing"]      # it walks

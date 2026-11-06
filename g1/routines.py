@@ -42,6 +42,7 @@ from g1.core import limits
 from g1.core.action import Segment
 from g1.core.config import BASE_VEL_MAX, JOINT_HI, JOINT_LO, JOINT_NAMES, UPPER_BODY, joint_index
 from g1.core.poses import STAND
+from g1.agent.task import MODES_SCHEMA
 
 DIR = limits.ROOT / "routines"
 GESTURES = ("WaveHand", "ShakeHand")       # the onboard calls a routine may make (config.LOCO_METHODS minus Sit)
@@ -49,9 +50,10 @@ TIME_EPS = 1e-6
 
 _NUM = {"type": "number"}
 SCHEMA = {
-    "type": "object", "additionalProperties": False, "required": ["tracks"],
+    "type": "object", "additionalProperties": False, "required": ["tracks", "modes"],
     "properties": {
         "notes": {"type": "string"},
+        "modes": {k: v for k, v in MODES_SCHEMA.items() if k != "default"},
         "tracks": {
             "type": "object", "additionalProperties": False, "minProperties": 1,
             "properties": {
@@ -90,6 +92,7 @@ class Routine:
     notes: str
     tracks: dict
     points: list[tuple[float, dict[int, float], str, str]]   # upper body: (t, goal, label, ease)
+    modes: tuple = ("standing", "gantry")
 
     @property
     def full_body(self) -> bool:
@@ -201,7 +204,10 @@ def load_routine(name_or_dir: str | Path, root: Optional[Path] = None) -> Routin
     if upper is not None:
         points = (_keyframe_points(upper["keyframes"], str(path)) if "keyframes" in upper
                   else _sample_points(d / upper["samples"], str(path)))
-    routine = Routine(d.name, d, data.get("notes", ""), tracks, points)
+    routine = Routine(d.name, d, data.get("notes", ""), tracks, points, tuple(data["modes"]))
+    if routine.uses_base and "gantry" in routine.modes:
+        raise RoutineError(f"{path}: modes: it drives the base (the legs), so it runs in standing mode only; "
+                           "gantry never commands the legs")
     _check_tracks(routine, str(path))
     return routine
 
@@ -277,6 +283,6 @@ def run_spec(name_or_dir: str | Path, root: Optional[Path] = None) -> dict[str, 
     r = load_routine(name_or_dir, root)
     spec: dict[str, Any] = {k: v.get("default") for k, v in TASK_SCHEMA["properties"].items()}
     duration = sum(s.duration for s in compile_segments(r))
-    spec.update(instruction=None, routine=r.name, routine_dir=str(r.dir), dir=r.dir, name=r.name, notes=r.notes,
+    spec.update(instruction=None, modes=list(r.modes), routine=r.name, routine_dir=str(r.dir), dir=r.dir, name=r.name, notes=r.notes,
                 max_time_s=max(limits.get("max_time_s"), duration + 4 * limits.get("bookend_ramp_max_s")))
     return spec

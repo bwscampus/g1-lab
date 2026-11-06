@@ -228,6 +228,9 @@ def run_once(task: dict, *, sim: bool, mode: Optional[str], view: bool = False, 
         raise SystemExit("the robot needs --mode gantry (hanging: Damp, stand, run, Damp; no walking) or "
                          "--mode standing (standing on its own: walks; never damps); or add --sim")
     mode = mode or "standing"
+    from g1.agent.task import mode_refusal
+    if (why := mode_refusal(task, mode)) is not None:
+        raise SystemExit(f"{why} (its modes: task.json or routine.json)")
     env_name = "sim" if sim else "robot"          # --sim runs RobotEnv itself: the label comes from the flag
     in_process = env is not None
     if env is None:

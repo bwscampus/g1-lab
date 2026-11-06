@@ -6,7 +6,7 @@ import time
 import pytest
 
 from g1.console import COMMANDS, Console, ParseError, completions, help_lines, parse
-from g1.session import Command, RoutineInfo, Session, TaskInfo
+from g1.session import Command, RoutineInfo, Session, TaskInfo, rest_fsm
 
 
 # -- parsing -------------------------------------------------------------------------------------
@@ -54,8 +54,10 @@ def test_help_covers_every_command_and_the_keys():
 
 def console(busy=False, **kw):  # kw: Session settings (mode=...)
     s = Session(None, None, None, None, {516: {"name": "bow", "duration": 4.9}},
-                routines={"tpose": RoutineInfo("arms out in a T"), "walkabout": RoutineInfo("a step", uses_base=True)},
+                routines={"tpose": RoutineInfo("arms out in a T"), "walkabout": RoutineInfo("a step", uses_base=True,
+                                                                                         modes=("standing",))},
                 tasks={"find_it": TaskInfo("find it")}, runner=lambda *a: {"ok": True}, **kw)
+    s.fsm = rest_fsm(s.mode)                                        # resting where its mode rests
     if busy:
         s.busy.set()
     out, stops = [], []

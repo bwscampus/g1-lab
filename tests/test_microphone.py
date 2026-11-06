@@ -100,7 +100,7 @@ def test_task_rules_for_hearing(tmp_path, bad, match):
     from g1.agent.task import load_task
     d = tmp_path / "t"
     d.mkdir()
-    spec = {"instruction": "listen", **bad}
+    spec = {"instruction": "listen", "modes": ["gantry", "standing"], **bad}
     (d / "task.json").write_text(json.dumps({k: v for k, v in spec.items() if v is not None}))
     with pytest.raises(ValueError, match=match):
         load_task(d)

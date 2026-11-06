@@ -67,7 +67,8 @@ g1 start --mode standing|gantry      # the robot only: one interactive session (
                                      # chooses a built-in (5xx/6xx move, capped walk; standing only), a routine or a task
                                      # (model-chosen ones confirmed y/N). /routine /task /move /walk /say call one directly;
                                      # /skills /mode /mic /speaker /camera /lidar /memory /soul /status /help /quit. Esc stops what runs, to
-                                     # neutral; Ctrl-C clears the line (stops a running skill); Ctrl-C twice exits
+                                     # neutral; Ctrl-C clears the line (stops a running skill); Ctrl-C twice exits. It rests in its
+                                     # mode's FSM (gantry 200, standing 501), asked at the start and on /mode; quitting gantry damps
 g1 twin fetch|status
 g1 trace compare RUN_A RUN_B | show RUN   # two run dirs of the same task: tracking, sag, lag, A-B difference
 g1 limits [SOURCE]                   # every limit and default in configs/limits.json as one table, + the model in use
@@ -175,7 +176,7 @@ root via `pythonpath`. `limits.ROOT` is the repo root (configs/, tasks/, assets/
   neutral and the session goes on; Ctrl-C clears the line or, with a skill running, stops it like Esc; **Ctrl-C
   twice** on an empty line exits (so do /quit, SIGTERM, SIGHUP), stopping anything running first. Every stop
   is SIGINT to the process (the UI thread sends it; skills run on the main thread), so every stop takes the
-  one shielded path and nothing cuts a return short. Switching mode never moves the robot. The remote's
+  one shielded path and nothing cuts a return short. The remote's
   L2+B (damp) is the emergency stop. Never call the SDK from `step`. Walking is `LocoClient.Move` in `--mode standing` only; no
   low-level leg control. Onboard calls are allow-listed per service — `config.LOCO_METHODS`
   (`WaveHand`, `ShakeHand`; `needs_loco`; and `Sit`, the one FSM, `config.LOCO_FSM`: `sit`, sent as
@@ -183,12 +184,23 @@ root via `pythonpath`. `limits.ROOT` is the repo root (configs/, tasks/, assets/
   in `RobotEnv._command`; a failed speech warns and continues, a failed gesture raises.
   `PlayStream`/`SetVolume`/`LedControl` are never reachable from a reply. Built-ins (Unitree's stored
   moves) play only from `g1 moves` (a person at the keyboard, any move) and talk (the model, ids 5xx/6xx
-  only, standing mode); only `g1 moves` and the session's walk-mode handover switch other FSMs.
+  only, standing mode); only `g1 moves` and the session's resting-FSM switches change the FSM outside a run.
   The session runs a routine or task only through `cli.run_once` (never arm_sdk, the FSM or a tool itself;
   `tests/test_session.py` guards it); one the model chooses is confirmed y/N, one you type is not.
   `g1 lidar` makes only `config.SLAM_METHODS` (start mapping 1801, end mapping 1802, close SLAM 1901) and
   switches only `lidar.SERVICES` (`lidar_driver`, `unitree_slam`): on when off, and off again at the end
   only those it switched on (the robot is left as found). It never navigates.
+- **The mode is who commands the legs.** `gantry`: we never do (no Move, Sit, stored move or walk mode; the arms
+  through arm_sdk in FSM 200, where Unitree's controller holds the legs; hanging). `standing`: we do, through
+  LocoClient only (no low-level leg control until a trained controller exists). Every task and routine declares
+  `"modes"` in its json (required; anything that walks or sits lists only standing; a routine with a `base` track
+  may not list gantry), and `g1 run --mode X` and the session refuse the others before anything connects. A run
+  leaves the robot in the FSM it found: from a standing FSM (4, 200, 500, 501) straight to 200 and back; only a
+  gantry robot found limp gets Damp → 4 → 200 and is damped again. `g1 start` owns a **resting FSM** per mode
+  (`session.rest_fsm`: gantry 200, standing `walk_fsm` 501): a person confirms the mode at the start and on
+  `/mode` (hanging / on its feet), then the session switches there (`Moves.switch`, along `moves.FSM_NEXT`); every
+  skill starts there (refused anywhere else) and ends there (a stored move's 802 goes back to 501 at once). Quit
+  damps a confirmed gantry and leaves standing in 501 for the remote (never damped or sat: it would fall).
 - **Routines compile to segments and are dry-run first.** A routine's timeline (upper body, base windows,
   onboard gestures at keyframe times; a smooth segment is never split) becomes the `Segment`s every tool plays
   (`ease`: smooth for keyframes, linear between dense samples), dry-run whole before the takeover. Full-body

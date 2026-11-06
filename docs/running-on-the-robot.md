@@ -78,11 +78,17 @@ g1 run point_at_the_laptop --mode gantry --view      # then http://127.0.0.1:876
 
 ## `--mode` (required, no default)
 
-* `gantry`: full bring-up and shutdown for a robot hanging in a gantry. Damp → FSM 4
-  (locked stand) → FSM 200 (main operation) → run → release the arms → Damp. Never walks.
-* `standing`: for a robot already standing under its own controller. Records the current
-  FSM, goes to FSM 200, runs, releases the arms, returns to the recorded FSM. Never damps.
-  May walk.
+The mode is who commands the legs, and each task and routine lists the modes it runs in
+(`"modes"` in its json; another mode is refused before anything connects).
+
+* `gantry`: hanging in a gantry; we never command the legs or the base (no walking, no sit,
+  no stored moves): the arms go through arm_sdk in FSM 200 while Unitree's controller holds
+  the legs. Found limp: Damp → FSM 4 (locked stand) → FSM 200 (main operation) → run →
+  release the arms → Damp. Found standing (4, 200, 500, 501, as in a `g1 start` gantry
+  session, which rests in 200): straight to 200, and back to that FSM at the end; no Damp.
+* `standing`: on its own feet; we command the legs through LocoClient (walks, sit). Records
+  the current FSM, goes to FSM 200, runs, releases the arms, returns to the recorded FSM.
+  Never damps.
 
 Entering FSM 200 is what gives this process the arms and the base, so the bring-up prints
 `entering control mode (FSM 200, main operation)` — or `already in control mode` when the
@@ -247,9 +253,20 @@ service list and lidar parameters read from this robot.
 
 
 ```
-g1 start --mode gantry           # hanging: routines and tasks only (each damps at the end)
-g1 start --mode standing         # on its own feet: built-ins, walking, everything
+g1 start --mode gantry           # hanging, legs never commanded: the routines and tasks listing gantry; rests in 200
+g1 start --mode standing         # on its own feet: built-ins, walking, everything; rests in walk mode (501)
 ```
+
+Each mode has a **resting FSM**, and the robot waits there between skills:
+
+| when | gantry | standing |
+|---|---|---|
+| start (after you confirm it hangs / stands with the area clear) | → 200 (from limp: 1 → 4 → 200) | → 501 (walk mode) |
+| a routine or task | 200 → run → 200 (no Damp, no locked-stand wait) | 501 → 200 → run → 501 |
+| a built-in move or walk | refused (it would command the legs) | 501 → 550 → 802 → back to 501 at once |
+| `/mode` (after its question) | standing → gantry: 501 → 200 | gantry → standing: 200 → 501 |
+| robot not in the resting FSM (the remote moved it) | every skill refused: `/mode gantry` brings it back | every skill refused: `/mode standing` brings it back |
+| quit | Damp: it hangs limp | 501, left standing for the remote (never damped: it would fall) |
 
 A Claude-Code-style terminal: an input box at the bottom, output scrolling above it, a status line
 under it (mode, FSM, mic, camera and lidar with their URLs, what is running). The robot listens (its
@@ -275,7 +292,7 @@ directly, without the model and without the question:
 | `/skills` | the built-ins, routines and tasks this mode allows (and the mic: a task that hears needs it on); typing one it leaves out says why it is refused |
 | `/routine NAME` · `/task NAME` | run one now |
 | `/move ID\|NAME` · `/walk FWD [SIDE [TURN]]` · `/say TEXT` | a built-in now; the robot says it |
-| `/mode gantry\|standing` | switch mode: it **never moves the robot**; it asks you to confirm it is hanging / standing (standing also needs a standing FSM) |
+| `/mode gantry\|standing` | switch mode: it asks you to confirm it is hanging / standing (standing also needs a standing FSM), then switches to the new mode's resting FSM (table above). `/mode` with the current mode brings it back to its resting FSM |
 | `/mic on\|off` | handle what the robot hears like chat, or ignore it (a task that hears needs it on) |
 | `/speaker on\|off` | say replies out loud (`TtsMaker`), or only print them here; tasks and routines run from the session follow it (their `say` is printed as `robot (speaker off): ...`). Default on |
 | `/camera on\|off` | the head camera, live at `http://127.0.0.1:8765` (`ssh -L 8765:...` from a laptop); tasks reuse it |
@@ -283,8 +300,8 @@ directly, without the model and without the question:
 | `/memory` · `/soul` | what the robot remembers (the newest of `knowledge/MEMORY.md`) · who it is (`knowledge/SOUL.md`) |
 | `/status` · `/stop` · `/help` · `/quit` | the `g1 status` probe; Esc; the list; exit |
 
-A routine or task runs through `g1 run`'s own path in the session's mode (standing: back to walk
-mode first if a built-in left it in 802; gantry: the gantry bring-up and damp), sharing the session's
+A routine or task runs through `g1 run`'s own path in the session's mode (from the resting FSM to 200
+and back), sharing the session's
 microphone and camera, kept as `_unreviewed` (no questions mid-session; label it later). A task's
 `done` summary is spoken; a refusal (the wrong mode, the robot not standing, a routine's dry run) is
 said, printed, and the session goes on. Settings and skills typed while one runs wait for it to end;

@@ -24,7 +24,7 @@ def summary(folder, outcome, passed, *, end_reason="done", timing="ok", model_ou
 def test_a_suite_runs_each_task_repeat_times_and_reports(tmp_path, monkeypatch):
     tasks = tmp_path / "tasks" / "p"
     tasks.mkdir(parents=True)
-    (tasks / "task.json").write_text(json.dumps({"instruction": "point at the laptop", "scene": "room",
+    (tasks / "task.json").write_text(json.dumps({"instruction": "point at the laptop", "modes": ["gantry", "standing"], "scene": "room",
                                                  "success": {"feet_drift_max_m": 0.05}}))
     d = tmp_path / "suites" / "s"
     d.mkdir(parents=True)

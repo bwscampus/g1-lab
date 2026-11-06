@@ -14,7 +14,7 @@ ROOT = limits.ROOT
 def task_dir(tmp_path, name="find_the_mug", **data):
     d = tmp_path / name
     d.mkdir(parents=True)
-    (d / "task.json").write_text(json.dumps(data))
+    (d / "task.json").write_text(json.dumps({"modes": ["gantry", "standing"], **data}))
     return d
 
 
@@ -30,8 +30,9 @@ def test_load_task_defaults_and_validates(tmp_path):
                        ({"instruction": ""}, "instruction"), ({"instruction": "x", "scene": "moon"}, "scene"),
                        ({"instruction": "x", "demo": "walk.mp4"}, "demo"), ({"instruction": "x", "max_decisions": 0}, "max_decisions"),
                        ({"instruction": "x", "camera_size": "big"}, "camera_size"),
-                       ({"instruction": "x", "objects": ["mug@1,0"]}, "objects need")]:
-        (d / "task.json").write_text(json.dumps(bad))
+                       ({"instruction": "x", "objects": ["mug@1,0"]}, "objects need"),
+                       ({"instruction": "x", "modes": []}, "modes"), ({"instruction": "x", "modes": ["sitting"]}, "modes")]:
+        (d / "task.json").write_text(json.dumps({"modes": ["standing"], **bad} if bad else bad))
         with pytest.raises(ValueError, match=match):
             load_task(d)
     (d / "task.json").write_text("{")

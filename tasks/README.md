@@ -16,3 +16,4 @@ g1 run sit_in_the_chair --sim         # demo: find the chair, line up, turn arou
 Runs land under `tasks/NAME/runs/` (git-ignored), each with its `trace.npz`, and one line per run
 in `tasks/NAME/results.jsonl`. A successful run a person promotes becomes a demo in
 `tasks/NAME/demos/` (committed), shown to the model on the task's next runs. See `docs/writing-a-task.md`.
+Each `task.json` lists the `modes` it runs in: the ones that walk or sit are standing only.
