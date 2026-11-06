@@ -53,9 +53,9 @@ def test_damp_drops_it_unless_it_hangs_in_the_gantry():
     twin.call("sport", 7101, '{"data": 1}')
     twin.advance(3.0)
     assert twin.onboard.fallen_at is not None and twin.pelvis_z < 0.45
-    env = sim(mode="gantry")                                          # Damp -> FSM 4 -> FSM 200 -> run -> Damp
+    env = sim(mode="gantry")                                          # Damp -> FSM 4 -> FSM 200 -> run, stays in 200
     assert run(Chain(Hold(seconds=0.5), pause=0.0), env) is True
-    assert env.twin.onboard.fallen_at is None and env.twin.onboard.fsm == 1 and env.twin.pelvis_z > 0.5
+    assert env.twin.onboard.fallen_at is None and env.twin.onboard.fsm == 200 and env.twin.pelvis_z > 0.5
 
 
 def test_the_dead_man_stops_the_base_a_second_after_the_last_move():
