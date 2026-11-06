@@ -66,7 +66,7 @@ g1 start --mode standing|gantry      # the robot only: one interactive session (
                                      # (rt/audio_msg) and you type: plain text is chat (as if said); the model answers or
                                      # chooses a built-in (5xx/6xx move, capped walk; standing only), a routine or a task
                                      # (model-chosen ones confirmed y/N). /routine /task /move /walk /say call one directly;
-                                     # /skills /mode /mic /camera /lidar /status /help /quit. Esc stops what runs, to
+                                     # /skills /mode /mic /speaker /camera /lidar /status /help /quit. Esc stops what runs, to
                                      # neutral; Ctrl-C clears the line (stops a running skill); Ctrl-C twice exits
 g1 twin fetch|status
 g1 trace compare RUN_A RUN_B | show RUN   # two run dirs of the same task: tracking, sag, lag, A-B difference
@@ -113,7 +113,7 @@ g1/lidar.py        Scan (points N x 4 in m + the 4x4 pose), points_from_cloud2, 
                    lidar_view.py: LidarViewer (the live 3D view: a canvas page, state.json, scan.bin, map.bin)
 g1/microphone.py   Microphone (rt/audio_msg: the robot's speech recognition, an utterance log), heard_view; sounds in g1/core/sounds.py
 g1/vlm.py          VLMClient (Hugging Face or OpenRouter), load_dotenv
-g1/session.py      g1 start's engine (Session: mode, mic/camera/lidar, the events queue, chat -> the model's one choice,
+g1/session.py      g1 start's engine (Session: mode, mic/speaker/camera/lidar, the events queue, chat -> the model's one choice,
                    run_skill: the one executor; robot_runner: cli.run_once in the session's mode, its mic and camera)
 g1/console.py      g1 start's terminal (prompt_toolkit in its own thread: input box, status line, / completion;
                    parse, Console: Esc/Ctrl-C/y-N/quit, start_main)

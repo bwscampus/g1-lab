@@ -18,7 +18,8 @@ shielded on: SIGINT.
 The **mode** decides what may run and how: ``standing`` (everything; routines and tasks run in
 ``--mode standing``) or ``gantry`` (no built-ins or base motion; routines and tasks run in ``--mode
 gantry``: the bring-up, then damp at the end). Switching mode never moves the robot. The settings:
-the **mic** (speech handled like chat, or ignored), the **camera** (opened once and served at
+the **mic** (speech handled like chat, or ignored), the **speaker** (replies said out loud, or only
+printed; tasks run here follow it too), the **camera** (opened once and served at
 ``view_port``; runs reuse it) and the **lidar** (a SLAM mapping session and its view, map saved when
 it ends).
 """
@@ -239,6 +240,7 @@ class Session:
         self.running = ""                       # what runs now, for the status line
         self.fsm: Optional[int] = None
         self.mic_on = mic is not None
+        self.speaker_on = True                      # off: replies are printed only, never sent to TtsMaker
         self.camera = None
         self.viewer = None
         self.lidar = None
@@ -292,22 +294,19 @@ class Session:
         return tools(self.menu, routines, tasks, builtins=self.mode == "standing")
 
     def skills(self) -> list[str]:
-        """``/skills``: every skill, marked available (·) or not (✗ and why)."""
-        lines = [f"mode: {self.mode}", "built-ins:"]
-        mark = lambda why: "  · " if why is None else "  ✗ "
-        for mid, m in self.menu.items():
-            why = self.why_not("move", str(mid))
-            lines.append(f"{mark(why)}/move {mid}  {m['name']} ({m['duration']:.0f} s)" + (f"  — {why}" if why else ""))
-        why = self.why_not("walk")
-        lines.append(f"{mark(why)}/walk FWD [SIDE [TURN]]  a short walk" + (f"  — {why}" if why else ""))
-        lines.append("routines:")
-        for n, r in self.routines.items():
-            why = self.why_not("routine", n)
-            lines.append(f"{mark(why)}/routine {n}  {r.notes}" + (f"  — {why}" if why else ""))
-        lines.append("tasks:")
-        for n, t in self.tasks.items():
-            why = self.why_not("task", n)
-            lines.append(f"{mark(why)}/task {n}  {t.instruction}" + (f"  — {why}" if why else ""))
+        """``/skills``: the skills this mode (and the mic) allows now, grouped; nothing else. Typing
+        one it leaves out still says why it is refused."""
+        groups = {
+            "built-ins": [f"/move {mid}  {m['name']} ({m['duration']:.0f} s)" for mid, m in self.menu.items()
+                          if self.why_not("move", str(mid)) is None]
+                         + (["/walk FWD [SIDE [TURN]]  a short walk"] if self.why_not("walk") is None else []),
+            "routines": [f"/routine {n}  {r.notes}" for n, r in self.routines.items() if self.why_not("routine", n) is None],
+            "tasks": [f"/task {n}  {t.instruction}" for n, t in self.tasks.items() if self.why_not("task", n) is None],
+        }
+        lines = [f"mode: {self.mode}"]
+        for title, items in groups.items():
+            lines.append(f"{title}:" + ("" if items else f" (none in {self.mode} mode)"))
+            lines += [f"  · {item}" for item in items]
         return lines
 
     # -- the status line -----------------------------------------------------------------------------
@@ -316,6 +315,7 @@ class Session:
         if self.fsm is not None:
             parts.append(f"FSM {self.fsm}")
         parts.append(f"mic {'on' if self.mic_on else 'off'}")
+        parts.append(f"speaker {'on' if self.speaker_on else 'off'}")
         parts.append(f"camera {self.viewer.url if self.viewer is not None else 'off'}")
         lidar_url = getattr(self.lidar, "url", None) if self.lidar is not None else None
         parts.append(f"lidar {lidar_url or 'off'}")
@@ -328,7 +328,7 @@ class Session:
         if not text:
             return
         print(f"robot: {text}")
-        if self.audio is None:
+        if self.audio is None or not self.speaker_on:
             return
         code, _ = sdk.call(self.audio, "TtsMaker", text, int(limits.get("tts_speaker_id")),
                            log=self.moves.log, verbose=self.verbose, label="AudioClient")
@@ -477,7 +477,7 @@ class Session:
                 print(f"the robot is in FSM {sdk.fsm_name(fsm)}; walk mode first")
                 self.moves.switch(int(limits.get("walk_fsm")))
         self.counts["routines" if kind == "routine" else "tasks"] += 1
-        settings = {"microphone": self.mic, "camera_shared": self.camera}
+        settings = {"microphone": self.mic, "camera_shared": self.camera, "speaker": self.speaker_on}
         try:
             result = self._busy(f"{kind} {name} (Esc stops)", lambda: self.runner(kind, name, self.mode, settings))
         except KeyboardInterrupt:
@@ -544,6 +544,10 @@ class Session:
         if not on:
             self._seq = self.mic.seq                # nothing said so far is answered
         print(f"mic {'on: what the robot hears is handled like chat' if on else 'off: speech is ignored'}")
+
+    def set_speaker(self, on: bool) -> None:
+        self.speaker_on = on
+        print("speaker on: replies are said out loud" if on else "speaker off: replies only here (tasks' say too)")
 
     def set_camera(self, on: bool) -> None:
         if on == (self.camera is not None):
@@ -624,7 +628,7 @@ class Session:
             self.speak(cmd.text)
         elif n == "mode":
             self.set_mode(a[0] if a else "")
-        elif n in ("mic", "camera", "lidar"):
+        elif n in ("mic", "speaker", "camera", "lidar"):
             getattr(self, f"set_{n}")(bool(a) and a[0] == "on")
         elif n == "status":
             if self.status_probe is not None:

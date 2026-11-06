@@ -115,14 +115,37 @@ def test_the_model_is_offered_what_the_mode_allows():
     assert "Answer with exactly one tool call" in system_prompt()
 
 
-def test_skills_lists_everything_and_marks_what_cannot_run():
+def test_skills_lists_only_what_this_mode_allows():
     g, _, _ = make(mode="gantry")
     text = "\n".join(g.skills())
-    assert "mode: gantry" in text and "✗ /move 516" in text and "standing mode" in text
-    assert "· /routine tpose" in text and "✗ /routine walkabout" in text and "· /task find_it" in text
+    assert "mode: gantry" in text and "built-ins: (none in gantry mode)" in text
+    assert "/move" not in text and "/walk" not in text and "walkabout" not in text and "✗" not in text
+    assert "· /routine tpose" in text and "· /task find_it" in text and "· /task point_on_request" in text
+    g.set_mic(False)
+    assert "point_on_request" not in "\n".join(g.skills())                         # a hearing task needs the mic
+    s, _, _ = make()
+    text = "\n".join(s.skills())
+    assert all(f"/move {m}" in text for m in (516, 553, 604)) and "/walk" in text and "· /routine walkabout" in text
 
 
-# -- chat ---------------------------------------------------------------------------------------
+def test_with_the_speaker_off_replies_are_printed_never_said_and_runs_follow_it(capsys):
+    runner = Runner()
+    s, _, clock = make(("say", {"text": "I am a robot"}), runner=runner)
+    s.handle(Command("speaker", ["off"]))
+    assert "speaker off" in s.status()
+    t0 = clock["t"]
+    s.chat("who are you", "typed")
+    s.handle(Command("say", text="hello"))
+    s.handle(Command("task", ["find_it"]))
+    out = capsys.readouterr().out
+    assert s.audio.said == [] and clock["t"] == t0                                # nothing sent, nothing waited
+    assert "robot: I am a robot" in out and "robot: hello" in out
+    assert runner.runs[0][3]["speaker"] is False                                   # the task's say is printed too
+    s.handle(Command("speaker", ["on"]))
+    s.handle(Command("say", text="hello"))
+    s.handle(Command("task", ["find_it"]))
+    assert s.audio.said[0] == "hello" and runner.runs[1][3]["speaker"] is True and "speaker on" in s.status()
+
 
 def test_chat_says_moves_ignores_and_survives_a_model_error():
     s, _, _ = make(("say", {"text": "I am about one point three metres tall."}),
@@ -166,7 +189,7 @@ def test_a_routine_and_a_task_the_model_chooses_are_confirmed_run_and_reported()
     s.chat("can you find the laptop")
     assert len(ui.asked) == 2 and "tpose routine" in ui.asked[0] and "standing mode" in ui.asked[0]
     assert [(k, n, m) for k, n, m, _ in runner.runs] == [("routine", "tpose", "standing"), ("task", "find_it", "standing")]
-    assert runner.runs[0][3] == {"microphone": s.mic, "camera_shared": None}       # talk's mic; no session camera
+    assert runner.runs[0][3] == {"microphone": s.mic, "camera_shared": None, "speaker": True}   # the mic; no camera
     assert s.audio.said == ["Watch my T-pose!", "Done.", "I will find the laptop and point at it.", "I found it."]
 
 

@@ -640,6 +640,10 @@ class RobotEnv(Env):
                     print("warning: audio unavailable; say skipped")
                     self._audio_warned = True
                 return
+            if not getattr(self.args, "speaker", True):   # g1 start's /speaker off: printed, never said
+                print(f"robot (speaker off): {kw.get('text', '')}")
+                self.last_command = {"name": name, "args": dict(kw), "code": 0, "speaker": "off"}
+                return
             self.audio_calls += 1
         else:
             raise RuntimeError(f"onboard call {name!r} is not allowed (allowed: {sorted(LOCO_METHODS | AUDIO_METHODS)})")

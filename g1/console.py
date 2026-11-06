@@ -6,13 +6,12 @@ The robot listens (its speech recognition) and you type. Plain text is chat, as 
 the model chooses (an answer, a built-in, a routine or a task; ``g1/session.py``). ``/`` commands
 call things directly:
 
-    /chat TEXT                  as if said (plain text does the same)
-    /skills                     built-ins, routines and tasks, and what this mode allows
+    /skills                     the built-ins, routines and tasks this mode allows
     /routine NAME · /task NAME  run one now (no y/N: you asked for it)
     /move ID|NAME · /walk FWD [SIDE [TURN]]   a built-in now (standing mode)
     /say TEXT                   the robot says it
     /mode gantry|standing       switch mode; it never moves the robot
-    /mic on|off · /camera on|off · /lidar on|off
+    /mic on|off · /speaker on|off · /camera on|off · /lidar on|off
     /status · /stop · /help · /quit
 
 Keys: **Esc stops** what the robot is doing (to its safe neutral; the session goes on). **Ctrl-C**
@@ -42,8 +41,7 @@ from g1.session import MODES, Command
 HISTORY = Path.home() / ".g1_history"
 
 COMMANDS: dict[str, tuple[str, str]] = {
-    "chat": ("/chat TEXT", "as if said: the model chooses (plain text does the same)"),
-    "skills": ("/skills", "built-ins, routines and tasks, and what this mode allows"),
+    "skills": ("/skills", "the built-ins, routines and tasks this mode allows"),
     "routine": ("/routine NAME", "play a routine now"),
     "task": ("/task NAME", "run a task now"),
     "move": ("/move ID|NAME", "play a built-in move now (standing)"),
@@ -51,6 +49,7 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "say": ("/say TEXT", "the robot says it"),
     "mode": ("/mode gantry|standing", "switch mode; it never moves the robot"),
     "mic": ("/mic on|off", "handle what the robot hears like chat, or ignore it"),
+    "speaker": ("/speaker on|off", "say replies out loud, or only here (tasks' say too)"),
     "camera": ("/camera on|off", "the head camera, live at http://127.0.0.1:<view_port>; tasks use it"),
     "lidar": ("/lidar on|off", "SLAM mapping and its live view; off saves the map"),
     "status": ("/status", "the link, the FSM and the battery (read-only)"),
@@ -58,7 +57,8 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "help": ("/help", "this list"),
     "quit": ("/quit", "stop anything running, then exit (Ctrl-C twice)"),
 }
-CHOICES = {"mode": MODES, "mic": ("on", "off"), "camera": ("on", "off"), "lidar": ("on", "off")}
+CHOICES = {"mode": MODES, "mic": ("on", "off"), "speaker": ("on", "off"), "camera": ("on", "off"),
+           "lidar": ("on", "off")}
 
 
 class ParseError(ValueError):
@@ -77,7 +77,7 @@ def parse(line: str) -> Command:
     if name not in COMMANDS:
         raise ParseError(f"unknown command /{name}; /help lists them")
     usage = COMMANDS[name][0]
-    if name in ("chat", "say"):
+    if name == "say":
         if not rest:
             raise ParseError(f"usage: {usage}")
         return Command(name, text=rest)
@@ -258,12 +258,12 @@ def completions(console: Console, text: str) -> list[tuple[str, str]]:
         return [(f"/{n}", d) for n, (_, d) in COMMANDS.items() if n.startswith(head.lower())]
     s = console.session
     options: dict[str, str] = {}
-    if head == "routine":
-        options = {n: r.notes for n, r in s.routines.items()}
+    if head == "routine":                          # only what this mode allows, as /skills
+        options = {n: r.notes for n, r in s.routines.items() if s.why_not("routine", n) is None}
     elif head == "task":
-        options = {n: t.instruction for n, t in s.tasks.items()}
+        options = {n: t.instruction for n, t in s.tasks.items() if s.why_not("task", n) is None}
     elif head == "move":
-        options = {m["name"]: f"built-in {mid}" for mid, m in s.menu.items()}
+        options = {m["name"]: f"built-in {mid}" for mid, m in s.menu.items() if s.why_not("move", str(mid)) is None}
     elif head in CHOICES:
         options = {c: "" for c in CHOICES[head]}
     return [(n, d) for n, d in options.items() if n.lower().startswith(rest.lower())]
