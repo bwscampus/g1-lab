@@ -155,19 +155,6 @@ def test_standing_mode_skips_the_transition_when_already_in_control(monkeypatch,
     assert loco.calls == [] and "leaving control mode: releasing the arms" in capsys.readouterr().out
 
 
-def test_standing_mode_stays_in_a_walk_fsm_and_enters_200_only_from_the_locked_stand(monkeypatch, capsys):
-    for fsm in (500, 501):                                   # arm_sdk and Move work here; 501 -> 200 is refused
-        env, loco, out = bring_up(monkeypatch, fsm, capsys)
-        assert loco.calls == [] and f"already in control mode (FSM {fsm}" in out
-        env.arm.state = None
-        env._teardown_robot()
-        assert loco.calls == [] and "restored" not in capsys.readouterr().out
-    env, loco, out = bring_up(monkeypatch, 4, capsys)
-    assert loco.calls == [("SetFsmId", 200)] and "entering control mode (FSM 200" in out
-
-
-
-
 def test_bring_up_stops_before_the_arms_on_a_failed_transition(monkeypatch, capsys):
     with pytest.raises(SystemExit, match="3104.*g1 status"):
         bring_up(monkeypatch, 4, capsys, set_code=3104)                 # no reply: the link
@@ -182,30 +169,25 @@ def test_bring_up_stops_before_the_arms_on_a_failed_transition(monkeypatch, caps
         bring_up(monkeypatch, 4, capsys)
 
 
+def test_a_run_enters_200_from_any_standing_fsm_and_stays_there(monkeypatch, capsys):
+    for fsm in (4, 500, 501):
+        env, loco, out = bring_up(monkeypatch, fsm, capsys)
+        assert loco.calls == [("SetFsmId", 200)] and "entering control mode (FSM 200" in out and "stays there" in out
+        env._teardown_robot()
+        assert loco.calls == [("SetFsmId", 200)] and "fsm: 200 (main operation); done" in capsys.readouterr().out
+
+
 def test_standing_mode_refuses_a_robot_that_is_not_standing(monkeypatch, capsys):
     with pytest.raises(SystemExit, match="1 \\(damp\\)"):
         bring_up(monkeypatch, 1, capsys)
-    env, loco, out = bring_up(monkeypatch, 4, capsys)                    # locked stand: fine, restored at the end
-    assert loco.calls == [("SetFsmId", 200)]
-    env._teardown_robot()
-    assert loco.calls[-1] == ("SetFsmId", 4) and "4 (locked stand) restored" in capsys.readouterr().out
 
 
-def test_gantry_found_limp_gets_the_bring_up_and_is_damped_again(monkeypatch, capsys):
+def test_gantry_from_limp_gets_the_bring_up_and_stays_in_200(monkeypatch, capsys):
     env, loco, out = bring_up(monkeypatch, 1, capsys, mode="gantry")
     assert loco.calls == [("Damp",), ("SetFsmId", 4), ("SetFsmId", 200)] and "fsm: 4 (locked stand)" in out
     env._teardown_robot()
-    assert loco.calls[-1] == ("Damp",)
-
-
-def test_gantry_found_standing_never_damps_and_leaves_it_as_found(monkeypatch, capsys):
-    env, loco, out = bring_up(monkeypatch, 200, capsys, mode="gantry")   # g1 start's gantry session rests in 200
-    assert loco.calls == [] and "already in control mode" in out
-    env.arm.state = None
-    env._teardown_robot()
-    assert loco.calls == [] and "Damp" not in capsys.readouterr().out
-    env, loco, out = bring_up(monkeypatch, 501, capsys, mode="gantry")
-    assert loco.calls == []
+    assert loco.calls[-1] == ("SetFsmId", 200) and "Damp" not in capsys.readouterr().out
+    env, loco, out = bring_up(monkeypatch, 200, capsys, mode="gantry")   # g1 start brings it up to 200
     env.arm.state = None
     env._teardown_robot()
     assert loco.calls == []
@@ -213,10 +195,9 @@ def test_gantry_found_standing_never_damps_and_leaves_it_as_found(monkeypatch, c
 
 def test_teardown_never_raises(monkeypatch, capsys):
     env, loco, out = bring_up(monkeypatch, 4, capsys)
-    loco.set_code = 3104
-    env._teardown_robot()                                                # a failed restore is a warning
-    text = capsys.readouterr().out
-    assert "could not restore FSM 4" in text and "3104" in text and "done" in text
+    loco.get_code = 3104
+    env._teardown_robot()                                                # no answer: said, not raised
+    assert "3104" in capsys.readouterr().out
 
 
 def test_verbose_prints_every_call_and_the_health_line(monkeypatch, capsys):
