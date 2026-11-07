@@ -180,7 +180,7 @@ def run_settings(task: Optional[dict] = None, *, sim: bool = False, mode: Option
         verbose=os.environ.get("G1_VERBOSE", "") not in ("", "0"),
         scene=task.get("scene") or "none", sim_objects=[parse_object(o) for o in task.get("objects") or []],
         camera_size=task.get("camera_size"), sim_start=task.get("start"), success=task.get("success"),
-        waist_locked=task.get("turns_waist", True) is False,
+        waist_locked=task.get("turns_waist", True) is False, waist_tilt_locked=task.get("tilts_waist", True) is False,
         hears=bool(task.get("hears")), voices=task.get("voices") or [],
         # the in-process twin (tests): headless, its own pacing and checks
         headless=True, realtime=None, hold_end=limits.get("sim_viewer_hold_s"), camera_dir=None,

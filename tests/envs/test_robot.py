@@ -138,7 +138,7 @@ def bring_up(monkeypatch, fsm, capsys, set_code=0, get_code=0, arm_cls=None, **s
         monkeypatch.setitem(sys.modules, name, mod)
     built = []
 
-    def arm_sdk(health=None, link=None):
+    def arm_sdk(health=None, link=None, **kw):
         built.append(1)
         return Arm()
     monkeypatch.setattr("g1.envs.robot.ArmSdk", arm_cls or arm_sdk)
@@ -172,10 +172,10 @@ def test_bring_up_stops_before_the_arms_on_a_failed_transition(monkeypatch, caps
         bring_up(monkeypatch, 1, capsys, mode="gantry")
 
 
-def test_a_run_stays_in_the_fsm_it_finds_and_warns_outside_200(monkeypatch, capsys):
+def test_a_run_stays_in_the_fsm_it_finds(monkeypatch, capsys):
     for fsm in (4, 500, 501, 801, 802):
         env, loco, out = bring_up(monkeypatch, fsm, capsys)
-        assert loco.calls == [] and f"control mode in FSM {fsm}" in out and "verified only in FSM 200" in out
+        assert loco.calls == [] and f"control mode in FSM {fsm}" in out and "verified" not in out
         env.arm.state = None
         env._teardown_robot()
         assert loco.calls == [] and f"fsm: {fsm} (" in capsys.readouterr().out
@@ -296,7 +296,7 @@ def test_the_run_closes_its_lowstate_subscriber_after_the_release(monkeypatch, c
     arm = ArmSdk(link=Link())
     arm.close()
     assert Sub.closed and arm.sub is None              # in g1 start the process outlives the run
-    env, loco, out = bring_up(monkeypatch, 200, capsys, arm_cls=lambda health=None, link=None: Arm())
+    env, loco, out = bring_up(monkeypatch, 200, capsys, arm_cls=lambda health=None, link=None, **kw: Arm())
     env._teardown_robot()
     assert env.arm.sent[-2:] == ["release", "close"]
 
@@ -349,3 +349,25 @@ def test_a_locked_waist_is_held_straight_and_stiff_in_every_arm_sdk_message():
         sent.clear()
         ArmSdk(link=Link(), waist_locked=locked).send(Action(q=q, joints=list(range(12, NUM_JOINTS)), weight=1.0))
         assert sent[0][WAIST[0]] == pytest.approx(waist)
+
+
+def test_a_tilt_lock_holds_roll_and_pitch_and_lets_the_yaw_turn_stiffly():
+    from g1.core.action import Action
+    from g1.core.config import WAIST
+    from g1.core import limits
+    from g1.envs.robot import ArmSdk
+    sent = []
+
+    class Link:
+        def crc(self): return type("C", (), {"Crc": lambda self, c: 0})()
+        def lowstate(self, cb): return None
+        def arm_sdk(self): return type("P", (), {"Write": lambda self, c: sent.append([(m.q, m.kp) for m in c.motor_cmd])})()
+        def lowcmd(self):
+            class M:
+                q = dq = tau = kp = kd = 0.0
+            return type("C", (), {"motor_cmd": [M() for _ in range(NUM_JOINTS + 6)], "crc": 0})()
+    q = np.zeros(NUM_JOINTS)
+    q[WAIST[0]], q[WAIST[1]], q[WAIST[2]] = 0.6, 0.2, 0.3                # yaw, roll, pitch asked by a tool
+    ArmSdk(link=Link(), waist_tilt_locked=True).send(Action(q=q, joints=list(range(12, NUM_JOINTS)), weight=1.0))
+    stiff = limits.get("waist_lock_kp")
+    assert [sent[0][j] for j in WAIST] == [pytest.approx((0.6, stiff)), (0.0, stiff), (0.0, stiff)]

@@ -1,18 +1,18 @@
 {
-  "instruction": "find the {object} and point at it with your right arm. Your waist is locked and you cannot walk or turn, so you see and point only where you face: locate_point tells you where it is in the image, and point raises the arm the way you face, aimed down_deg below horizontal. Then keep pointing at it until you are told to stop: listen about 5 seconds at a time, and after each listen look at the image and point again whenever the arm is off the {object}. If you cannot see it, say so and give up. When you are told to stop, lower your arm and finish with done",
+  "instruction": "find the {object} by turning your waist, without walking, and point at it with your right arm. Then keep pointing at it until you are told to stop: listen about 5 seconds at a time, and after each listen look at the image and the measured aim, and point again whenever the arm is off the {object}. If you cannot find it after looking around, say so and give up. When you are told to stop, lower your arm and finish with done",
   "modes": ["gantry", "standing"],
   "fill": {"object": {"note": "what to point at, as the person named it (a water bottle, the red chair, the teacher's laptop)", "default": "laptop"}},
   "scene": "room",
   "objects": ["laptop@1.75,-1.5,0.77"],
-  "start": [1.2, -0.95, -45],
+  "start": [1.2, -0.95, 0],
   "walks": false,
-  "turns_waist": false,
+  "tilts_waist": false,
   "hears": true,
   "voices": [{"at_s": 60, "text": "Okay, you can stop now."}],
-  "safety_notes": ["Do not walk or turn in this task: the waist is locked; point the way you face with the right arm only."],
+  "safety_notes": ["Do not walk in this task: search by turning the waist and point with the right arm only."],
   "max_decisions": 300,
   "max_time_s": 1800,
   "success": {"point_at": "laptop", "within_deg": 10, "for_s": 1.0, "feet_drift_max_m": 0.05,
               "feet_yaw_drift_max_deg": 10, "no_contact": ["table_top", "table_leg", "laptop"]},
-  "notes": "No walking, exploring or waist turning (walks: false, turns_waist: false): the legs only balance, the waist is held straight and stiff (waist_lock_kp/kd) so the torso cannot tip the robot, and it points straight ahead with point (how far down only). Put the object in front of it. Keep pointing until told to stop (said, or typed in g1 start while it runs; Esc stops it at once): the model re-checks after each short listen and points again when off. g1 start fills {object} from the request (\"point at the water bottle\": the model's run_task object, or /task point_at water bottle). g1 run point_at uses the default, the laptop; the twin starts facing it (start yaw -45) and scores the point; a voice says stop after 60 s. Budget: 300 decisions or 30 min (a guess). Aiming sideways without the waist (the shoulder alone) is to come."
+  "notes": "No walking or exploring (walks: false). The waist turns (yaw: look, point_to aims by it) but never tilts: tilts_waist false holds its roll and pitch at 0 and the whole waist stiff (waist_lock_kp/kd) in every arm_sdk message; tilting the torso tipped the robot (2026-11-07). Keep pointing until told to stop (said, or typed in g1 start while it runs; Esc stops it at once): the model re-checks the measured aim after each short listen and re-points when off. g1 start fills {object} from the request (\"point at the water bottle\": the model's run_task object, or /task point_at water bottle). g1 run point_at uses the default, the laptop, in point_at_the_laptop's scene (45 degrees to the right: the waist turns), scored by the twin; a voice says stop after 60 s. Budget: 300 decisions or 30 min (a guess)."
 }

@@ -103,6 +103,10 @@ SCHEMA = {
                         "description": "false: the waist is locked straight and stiff for the whole run (every arm_sdk "
                                        "message holds it at 0, waist_lock_kp/kd); no look, point_to or arm_path: it sees "
                                        "and points only straight ahead (point). The torso cannot tip the robot over"},
+        "tilts_waist": {"type": "boolean", "default": True,
+                        "description": "false: the waist's roll and pitch are held at 0 and stiff for the whole run (every "
+                                       "arm_sdk message, waist_lock_kp/kd): tilting the torso side to side or forward "
+                                       "tipped the robot. Yaw still turns (look, point_to), at the same stiff gains"},
         "session": {"type": "boolean", "default": True,
                     "description": "offered in g1 start (false: g1 run and g1 bench only, e.g. not yet tried on the robot)"},
         "notes": {"type": "string", "default": "", "description": "for people; the model never sees it"},

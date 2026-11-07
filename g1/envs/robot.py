@@ -106,9 +106,11 @@ class Health:
 class ArmSdk:
     """Thin publisher for rt/arm_sdk plus a LowState subscriber."""
 
-    def __init__(self, health: Optional[Health] = None, link=None, waist_locked: bool = False) -> None:
+    def __init__(self, health: Optional[Health] = None, link=None, waist_locked: bool = False,
+                 waist_tilt_locked: bool = False) -> None:
         self.link = link or DdsLink()
-        self.waist_locked = waist_locked      # every message holds the waist straight at waist_lock_kp/kd
+        self.waist_locked = waist_locked      # every message holds the whole waist straight at waist_lock_kp/kd
+        self.waist_tilt_locked = waist_tilt_locked   # roll and pitch held at 0; yaw follows the tools, stiff too
         self.state = None
         self.health = health or Health()
         self.crc = self.link.crc()
@@ -162,10 +164,15 @@ class ArmSdk:
             mc.tau = 0.0
             mc.kp = action.kp
             mc.kd = action.kd
-        if self.waist_locked:                 # whatever a tool sent: straight and stiff (task turns_waist: false)
+        if self.waist_locked or self.waist_tilt_locked:
+            # whatever a tool sent: the waist stiff (waist_lock_kp/kd), roll and pitch at 0 (tilting the torso tipped
+            # the robot); yaw too when turns_waist is false, else where the tool turned it (look, point_to)
+            held = WAIST if self.waist_locked else WAIST[1:]
             for j in WAIST:
                 mc = self.cmd.motor_cmd[j]
-                mc.q = mc.dq = mc.tau = 0.0
+                if j in held:
+                    mc.q = 0.0
+                mc.dq = mc.tau = 0.0
                 mc.kp, mc.kd = limits.get("waist_lock_kp"), limits.get("waist_lock_kd")
         self.cmd.motor_cmd[ARM_SDK_WEIGHT_IDX].q = float(action.weight)
         self.cmd.crc = self.crc.Crc(self.cmd)
@@ -417,9 +424,13 @@ class RobotEnv(Env):
             self._enter_main(link)
         else:
             print(f"control mode in FSM {sdk.fsm_name(self.initial_fsm)}: no FSM change")
-        self.arm = ArmSdk(self.link_health, link=link, waist_locked=bool(getattr(self.args, "waist_locked", False)))
+        self.arm = ArmSdk(self.link_health, link=link, waist_locked=bool(getattr(self.args, "waist_locked", False)),
+                          waist_tilt_locked=bool(getattr(self.args, "waist_tilt_locked", False)))
+        gains = f"kp {limits.get('waist_lock_kp'):g}, kd {limits.get('waist_lock_kd'):g}"
         if getattr(self.arm, "waist_locked", False):
-            print(f"waist: locked straight (kp {limits.get('waist_lock_kp'):g}, kd {limits.get('waist_lock_kd'):g}) for this run")
+            print(f"waist: locked straight ({gains}) for this run")
+        elif getattr(self.arm, "waist_tilt_locked", False):
+            print(f"waist: roll and pitch held at 0, yaw free ({gains}) for this run")
         try:
             self.monitor = self._make_monitor()
             self.base = None
