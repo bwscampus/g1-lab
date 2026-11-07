@@ -138,7 +138,7 @@ def bring_up(monkeypatch, fsm, capsys, set_code=0, get_code=0, arm_cls=None, **s
         monkeypatch.setitem(sys.modules, name, mod)
     built = []
 
-    def arm_sdk(health=None, link=None):
+    def arm_sdk(health=None, link=None, waist_locked=False):
         built.append(1)
         return Arm()
     monkeypatch.setattr("g1.envs.robot.ArmSdk", arm_cls or arm_sdk)
@@ -172,10 +172,10 @@ def test_bring_up_stops_before_the_arms_on_a_failed_transition(monkeypatch, caps
         bring_up(monkeypatch, 1, capsys, mode="gantry")
 
 
-def test_a_run_stays_in_the_fsm_it_finds_and_warns_outside_200(monkeypatch, capsys):
+def test_a_run_stays_in_the_fsm_it_finds(monkeypatch, capsys):
     for fsm in (4, 500, 501, 801, 802):
         env, loco, out = bring_up(monkeypatch, fsm, capsys)
-        assert loco.calls == [] and f"control mode in FSM {fsm}" in out and "verified only in FSM 200" in out
+        assert loco.calls == [] and f"control mode in FSM {fsm}" in out and "verified" not in out
         env.arm.state = None
         env._teardown_robot()
         assert loco.calls == [] and f"fsm: {fsm} (" in capsys.readouterr().out
@@ -296,7 +296,7 @@ def test_the_run_closes_its_lowstate_subscriber_after_the_release(monkeypatch, c
     arm = ArmSdk(link=Link())
     arm.close()
     assert Sub.closed and arm.sub is None              # in g1 start the process outlives the run
-    env, loco, out = bring_up(monkeypatch, 200, capsys, arm_cls=lambda health=None, link=None: Arm())
+    env, loco, out = bring_up(monkeypatch, 200, capsys, arm_cls=lambda health=None, link=None, **kw: Arm())
     env._teardown_robot()
     assert env.arm.sent[-2:] == ["release", "close"]
 
