@@ -127,3 +127,17 @@ def test_it_stands_still_while_the_arms_swing_and_takes_a_push():
         twin.data.xfrc_applied[twin.torso, :3] = 0
         twin.advance(4.0)
         assert twin.onboard.fallen_at is None and twin.pelvis_z > 0.7, force
+
+
+def test_the_loopback_lowstate_reader_gives_one_new_sample_a_tick():
+    with sim() as env:                                       # a run's link: ArmSdk's own reader polls it too
+        assert env.arm.poll() is not None
+        link = env.link
+        reader = link.lowstate_reader()
+        first = reader.take()
+        assert first is not None and reader.take() is None  # no tick since: nothing new, as KeepLast(1)
+        link.tick()
+        assert reader.take() is not None
+        reader.Close()
+        link.tick()
+        assert reader.take() is None

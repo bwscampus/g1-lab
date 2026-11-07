@@ -66,6 +66,12 @@ The WebRTC camera does not work in a run on the Jetson: its Python decoder share
 with `rt/lowstate` (~900 messages/s), and on the Jetson's cores that starves it for the GIL
 (15 fps alone, ~0 fps in a run, `failed (no_frame)`).
 
+For the same reason a run never takes `rt/lowstate` through a Python callback: `ArmSdk` reads the
+newest sample once a tick (`DdsLink.lowstate_reader`). With a callback per sample and any other
+thread busy (the camera, `--view`, the agent), the callback falls behind for good and the
+robot's RPC replies never reach us: `say` spoke but returned 3104 after 10 s, and the
+teardown's `GetFsmId` failed the same way.
+
 Set up the Jetson once: the repo and `pip install -e .` in a Python 3.10 env with
 `unitree_sdk2py`, and `.env` with `UNITREE_IFACE=eth0` (the interface name: GStreamer joins the
 multicast on it) and the model's key. `UNITREE_ROBOT_IP` and `UNITREE_AES_128_KEY` are not

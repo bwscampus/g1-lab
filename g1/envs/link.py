@@ -7,7 +7,8 @@ in-process on sim time (``g1/twin/loopback.py:LoopbackLink``).
     mimic(loco)               LocoClient + GetMimicMotion (the robot's stored motions; g1 moves)
     arm_action()              the arm service: preset and taught upper-body actions (g1 moves)
     twin_client()             the twin's own service (Summary), only when talking to a twin
-    lowstate(callback)        subscribe rt/lowstate
+    lowstate(callback)        subscribe rt/lowstate (short probes only: g1 status, g1 moves)
+    lowstate_reader()         rt/lowstate read on demand, the newest sample (a run's ArmSdk)
     audio_msg(callback)       subscribe rt/audio_msg: the robot's speech recognition (g1/microphone.py)
     arm_sdk() / lowcmd()      the rt/arm_sdk publisher and a LowCmd_ buffer to fill
     crc()                     the LowCmd_ CRC
@@ -47,9 +48,12 @@ def dds_domain(iface: str | None, domain: int | None = None) -> int:
 class DdsLink:
     name = "dds"
 
+    domain: int | None = None
+
     def init(self, domain: int, iface: str) -> None:
         from unitree_sdk2py.core.channel import ChannelFactoryInitialize
         ChannelFactoryInitialize(domain, iface)
+        self.domain = domain
 
     def loco(self):
         from unitree_sdk2py.g1.loco.g1_loco_client import LocoClient
@@ -161,6 +165,24 @@ class DdsLink:
         sub.Init(callback, 10)
         return sub
 
+    def lowstate_reader(self) -> "LatestReader":
+        """rt/lowstate without a callback: cyclonedds keeps the newest sample (in C) and the
+        caller takes it, once a tick. A callback (``lowstate``) runs Python on DDS's receive
+        thread for each of the robot's ~1000 samples a second; once another thread is busy
+        it falls behind for good, and every RPC reply in the process waits behind it (3104
+        after the full timeout, on the Jetson, while the robot carries the command out)."""
+        if self.domain is None:
+            raise RuntimeError("lowstate_reader before init(domain, iface)")
+        from cyclonedds.domain import DomainParticipant
+        from cyclonedds.qos import Policy, Qos
+        from cyclonedds.sub import DataReader
+        from cyclonedds.topic import Topic
+        from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowState_
+        participant = DomainParticipant(self.domain)          # the domain (and interface) init() set up
+        qos = Qos(Policy.Reliability.BestEffort, Policy.History.KeepLast(1))
+        return LatestReader(DataReader(participant, Topic(participant, "rt/lowstate", LowState_), qos=qos),
+                            participant)
+
     def audio_msg(self, callback):
         from unitree_sdk2py.core.channel import ChannelSubscriber
         from unitree_sdk2py.idl.std_msgs.msg.dds_ import String_
@@ -191,3 +213,26 @@ class DdsLink:
 
     def start_commander(self, base) -> None:
         base.start()
+
+
+class LatestReader:
+    """A DDS reader that holds only the newest sample (KeepLast 1). ``take()`` returns it once,
+    or None when nothing new arrived since the last take; ``Close()`` deletes the reader."""
+
+    def __init__(self, reader, participant=None) -> None:
+        self.reader = reader
+        self.participant = participant
+
+    def take(self):
+        if self.reader is None:
+            return None
+        from cyclonedds.internal import InvalidSample
+        samples = [s for s in self.reader.take(N=1) if not isinstance(s, InvalidSample)]
+        return samples[-1] if samples else None
+
+    def Close(self) -> None:
+        reader, participant, self.reader, self.participant = self.reader, self.participant, None, None
+        for entity in (reader, participant):        # deleting the participant deletes its topic too
+            if entity is not None:
+                entity.__del__()                     # cyclonedds: deletes the DDS entity now, once
+

@@ -79,7 +79,8 @@ MODES = ("gantry", "standing")
 
 
 class Health:
-    """LowState arrival times, written on the DDS thread, read on the tick thread."""
+    """LowState arrival times. In a run, ``ArmSdk.poll`` ticks it when a new sample was taken
+    (so the rate is at most one a control tick); g1 status ticks it in its callback, per sample."""
 
     def __init__(self, clock=time.monotonic) -> None:
         self.clock = clock
@@ -104,7 +105,8 @@ class Health:
 
 
 class ArmSdk:
-    """Thin publisher for rt/arm_sdk plus a LowState subscriber."""
+    """Thin publisher for rt/arm_sdk plus a LowState reader. ``poll()`` takes the newest
+    LowState into ``state``, once a tick: never a callback per sample (``DdsLink.lowstate_reader``)."""
 
     def __init__(self, health: Optional[Health] = None, link=None, waist_locked: bool = False,
                  waist_tilt_locked: bool = False) -> None:
@@ -114,7 +116,7 @@ class ArmSdk:
         self.state = None
         self.health = health or Health()
         self.crc = self.link.crc()
-        self.sub = self.link.lowstate(self._on_state)
+        self.sub = self.link.lowstate_reader()
         self.pub = self.link.arm_sdk()
         self.cmd = self.link.lowcmd()
         # Zero gains everywhere so a stale buffer can never command the legs.
@@ -122,20 +124,24 @@ class ArmSdk:
             mc = self.cmd.motor_cmd[j]
             mc.q = mc.dq = mc.tau = mc.kp = mc.kd = 0.0
 
-    def _on_state(self, msg) -> None:
-        self.state = msg
-        self.health.tick()
+    def poll(self):
+        """Take the newest LowState, if one came since the last poll; returns ``state``."""
+        msg = self.sub.take() if self.sub is not None else None
+        if msg is not None:
+            self.state = msg
+            self.health.tick()
+        return self.state
 
     def fresh_state(self, settle: float = limits.get("lowstate_settle_s"),
                     timeout: float = limits.get("lowstate_timeout_s"), iface: str = "") -> np.ndarray:
         t0 = self.link.now()
-        while self.state is None:
+        while self.poll() is None:
             if self.link.now() - t0 > timeout:
                 raise TimeoutError(f"no LowState received in {timeout:.0f}s on {iface or 'the interface'}: "
                                    "the DDS link (interface, subnet, the robot's services); run g1 status")
             self.link.sleep(limits.get("lowstate_poll_s"))
         self.link.sleep(settle)
-        return np.array([m.q for m in self.state.motor_state[:NUM_JOINTS]])
+        return np.array([m.q for m in self.poll().motor_state[:NUM_JOINTS]])
 
     def release(self, duration: float = limits.get("release_s")) -> None:
         """Publish weight=0 with zero gains so ai_sport drops any arm_sdk takeover."""
@@ -149,8 +155,7 @@ class ArmSdk:
             self.link.sleep(CONTROL_DT)
 
     def close(self) -> None:
-        """Stop the LowState subscriber. In g1 start the process outlives the run: left open, its
-        500 Hz Python callback starves the session's RPC replies on the Jetson (3104 on every call)."""
+        """Delete the LowState reader: in g1 start the process outlives the run."""
         close = getattr(self.sub, "Close", None)
         if close is not None:
             close()
@@ -621,7 +626,7 @@ class RobotEnv(Env):
         if last is not None:
             self.max_tick_gap = max(getattr(self, "max_tick_gap", 0.0), now - last)
         self._tick_at = now
-        q = np.array([m.q for m in self.arm.state.motor_state[:NUM_JOINTS]])
+        q = np.array([m.q for m in self.arm.poll().motor_state[:NUM_JOINTS]])
         if self.monitor is not None:
             self._observe(q, action)
         if getattr(self, "trace", None) is not None:
@@ -651,7 +656,7 @@ class RobotEnv(Env):
         h = getattr(self, "link_health", None)
         parts = [f"t={self.ticks * CONTROL_DT:6.1f}"]
         if h is not None:
-            parts.append(f"lowstate {h.rate():.0f}/s (age {h.age_ms():.0f} ms)")
+            parts.append(f"lowstate new on {h.rate():.0f} polls/s (age {h.age_ms():.0f} ms)")
         parts.append(f"ticks {self.ticks} overruns {getattr(self, 'overruns', 0)}")
         base = getattr(self, "base", None)
         if base is not None and base.last is not None:
