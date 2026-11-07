@@ -221,6 +221,11 @@ root via `pythonpath`. `limits.ROOT` is the repo root (configs/, tasks/, assets/
 - **The camera on the Jetson is direct.** On the robot's Jetson `RobotEnv` reads the video hub's RTP multicast
   with a GStreamer child process (`DirectCamera`, chosen when `on_the_jetson()`); a laptop uses WebRTC. Never
   decode video in the run's own Python process on the Jetson: next to rt/lowstate it starves for the GIL.
+- **A run polls rt/lowstate, never subscribes it with a callback.** `ArmSdk.poll()` takes the newest sample once
+  a tick from `link.lowstate_reader()` (cyclonedds KeepLast 1, no listener). A Python callback for each of the
+  robot's ~1000 samples/s falls behind as soon as another thread is busy, and every RPC reply in the process
+  waits behind it: 3104 after the full timeout while the robot carries the command out (`say` on the Jetson).
+  `lowstate(callback)` is for short probes only (`g1 status`, `g1 moves`).
 - **Frames are RGB everywhere**; image I/O only through `g1/core/images.py` (Pillow). OpenCV is not
   used and must not be imported (its bundled ffmpeg collides with PyAV's, which decodes the robot's video).
 - **The view never touches the tick.** `--view` (live runs) serves the env's camera slot (`Env.source()`)

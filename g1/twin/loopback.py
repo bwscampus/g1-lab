@@ -183,6 +183,24 @@ class LoopbackTwin(_Client):
         return (code, json.loads(data)) if code == 0 else (code, None)
 
 
+class _LatestLowState:
+    """DdsLink.lowstate_reader on the twin: ``take()`` returns the twin's state once a tick
+    (None when no tick passed since the last take), as KeepLast(1) does over DDS."""
+
+    def __init__(self, link) -> None:
+        self.link = link
+        self._taken = None
+
+    def take(self):
+        if self.link is None or self._taken == self.link._ticks:
+            return None
+        self._taken = self.link._ticks
+        return LowStateMsg(self.link.twin.lowstate())
+
+    def Close(self) -> None:
+        self.link = None
+
+
 class LoopbackLink:
     name = "loopback"
 
@@ -218,6 +236,9 @@ class LoopbackLink:
     def lowstate(self, callback):
         self._subscribers.append(callback)
         return callback
+
+    def lowstate_reader(self) -> "_LatestLowState":
+        return _LatestLowState(self)
 
     def audio_msg(self, callback):
         self._listeners.append(callback)

@@ -30,6 +30,9 @@ class Arm:
             q = 0.0
         self.state = type("S", (), {"motor_state": [M() for _ in range(NUM_JOINTS)]})()
 
+    def poll(self):
+        return self.state
+
     def send(self, action):
         self.sent.append(action)
 
@@ -287,7 +290,7 @@ def test_the_run_closes_its_lowstate_subscriber_after_the_release(monkeypatch, c
 
     class Link:
         def crc(self): return None
-        def lowstate(self, cb): return Sub()
+        def lowstate_reader(self): return Sub()
         def arm_sdk(self): return None
         def lowcmd(self):
             class M:
@@ -296,6 +299,7 @@ def test_the_run_closes_its_lowstate_subscriber_after_the_release(monkeypatch, c
     arm = ArmSdk(link=Link())
     arm.close()
     assert Sub.closed and arm.sub is None              # in g1 start the process outlives the run
+    assert arm.poll() is None                          # a closed reader reads nothing
     env, loco, out = bring_up(monkeypatch, 200, capsys, arm_cls=lambda health=None, link=None, **kw: Arm())
     env._teardown_robot()
     assert env.arm.sent[-2:] == ["release", "close"]
@@ -337,7 +341,7 @@ def test_a_locked_waist_is_held_straight_and_stiff_in_every_arm_sdk_message():
 
     class Link:
         def crc(self): return type("C", (), {"Crc": lambda self, c: 0})()
-        def lowstate(self, cb): return None
+        def lowstate_reader(self): return None
         def arm_sdk(self): return type("P", (), {"Write": lambda self, c: sent.append([(m.q, m.kp) for m in c.motor_cmd])})()
         def lowcmd(self):
             class M:
@@ -360,7 +364,7 @@ def test_a_tilt_lock_holds_roll_and_pitch_and_lets_the_yaw_turn_stiffly():
 
     class Link:
         def crc(self): return type("C", (), {"Crc": lambda self, c: 0})()
-        def lowstate(self, cb): return None
+        def lowstate_reader(self): return None
         def arm_sdk(self): return type("P", (), {"Write": lambda self, c: sent.append([(m.q, m.kp) for m in c.motor_cmd])})()
         def lowcmd(self):
             class M:
@@ -371,3 +375,29 @@ def test_a_tilt_lock_holds_roll_and_pitch_and_lets_the_yaw_turn_stiffly():
     ArmSdk(link=Link(), waist_tilt_locked=True).send(Action(q=q, joints=list(range(12, NUM_JOINTS)), weight=1.0))
     stiff = limits.get("waist_lock_kp")
     assert [sent[0][j] for j in WAIST] == [pytest.approx((0.6, stiff)), (0.0, stiff), (0.0, stiff)]
+
+
+def test_the_arm_reads_lowstate_by_polling_the_newest_sample_never_by_a_callback():
+    """A callback per LowState (~1000/s) starves every RPC reply in the process on the Jetson."""
+    from g1.envs.robot import ArmSdk, Health
+    queue = []
+
+    class Reader:
+        def take(self):
+            return queue.pop() if queue else None
+
+    class Link:
+        def crc(self): return None
+        def lowstate(self, cb): raise AssertionError("a run never subscribes rt/lowstate with a callback")
+        def lowstate_reader(self): return Reader()
+        def arm_sdk(self): return None
+        def lowcmd(self):
+            class M:
+                q = dq = tau = kp = kd = 0.0
+            return type("C", (), {"motor_cmd": [M() for _ in range(NUM_JOINTS + 6)]})()
+    health = Health()
+    arm = ArmSdk(health, link=Link())
+    assert arm.poll() is None and health.count == 0
+    queue.append("first")
+    assert arm.poll() == "first" and health.count == 1
+    assert arm.poll() == "first" and health.count == 1  # nothing new: the last sample, no tick
