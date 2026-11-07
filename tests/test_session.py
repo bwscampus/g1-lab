@@ -613,3 +613,56 @@ def test_the_arms_up_and_down_routines_load_and_hold_the_six_seven_pose():
     up, down = load_routine("arms_up"), load_routine("arms_down")
     assert up.points[0][1] == up.points[-1][1] and up.upper_body_only and down.upper_body_only
     assert sum(seg.duration for seg in compile_segments(up)) <= session_module.limits.get("routine_duration_max_s")
+
+
+# -- see: the camera and the lidar ----------------------------------------------------------------
+
+class FrameCam:
+    def __init__(self, image=True):
+        import numpy as np
+        from g1.camera import Frame
+        self.frame = Frame(np.full((24, 32, 3), 120, np.uint8), 0.0, 1) if image else None
+        self.stopped = False
+
+    def latest(self):
+        return self.frame
+
+    def stop(self):
+        self.stopped = True
+
+
+def test_see_switches_the_camera_on_and_answers_from_the_image(capsys):
+    opened = []
+    s, _, _ = make(camera_factory=lambda mode: opened.append(mode) or FrameCam())
+    s.model = Model(("see", {}), ("say", {"text": "I see a grey wall."}))
+    assert "see" in [t["function"]["name"] for t in s.model_tools()]
+    s.chat("what do you see right now")
+    assert opened == ["standing"] and s.camera is not None and s.audio.said == ["I see a grey wall."]
+    content = s.model.asked[1][-1]["content"]
+    assert content[1]["type"] == "image_url" and content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+    assert "what do you see right now" in content[0]["text"] and "see" not in s.model.tools[1]
+    assert s.counts["looked"] == 1
+
+
+def test_see_without_a_frame_says_so_and_without_a_camera_is_not_offered(capsys):
+    s, _, _ = make(camera_factory=lambda mode: FrameCam(image=False))
+    s.model = Model(("see", {}))
+    s.chat("what do you see")
+    assert s.audio.said == ["Sorry, my camera is not working right now."] and len(s.model.asked) == 1
+    s2, _, _ = make()
+    assert "see" not in [t["function"]["name"] for t in s2.model_tools()]
+
+
+def test_the_lidar_summary_gives_the_nearest_thing_each_way_and_reaches_the_model():
+    import numpy as np
+    from g1.lidar import Scan, surroundings
+    floor = [[x, y, -1.3, 0] for x in np.linspace(-3, 3, 7) for y in np.linspace(-3, 3, 7)]
+    things = [[1.0, 0.0, 0.0, 0], [2.0, 0.1, 0.5, 0], [0.0, 2.5, -0.5, 0]]   # 1 m ahead, 2.5 m left
+    scan = Scan(np.array(floor + things, np.float32), 0.0, "map", np.eye(4), "map")
+    text = surroundings(scan)
+    assert "ahead 1.0 m" in text and "left 2.5 m" in text and "behind clear to 6 m" in text
+    s, _, _ = make(camera_factory=lambda mode: FrameCam())
+    s.lidar = type("L", (), {"lidar": type("S", (), {"latest": lambda self: scan})(), "stop": lambda self: None})()
+    s.model = Model(("see", {}), ("say", {"text": "Something is a metre ahead."}))
+    s.chat("is anything in front of you")
+    assert "ahead 1.0 m" in s.model.asked[1][-1]["content"][0]["text"]
