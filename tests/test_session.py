@@ -608,10 +608,10 @@ def test_fsm_without_an_id_lists_every_fsm_and_marks_where_it_is_and_what_the_mo
     assert s.moves.loco.calls == []                                 # listing never switches
 
 
-def test_the_arms_up_and_down_routines_load_and_hold_the_six_seven_pose():
-    from g1.routines import compile_segments, load_routine
-    up, down = load_routine("arms_up"), load_routine("arms_down")
-    assert up.points[0][1] == up.points[-1][1] and up.upper_body_only and down.upper_body_only
+def test_the_arms_up_routine_loads_and_holds_the_six_seven_pose():
+    from g1.routines import compile_segments, load_routine, routine_names
+    up = load_routine("arms_up")
+    assert up.points[0][1] == up.points[-1][1] and up.upper_body_only and "arms_down" not in routine_names()
     assert sum(seg.duration for seg in compile_segments(up)) <= session_module.limits.get("routine_duration_max_s")
 
 

@@ -366,6 +366,7 @@ def test_a_task_that_locks_the_waist_offers_no_waist_tools_and_its_run_locks_it(
     locked = {t.name for t in menu(turns_waist=False)}
     assert not {"look", "point_to", "arm_path"} & locked and {"point", "lower_arm", "locate_point"} <= locked
     from g1.core import limits
-    task = load_task(limits.ROOT / "tasks" / "point_at")
-    assert task["turns_waist"] is False and run_settings(task).waist_locked is True
+    task = load_task(limits.ROOT / "tasks" / "point_at")             # the waist turns but never tilts
+    assert task["turns_waist"] is True and task["tilts_waist"] is False
+    assert run_settings(task).waist_locked is False and run_settings(task).waist_tilt_locked is True
     assert run_settings(load_task(task_dir(tmp_path, "free", instruction="x"))).waist_locked is False

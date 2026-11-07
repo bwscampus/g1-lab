@@ -129,7 +129,7 @@ suites/            stationary/ (point_at_the_laptop x 10), point_on_request/ (po
 tasks/             point_at/ (point at {object}, g1 start fills it; keeps pointing until told to stop), and not in g1 start ("session": false):
                    point_at_the_laptop/, find_the_mug/, find_and_point_at_the_laptop/, sit_in_the_chair/, point_at_what_you_hear/
                    (spoken requests, hears); runs and results.jsonl inside are git-ignored, demos/ is not
-routines/          tpose/, sixseven/, arms_up/ (the six-seven pose held ~2 min: walk with the remote), arms_down/
+routines/          tpose/, sixseven/, arms_up/ (the six-seven pose held ~2 min)
                    (routine.json: upper-body keyframes); runs/ inside are git-ignored
 docs/              architecture, writing-a-tool, writing-a-task, writing-a-routine, running-on-the-robot, vision-model
 tests/             mirrors g1/ (core, tools, envs, agent, twin) + test_camera, test_cli, test_vlm; doubles.py (RedBallDecider,
@@ -229,8 +229,10 @@ root via `pythonpath`. `limits.ROOT` is the repo root (configs/, tasks/, assets/
 - **A task may keep the robot still.** task.json `walks: false` builds the agent as if the base could not be driven
   (no move, walk_forward, turn or sit, in any mode); `turns_waist: false` hides the tools that turn the waist (`moves_waist`:
   look, point_to, arm_path; the agent refuses them) and makes `ArmSdk` hold the waist at 0 with `waist_lock_kp`/`kd` in
-  every message (`run_settings.waist_locked`). point_at uses both: on the robot, turning the waist at the arm gain (kp 60)
-  tipped it. With the waist locked, `point` aims only along the torso's heading (the shoulder is 12 cm right of the camera).
+  every message (`run_settings.waist_locked`); `tilts_waist: false` holds only roll and pitch at 0 (yaw turns, look and
+  point_to stay) with the whole waist at those gains (`waist_tilt_locked`). point_at uses `walks: false` and
+  `tilts_waist: false`: on the robot, the torso tilting at the arm gain (kp 60) tipped it; locking the yaw too left
+  `point` aiming only along the torso's heading (the shoulder is 12 cm right of the camera), so it missed.
 - **A task may take a slot.** task.json `fill` declares each `{name}` its instruction names (a note and the
   default `g1 run` uses, which the twin's `success` is scored on); `load_task(d, fill=...)` fills and cleans them
   (`task_fill_max_chars`). In g1 start the model fills them through `run_task`'s arguments (`/task point_at water
