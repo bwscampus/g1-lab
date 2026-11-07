@@ -6,7 +6,7 @@ Everything here except this README and `SOUL.example.md` belongs to one robot an
 | file | what it is | who writes it |
 |---|---|---|
 | `SOUL.md` | who the robot is: personality, how it talks, where it is, what it cares about | people only (an editor); made from `SOUL.example.md` on the first `g1 start` |
-| `MEMORY.md` | what it has learned: one dated bullet per fact | the robot (the model's `remember` tool, and the distill at the end of each session); people may edit it |
+| `MEMORY.md` | what it has learned: one dated bullet per fact | the robot (the model's `remember` tool, and `/save` in g1 start, which distills what was said since the last save); people may edit it |
 | `sessions/DATE.md` | that day's log: one line per exchange (heard or typed, and what the robot did) | the session |
 
 How they are used:

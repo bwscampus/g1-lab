@@ -172,25 +172,33 @@ def test_over_its_size_the_distill_is_told_to_condense(kb, monkeypatch):
     assert "gets shorter" in kb.distill_messages()[0]["content"]
 
 
-def test_the_session_distills_at_the_end_after_the_lidar_and_camera_and_esc_skips_it(kb, capsys):
-    order = []
-
-    class Lidar:
-        def stop(self):
-            order.append("lidar")
-    s, _, _ = make(("say", {"text": "Hi"}), knowledge=kb)
+def test_quitting_never_distills_and_save_distills_only_what_is_new(kb, capsys):
+    from g1.console import parse
+    s, _, _ = make(("say", {"text": "Hi"}), ("say", {"text": "Hi again"}), knowledge=kb)
     s.chat("hello")
-    s.lidar = Lidar()
-    s.model = DistillModel({"add": ["Someone said hello."], "remove": []})
-    real = kb.distill
-    kb.distill = lambda model: (order.append(f"distill busy={s.busy.is_set()}"), real(model))[1]
-    s.shutdown()
-    assert order == ["lidar", "distill busy=True"] and kb.memory_bullets() == ["Someone said hello. (2026-11-06)"]
+    s.shutdown()                                                    # quitting: nothing distilled, said why
+    assert kb.memory_bullets() == [] and "not saved into MEMORY.md (/save does that)" in capsys.readouterr().out
+    model = DistillModel({"add": ["Someone said hello."], "remove": []})
+    real = s.model
+    s.model = model
+    busy = []
+    kb.distill = (lambda real_distill: (lambda m: (busy.append(s.busy.is_set()), real_distill(m))[1]))(kb.distill)
+    s.handle(parse("/save"))
+    assert busy == [True] and kb.memory_bullets() == ["Someone said hello. (2026-11-06)"]
+    assert "hello" in model.asked[0][0][1]["content"]
+    s.handle(parse("/save"))                                        # nothing new since the last save
+    assert len(model.asked) == 1 and "nothing new since the last save" in capsys.readouterr().out
+    s.model = real
+    s.chat("hello again")
+    s.model = model
+    s.handle(parse("/save"))
+    assert "hello again" in model.asked[1][0][1]["content"] and "- 14:03 [typed] hello ->" not in model.asked[1][0][1]["content"]
 
-    def stopped(model):
+    def stopped(m):
         raise KeyboardInterrupt
     kb.distill = stopped
-    s.shutdown()
+    kb.log("typed", "one more", "ok")
+    s.handle(parse("/save"))
     assert "memory: skipped" in capsys.readouterr().out and not s.busy.is_set()
 
 

@@ -118,7 +118,7 @@ g1/vlm.py          VLMClient (Hugging Face or OpenRouter), load_dotenv
 g1/session.py      g1 start's engine (Session: mode, mic/speaker/camera/lidar, the events queue, chat -> the model's one choice,
                    run_skill: the one executor; robot_runner: cli.run_once in the session's mode, its mic and camera)
 g1/knowledge.py    g1 start's knowledge base (knowledge/: SOUL.md by people, MEMORY.md by the robot, sessions/DATE.md;
-                   the prompt's soul and memory, remember/forget, the daily log, the end-of-session distill)
+                   the prompt's soul and memory, remember/forget, the daily log, the /save distill)
 g1/console.py      g1 start's terminal (prompt_toolkit in its own thread: input box, status line, / completion;
                    parse, Console: Esc/Ctrl-C/y-N/quit, start_main)
 g1/routines.py     routines: SCHEMA, load_routine, routine_names, compile_segments (the timeline as Segments), run_spec
@@ -279,7 +279,7 @@ root via `pythonpath`. `limits.ROOT` is the repo root (configs/, tasks/, assets/
   facts go in `notes` (never sent). `tests/agent/test_what_the_model_knows.py` guards it.
 - **The knowledge base is the session's only.** `knowledge/SOUL.md` (who the robot is; people write it,
   the robot never does), `knowledge/MEMORY.md` (what it learned; the robot writes it freely: the model's
-  `remember` tool and the distill at the end of a session) and `knowledge/sessions/` are per robot and
+  `remember` tool, and `/save`, which distills what was said since the last save; nothing is distilled on its own) and `knowledge/sessions/` are per robot and
   git-ignored (`SOUL.example.md` and the README are tracked). Only `g1 start` reads them, after its rules
   (`session.MECHANICS`: the tools and the safety lines, in code so no file can remove them); tasks and
   `g1/agent/` never import `g1.knowledge` (`tests/test_knowledge.py` guards it). Persona and setting

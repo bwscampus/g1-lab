@@ -56,6 +56,7 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "memory": ("/memory", "what the robot remembers (knowledge/MEMORY.md, the newest)"),
     "soul": ("/soul", "who the robot is (knowledge/SOUL.md; edit it in an editor)"),
     "fsm": ("/fsm [ID]", "list the FSMs (no ID), or switch the robot to FSM ID now (refused if the mode blocks it; y/N for damp, sit, stand-up)"),
+    "save": ("/save", "distill what was said since the last save into MEMORY.md (nothing is saved on its own)"),
     "status": ("/status", "the link, the FSM and the battery (read-only)"),
     "stop": ("/stop", "stop what the robot is doing (Esc)"),
     "help": ("/help", "this list"),
