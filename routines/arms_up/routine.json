@@ -1,5 +1,5 @@
 {
-  "notes": "Arms up in the six-seven pose (palms up, elbows bent), then held still so you can walk the robot with the remote; Esc (or the end, about 2 minutes) lowers them.",
+  "notes": "Arms up in the six-seven pose (palms up, elbows bent), then held still for about 2 minutes; Esc lowers them sooner. (Walking with the arms held up does not work: walking needs the arms to balance.)",
   "modes": [
     "gantry",
     "standing"
@@ -51,7 +51,7 @@
             "right_wrist_pitch": 0.0,
             "right_wrist_yaw": 0.0
           },
-          "label": "holding the arms up: walk with the remote, Esc to stop"
+          "label": "holding the arms up (Esc to stop)"
         }
       ]
     }

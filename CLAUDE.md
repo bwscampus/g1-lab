@@ -129,7 +129,7 @@ suites/            stationary/ (point_at_the_laptop x 10), point_on_request/ (po
 tasks/             point_at/ (point at {object}, g1 start fills it; keeps pointing until told to stop), and not in g1 start ("session": false):
                    point_at_the_laptop/, find_the_mug/, find_and_point_at_the_laptop/, sit_in_the_chair/, point_at_what_you_hear/
                    (spoken requests, hears); runs and results.jsonl inside are git-ignored, demos/ is not
-routines/          tpose/, sixseven/, arms_up/ (the six-seven pose held ~2 min: walk with the remote), arms_down/
+routines/          tpose/, sixseven/, arms_up/ (the six-seven pose held ~2 min)
                    (routine.json: upper-body keyframes); runs/ inside are git-ignored
 docs/              architecture, writing-a-tool, writing-a-task, writing-a-routine, running-on-the-robot, vision-model
 tests/             mirrors g1/ (core, tools, envs, agent, twin) + test_camera, test_cli, test_vlm; doubles.py (RedBallDecider,
