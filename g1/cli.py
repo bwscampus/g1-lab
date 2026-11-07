@@ -180,6 +180,7 @@ def run_settings(task: Optional[dict] = None, *, sim: bool = False, mode: Option
         verbose=os.environ.get("G1_VERBOSE", "") not in ("", "0"),
         scene=task.get("scene") or "none", sim_objects=[parse_object(o) for o in task.get("objects") or []],
         camera_size=task.get("camera_size"), sim_start=task.get("start"), success=task.get("success"),
+        waist_locked=task.get("turns_waist", True) is False,
         hears=bool(task.get("hears")), voices=task.get("voices") or [],
         # the in-process twin (tests): headless, its own pacing and checks
         headless=True, realtime=None, hold_end=limits.get("sim_viewer_hold_s"), camera_dir=None,
@@ -203,7 +204,8 @@ def build_program(task: dict, env, runs: Path, env_name: str, mode: Optional[str
         from g1.tools.routines import routine_program
         return routine_program(task.get("routine_dir") or task["routine"])
     from g1.agent.agent import build_agent
-    return build_agent(task, env_name=env_name, can_walk=env.can_walk, has_loco=env.has_loco, runs=runs,
+    can_walk = env.can_walk and task.get("walks", True)      # "walks": false keeps the base still in any mode
+    return build_agent(task, env_name=env_name, can_walk=can_walk, has_loco=env.has_loco, runs=runs,
                        mode=mode, config=config)
 
 

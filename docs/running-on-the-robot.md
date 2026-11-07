@@ -298,6 +298,7 @@ directly, without the model and without the question:
 | `/routine NAME` · `/task NAME [WHAT]` | run one now; WHAT fills the task's slot (`/task point_at water bottle`). The session shows only tasks without `"session": false`: `point_at`, which finds the object, points, and keeps pointing (re-aiming after each short listen) until you say or type "stop" (Esc stops at once) |
 | `/move ID\|NAME` · `/say TEXT` | a built-in move now · the robot says it |
 | `/mode gantry\|standing` | switch mode: it asks you to confirm it is hanging / standing; refused while the robot is in an FSM the new mode blocks. Never changes the FSM |
+| `/fsm` | every FSM with its name and what it is, which the mode blocks, and `>` where the robot is |
 | `/fsm ID` | `SetFsmId(ID)` now, outside the usual order, and print the FSM the robot reaches (y/N first for 0, 1, 3, 4, 801); refused for an FSM the mode blocks |
 | `/mic on\|off` | handle what the robot hears like chat, or ignore it. Off at the start. A task that hears (`point_at`) hears either way, and while it runs a line you type goes to it as if said ("stop") |
 | `/speaker on\|off` | say replies out loud (`TtsMaker`), or only print them here; tasks and routines run from the session follow it (their `say` is printed as `robot (speaker off): ...`). On at the start |

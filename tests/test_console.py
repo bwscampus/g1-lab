@@ -21,7 +21,7 @@ from g1.session import Command, RoutineInfo, Session, TaskInfo
     ("/move 516", "move", ["516"], ""),
     ("/say hello everyone", "say", [], "hello everyone"),
     ("/mode Gantry", "mode", ["gantry"], ""),
-    ("/fsm 200", "fsm", ["200"], ""),
+    ("/fsm 200", "fsm", ["200"], ""), ("/fsm", "fsm", [], ""),
     ("/mic off", "mic", ["off"], ""),
     ("/camera on", "camera", ["on"], ""),
     ("/lidar on", "lidar", ["on"], ""),
@@ -36,7 +36,7 @@ def test_every_command_parses(line, name, args, text):
 @pytest.mark.parametrize("line, match", [
     ("/fly", "unknown command /fly"), ("/routine", "usage: /routine NAME"), ("/routine a b", "usage"),
     ("/walk 0.3", "unknown command /walk"), ("/mode sitting", "usage"),
-    ("/mic maybe", "usage"), ("/fsm walk", "a number"), ("/fsm", "usage"), ("/say", "usage"), ("/chat hi", "unknown command /chat"),
+    ("/mic maybe", "usage"), ("/fsm walk", "a number"), ("/fsm 1 2", "usage"), ("/say", "usage"), ("/chat hi", "unknown command /chat"),
     ("/speaker maybe", "usage"), ("/skills now", "usage"), ("   ", "^$"),
 ])
 def test_a_bad_line_says_why(line, match):

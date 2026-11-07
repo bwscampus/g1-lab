@@ -18,7 +18,7 @@ the base (LocoClient.Move) — "control mode" in the messages below.
             that FSM. Never damps.
 
 A run changes no FSM: it runs and ends in the FSM it found (only a sit is stood up from,
-to 200). arm_sdk is verified in FSM 200 only; in another the run warns.
+to 200). 
 
 The arms are taken where they are (a 2 s weight ramp, nothing moves) and
 released where the last tool left them; no move to a neutral pose, no
@@ -66,7 +66,7 @@ from g1.camera import WebRTCCamera
 from g1.core import limits
 from g1.core.action import Action
 from g1.core.config import (ARM_SDK_WEIGHT_IDX, AUDIO_METHODS, BASE_VEL_MAX, CONTROL_DT, FSM_SIT_TO_STAND, LOCO_FSM, LOCO_METHODS, NUM_JOINTS,
-                            UPPER_BODY)
+                            UPPER_BODY, WAIST)
 from g1.envs import sdk
 from g1.envs.base import Env, EnvAbort, shield_sigint
 from g1.envs.link import DdsLink, dds_domain, is_loopback
@@ -106,8 +106,9 @@ class Health:
 class ArmSdk:
     """Thin publisher for rt/arm_sdk plus a LowState subscriber."""
 
-    def __init__(self, health: Optional[Health] = None, link=None) -> None:
+    def __init__(self, health: Optional[Health] = None, link=None, waist_locked: bool = False) -> None:
         self.link = link or DdsLink()
+        self.waist_locked = waist_locked      # every message holds the waist straight at waist_lock_kp/kd
         self.state = None
         self.health = health or Health()
         self.crc = self.link.crc()
@@ -161,6 +162,11 @@ class ArmSdk:
             mc.tau = 0.0
             mc.kp = action.kp
             mc.kd = action.kd
+        if self.waist_locked:                 # whatever a tool sent: straight and stiff (task turns_waist: false)
+            for j in WAIST:
+                mc = self.cmd.motor_cmd[j]
+                mc.q = mc.dq = mc.tau = 0.0
+                mc.kp, mc.kd = limits.get("waist_lock_kp"), limits.get("waist_lock_kd")
         self.cmd.motor_cmd[ARM_SDK_WEIGHT_IDX].q = float(action.weight)
         self.cmd.crc = self.crc.Crc(self.cmd)
         self.pub.Write(self.cmd)
@@ -410,10 +416,10 @@ class RobotEnv(Env):
             link.sleep(limits.get("gantry_lock_stand_s"))
             self._enter_main(link)
         else:
-            print(f"control mode in FSM {sdk.fsm_name(self.initial_fsm)}: no FSM change"
-                  + ("" if self.initial_fsm == FSM_MAIN else
-                     f" (warning: taking the arms is verified only in FSM {FSM_MAIN}; if they do not move, /fsm {FSM_MAIN})"))
-        self.arm = ArmSdk(self.link_health, link=link)
+            print(f"control mode in FSM {sdk.fsm_name(self.initial_fsm)}: no FSM change")
+        self.arm = ArmSdk(self.link_health, link=link, waist_locked=bool(getattr(self.args, "waist_locked", False)))
+        if getattr(self.arm, "waist_locked", False):
+            print(f"waist: locked straight (kp {limits.get('waist_lock_kp'):g}, kd {limits.get('waist_lock_kd'):g}) for this run")
         try:
             self.monitor = self._make_monitor()
             self.base = None

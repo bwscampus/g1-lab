@@ -1,0 +1,36 @@
+{
+  "notes": "Arms to the regular standing pose over 3 seconds, from wherever they are (nothing moves if they are already there).",
+  "modes": [
+    "gantry",
+    "standing"
+  ],
+  "tracks": {
+    "upper_body": {
+      "keyframes": [
+        {
+          "t": 3.0,
+          "joints": {
+            "waist_yaw": 0.0,
+            "waist_roll": 0.0,
+            "waist_pitch": 0.0,
+            "left_shoulder_pitch": 0.2,
+            "left_shoulder_roll": 0.2,
+            "left_shoulder_yaw": 0.0,
+            "left_elbow": 1.28,
+            "left_wrist_roll": 0.0,
+            "left_wrist_pitch": 0.0,
+            "left_wrist_yaw": 0.0,
+            "right_shoulder_pitch": 0.2,
+            "right_shoulder_roll": -0.2,
+            "right_shoulder_yaw": 0.0,
+            "right_elbow": 1.28,
+            "right_wrist_roll": 0.0,
+            "right_wrist_pitch": 0.0,
+            "right_wrist_yaw": 0.0
+          },
+          "label": "arms down to the standing pose"
+        }
+      ]
+    }
+  }
+}

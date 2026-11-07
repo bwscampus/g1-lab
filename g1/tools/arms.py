@@ -29,6 +29,7 @@ class ArmPath(Tool):
     ``joints`` merges onto the previous pose."""
 
     name = "arm_path"
+    moves_waist = True
     order = 20
     prompt = ("Move the waist and arms through 1 to {limit:arm_path_max_waypoints} joint-space waypoints; each gives "
               "joints (name -> radians, see the joint table) and seconds ({limit:arm_path_seconds_min} to "
@@ -172,6 +173,7 @@ class PointAt(Point):
     arm's measured line misses that point."""
 
     name = "point_to"
+    moves_waist = True
     order = 24
     prompt = ("Point the right arm at something you see, in one move: give its pixel in this turn's image (x_px from "
               "the left edge, y_px from the top) and how far away it is (distance_m, from the camera; judge it from "
@@ -294,6 +296,7 @@ class Look(Tool):
     """Turn only the waist and hold it, so the next image looks sideways."""
 
     name = "look"
+    moves_waist = True
     order = 22
     prompt = ("Turn only the waist to yaw_deg degrees from the feet (up to {limit:look_yaw_max_deg} either way), "
               "positive LEFT, over seconds, and hold it there; the feet and arms do not move. yaw_deg is where to "

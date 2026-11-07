@@ -71,7 +71,8 @@ class Agent(Runnable):
                  frame_max_age: float = limits.get("frame_max_age_s"),
                  frame_timeout: float = limits.get("frame_timeout_s"),
                  max_failures: int = limits.get("max_failures"),
-                 can_walk: bool = True, has_loco: bool = False, safety_notes: Sequence[str] = (),
+                 can_walk: bool = True, has_loco: bool = False, turns_waist: bool = True,
+                 safety_notes: Sequence[str] = (),
                  verdict: Optional[Callable[[], Optional[str]]] = None, name: str = "search",
                  retry_delays: Sequence[float] = RETRY_DELAYS, recovery_timeout: float = RECOVERY_TIMEOUT) -> None:
         self.instruction = instruction
@@ -90,6 +91,7 @@ class Agent(Runnable):
         self.max_failures = max_failures
         self.can_walk = can_walk
         self.has_loco = has_loco
+        self.turns_waist = turns_waist            # False: the task locks the waist (no look, point_to, arm_path)
         self.safety_notes = list(safety_notes)
         self.verdict = verdict
         self.name = name
@@ -583,6 +585,9 @@ class Agent(Runnable):
         if tool.needs_base and not self.can_walk:
             return self._reject(t, obs, d.name, "tool_rejected: the base cannot be driven in this run",
                                 raw=d.raw, arguments=d.arguments)
+        if tool.moves_waist and not self.turns_waist:
+            return self._reject(t, obs, d.name, "tool_rejected: the waist is locked in this task: point straight "
+                                "ahead (point) and lower_arm only", raw=d.raw, arguments=d.arguments)
         if tool.needs_loco and not self.has_loco:
             return self._reject(t, obs, d.name, "tool_rejected: no onboard controller for gestures in this env",
                                 raw=d.raw, arguments=d.arguments)
@@ -665,11 +670,12 @@ def build_agent(task: dict, *, env_name: str, can_walk: bool, has_loco: bool, ru
     decider = VLMDecider.from_env(demos=demos)
     if demos:
         print(f"demos: {', '.join(d['run'] for d in demos)}")
-    tools = menu(can_walk, has_loco, hears=bool(task.get("hears")))
+    turns_waist = task.get("turns_waist", True)
+    tools = menu(can_walk, has_loco, hears=bool(task.get("hears")), turns_waist=turns_waist)
     notes = list(task["safety_notes"])          # rules only: the room's layout is never told
     agent = Agent(task["instruction"], decider, tools, max_decisions=task["max_decisions"],
                   step_timeout=AGENT_SETTINGS["step_timeout_s"], can_walk=can_walk, has_loco=has_loco,
-                  safety_notes=notes, verdict=None)
+                  turns_waist=turns_waist, safety_notes=notes, verdict=None)
     config = {**(config or {}), "model": decider.settings(), **agent.context.record(), "demos": decider.demos_record()}
     agent.recorder = EpisodeWriter(runs, env=env_name, instruction=task["instruction"], model=decider.model,
                                    config=config, task=task["name"], mode=mode, max_decisions=task["max_decisions"])

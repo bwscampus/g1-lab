@@ -595,3 +595,21 @@ def test_an_unknown_fsm_never_refuses_a_skill_and_runs_get_the_sessions_clients(
     assert runner.runs[0][:2] == ("routine", "tpose")
     settings = runner.runs[0][3]
     assert settings["loco_shared"] is s.moves.loco and settings["audio_shared"] is s.audio
+
+
+def test_fsm_without_an_id_lists_every_fsm_and_marks_where_it_is_and_what_the_mode_blocks():
+    from g1.envs import sdk
+    s, _, _ = make(fsm=501)
+    lines = s.fsm_lines()
+    assert len([l for l in lines if l[:6].strip().lstrip(">").strip().isdigit()]) == len(sdk.FSM_INFO)
+    here = next(l for l in lines if l.startswith(" >"))
+    assert "501" in here and "walk, 3-DoF waist" in here and "walk_fsm" in here
+    assert "[blocked in standing]" in next(l for l in lines if l.split()[0] == "1")
+    assert s.moves.loco.calls == []                                 # listing never switches
+
+
+def test_the_arms_up_and_down_routines_load_and_hold_the_six_seven_pose():
+    from g1.routines import compile_segments, load_routine
+    up, down = load_routine("arms_up"), load_routine("arms_down")
+    assert up.points[0][1] == up.points[-1][1] and up.upper_body_only and down.upper_body_only
+    assert sum(seg.duration for seg in compile_segments(up)) <= session_module.limits.get("routine_duration_max_s")

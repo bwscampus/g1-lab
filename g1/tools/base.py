@@ -153,6 +153,7 @@ class Tool(Runnable):
     needs_base: bool = False            # hidden where the env cannot walk
     needs_loco: bool = False            # hidden where the env has no onboard LocoClient
     needs_hearing: bool = False         # hidden unless the task hears (task.json hears)
+    moves_waist: bool = False           # hidden where the task locks the waist (task.json turns_waist: false)
     order: int = 50                    # menu position (lower first; terminal tools go last)
     # -- what the robot runs -----------------------------------------------------------
     joints: list[int] = UPPER_BODY

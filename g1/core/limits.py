@@ -29,7 +29,7 @@ SOURCES = ("guess", "gpt-policy", "repo", "unitree", "measured", "user", "robot"
 NAMES = (
     "control_dt_s", "chain_pause_s", "camera_timeout_s", "camera_poll_hz", "view_port", "view_width_px", "view_jpeg_quality", "view_fps", "png_compress_level",
     "base_vx_max", "base_vy_max", "base_vyaw_max", "walk_speed", "side_speed", "turn_rate", "min_segment_s",
-    "joint_margin_rad", "command_vel_max", "arm_sdk_kp", "arm_sdk_kd", "max_violations", "joint_moved_rad", "max_printed_violations",
+    "joint_margin_rad", "command_vel_max", "arm_sdk_kp", "arm_sdk_kd", "waist_lock_kp", "waist_lock_kd", "max_violations", "joint_moved_rad", "max_printed_violations",
     "move_dx_max_m", "move_dy_max_m", "move_dyaw_max_deg", "walk_forward_min_m", "look_yaw_max_deg", "look_seconds_min", "look_seconds_max", "look_seconds_default",
     "point_down_deg_max", "point_down_deg_default", "point_sag_deg", "point_rise_s_min", "point_rise_s_max", "point_rise_s_default", "point_hold_s_min", "point_hold_s_max", "point_hold_s_default", "point_to_distance_min_m", "point_to_distance_max_m", "point_to_yaw_max_deg",
     "arm_path_max_waypoints", "arm_path_seconds_min", "arm_path_seconds_max", "arm_path_seconds_default",     "hold_seconds_max", "hold_seconds_min", "hold_seconds_default", "wave_hand_seconds", "shake_hand_seconds", "gesture_seconds_max", "gesture_seconds_min", "gesture_ramp_s", "sit_seconds", "sit_seconds_min", "sit_seconds_max", "sit_line_up_m", "sit_back_m",

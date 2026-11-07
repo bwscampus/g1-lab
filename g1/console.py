@@ -11,7 +11,7 @@ call things directly:
     /move ID|NAME               a built-in move now (standing mode)
     /say TEXT                   the robot says it
     /mode gantry|standing       switch mode (y/N); never changes the FSM (gantry allows 0, 1, 4, 200; standing all but 0, 1)
-    /fsm ID                     switch the FSM now, if the mode allows it
+    /fsm [ID]                   list the FSMs, or switch to one now if the mode allows it
     /mic on|off · /speaker on|off · /camera on|off · /lidar on|off
     /memory · /soul             what the robot remembers, who it is (knowledge/)
     /status · /stop · /help · /quit
@@ -55,7 +55,7 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "lidar": ("/lidar on|off", "SLAM mapping and its live view; off saves the map"),
     "memory": ("/memory", "what the robot remembers (knowledge/MEMORY.md, the newest)"),
     "soul": ("/soul", "who the robot is (knowledge/SOUL.md; edit it in an editor)"),
-    "fsm": ("/fsm ID", "switch the robot to FSM ID now (SetFsmId; refused if the mode blocks it; y/N for damp, sit, stand-up)"),
+    "fsm": ("/fsm [ID]", "list the FSMs (no ID), or switch the robot to FSM ID now (refused if the mode blocks it; y/N for damp, sit, stand-up)"),
     "status": ("/status", "the link, the FSM and the battery (read-only)"),
     "stop": ("/stop", "stop what the robot is doing (Esc)"),
     "help": ("/help", "this list"),
@@ -102,8 +102,8 @@ def parse(line: str) -> Command:
             raise ParseError(f"usage: {usage}")
         args = [" ".join(args)]
     elif name == "fsm":
-        if len(args) != 1 or not args[0].isdigit():
-            raise ParseError(f"usage: {usage} (a number, e.g. /fsm 200)")
+        if len(args) > 1 or (args and not args[0].isdigit()):
+            raise ParseError(f"usage: {usage} (a number, e.g. /fsm 200; no number lists them)")
     elif name in CHOICES:
         if len(args) != 1 or args[0].lower() not in CHOICES[name]:
             raise ParseError(f"usage: {usage}")
@@ -180,9 +180,9 @@ class Console:
         if cmd.name == "help":
             for line in help_lines():
                 self.out(line)
-        elif cmd.name in ("skills", "memory", "soul"):
+        elif cmd.name in ("skills", "memory", "soul") or (cmd.name == "fsm" and not cmd.args):
             lines = {"skills": self.session.skills, "memory": self.session.memory_lines,
-                     "soul": self.session.soul_lines}[cmd.name]()
+                     "soul": self.session.soul_lines, "fsm": self.session.fsm_lines}[cmd.name]()
             for line in lines:
                 self.out(line)
         elif cmd.name == "stop":
