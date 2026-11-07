@@ -338,3 +338,34 @@ def test_g1_limits_prints_every_limit_as_one_table(capsys):
     out = capsys.readouterr().out
     assert "with source 'guess'" in out and "control_dt_s" not in out            # control_dt_s is a robot fact
     assert main(["limits", "vibes"]) == 2
+
+
+def test_a_task_that_never_walks_gets_no_base_tools_even_standing(tmp_path, monkeypatch):
+    from g1.agent.task import load_task
+    from g1.cli import build_program
+    built = {}
+    monkeypatch.setattr("g1.agent.agent.build_agent", lambda task, **kw: built.update(kw) or "agent")
+    env = sim_env()                                               # standing: the env could walk
+    assert env.can_walk
+    for walks, expect in ((False, False), (True, True)):
+        task = load_task(task_dir(tmp_path, f"t{walks}", instruction="point at it", walks=walks))
+        build_program(task, env, tmp_path / "runs", "sim")
+        assert built["can_walk"] is expect
+    from g1.tools import menu
+    assert not any(t.needs_base for t in menu(False)) and {"look", "point_to", "lower_arm"} <= {t.name for t in menu(False)}
+    from g1.core import limits
+    assert load_task(limits.ROOT / "tasks" / "point_at")["walks"] is False
+
+
+def test_a_task_that_locks_the_waist_offers_no_waist_tools_and_its_run_locks_it(tmp_path, monkeypatch):
+    from g1.agent.task import load_task
+    from g1.cli import build_program, run_settings
+    from g1.tools import menu
+    built = {}
+    monkeypatch.setattr("g1.agent.agent.build_agent", lambda task, **kw: built.update(kw) or "agent")
+    locked = {t.name for t in menu(turns_waist=False)}
+    assert not {"look", "point_to", "arm_path"} & locked and {"point", "lower_arm", "locate_point"} <= locked
+    from g1.core import limits
+    task = load_task(limits.ROOT / "tasks" / "point_at")
+    assert task["turns_waist"] is False and run_settings(task).waist_locked is True
+    assert run_settings(load_task(task_dir(tmp_path, "free", instruction="x"))).waist_locked is False

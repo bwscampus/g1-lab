@@ -23,6 +23,8 @@
     "joint_margin_rad":           {"value": 0.05,  "unit": "rad",   "source": "repo",       "note": "how far inside the joint limits a measured or commanded angle must stay"},
     "command_vel_max":            {"value": 4.0,   "unit": "rad/s", "source": "repo",       "note": "fastest the commanded joint angle may change between ticks"},
     "arm_sdk_kp":                 {"value": 60.0,   "unit": "N*m/rad", "source": "repo",       "note": "stiffness sent with every arm_sdk command (Action.kp); arms sag under gravity at this gain"},
+    "waist_lock_kp":              {"value": 200.0,  "unit": "N*m/rad", "source": "guess",      "note": "stiffness holding the waist straight in a task with turns_waist false (every arm_sdk message); the arm gain (arm_sdk_kp, 60) let the torso sag and tip the robot (2026-11-07). Verify on the robot"},
+    "waist_lock_kd":              {"value": 5.0,    "unit": "N*m*s/rad", "source": "guess",    "note": "damping with waist_lock_kp"},
     "arm_sdk_kd":                 {"value": 1.5,    "unit": "N*m*s/rad", "source": "repo",       "note": "damping sent with every arm_sdk command (Action.kd)"},
     "max_violations":             {"value": 20,    "unit": "count", "source": "repo",       "note": "a sim run stops after this many monitor violations"},
     "joint_moved_rad":            {"value": 0.005,  "unit": "rad",    "source": "repo",       "note": "a joint whose command or measurement spans more than this counts as moved in reports and dry runs"},

@@ -786,6 +786,16 @@ class Session:
                                f": {self.mode} mode blocks it ({allowed_text(self.mode)}); /fsm or /mode first"))
         return True
 
+    def fsm_lines(self) -> list[str]:
+        """``/fsm``: every FSM, its name and what it is; which this mode allows; where the robot is (as last read)."""
+        lines = [f"FSMs ({self.mode} mode allows {allowed_text(self.mode)}; > is where the robot is, as last read):"]
+        for fsm, about in sdk.FSM_INFO.items():
+            mark = ">" if fsm == self.fsm else " "
+            blocked = "" if fsm_allowed(self.mode, fsm) else f"  [blocked in {self.mode}]"
+            lines.append(f" {mark} {fsm:>3}  {sdk.FSM_NAMES.get(fsm, '?'):<22} {about}{blocked}")
+        lines.append("/fsm ID switches now (y/N first for 0, 1, 3, 4, 801)")
+        return lines
+
     def set_fsm(self, target: int) -> None:
         """``/fsm ID``: try ``SetFsmId(ID)`` now, outside the allowed order (to find out what the robot
         takes), and report the FSM it reaches. A y/N first for the states that can drop or seat it."""

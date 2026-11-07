@@ -96,6 +96,13 @@ SCHEMA = {
                  "description": "slots the instruction names as {name}, filled when the task is started (g1 start: "
                                 "\"point at the water bottle\" fills object); each with a note for whoever fills it "
                                 "and the default g1 run uses (the twin's success is scored on the default)"},
+        "walks": {"type": "boolean", "default": True,
+                  "description": "false: the base is never driven in this task, in any mode (no move, walk_forward, "
+                                 "turn or sit; the legs only balance under Unitree's controller): look and point only"},
+        "turns_waist": {"type": "boolean", "default": True,
+                        "description": "false: the waist is locked straight and stiff for the whole run (every arm_sdk "
+                                       "message holds it at 0, waist_lock_kp/kd); no look, point_to or arm_path: it sees "
+                                       "and points only straight ahead (point). The torso cannot tip the robot over"},
         "session": {"type": "boolean", "default": True,
                     "description": "offered in g1 start (false: g1 run and g1 bench only, e.g. not yet tried on the robot)"},
         "notes": {"type": "string", "default": "", "description": "for people; the model never sees it"},

@@ -1,0 +1,59 @@
+{
+  "notes": "Arms up in the six-seven pose (palms up, elbows bent), then held still so you can walk the robot with the remote; Esc (or the end, about 2 minutes) lowers them.",
+  "modes": [
+    "gantry",
+    "standing"
+  ],
+  "tracks": {
+    "upper_body": {
+      "keyframes": [
+        {
+          "t": 3.0,
+          "joints": {
+            "waist_yaw": 0.0,
+            "waist_roll": 0.0,
+            "waist_pitch": 0.0,
+            "left_shoulder_pitch": 0.0,
+            "left_shoulder_roll": 0.1,
+            "left_shoulder_yaw": 0.0,
+            "left_elbow": 0.0,
+            "left_wrist_roll": -1.571,
+            "left_wrist_pitch": 0.0,
+            "left_wrist_yaw": 0.0,
+            "right_shoulder_pitch": 0.0,
+            "right_shoulder_roll": -0.1,
+            "right_shoulder_yaw": 0.0,
+            "right_elbow": 0.0,
+            "right_wrist_roll": 1.571,
+            "right_wrist_pitch": 0.0,
+            "right_wrist_yaw": 0.0
+          },
+          "label": "arms up (six-seven pose)"
+        },
+        {
+          "t": 118.0,
+          "joints": {
+            "waist_yaw": 0.0,
+            "waist_roll": 0.0,
+            "waist_pitch": 0.0,
+            "left_shoulder_pitch": 0.0,
+            "left_shoulder_roll": 0.1,
+            "left_shoulder_yaw": 0.0,
+            "left_elbow": 0.0,
+            "left_wrist_roll": -1.571,
+            "left_wrist_pitch": 0.0,
+            "left_wrist_yaw": 0.0,
+            "right_shoulder_pitch": 0.0,
+            "right_shoulder_roll": -0.1,
+            "right_shoulder_yaw": 0.0,
+            "right_elbow": 0.0,
+            "right_wrist_roll": 1.571,
+            "right_wrist_pitch": 0.0,
+            "right_wrist_yaw": 0.0
+          },
+          "label": "holding the arms up: walk with the remote, Esc to stop"
+        }
+      ]
+    }
+  }
+}

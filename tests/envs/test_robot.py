@@ -326,3 +326,26 @@ def test_the_lowstate_reader_is_closed_when_setup_fails_after_it_or_the_release_
     with pytest.raises(RuntimeError, match="write failed"):
         env._teardown_robot()
     assert made[-1].sent == ["close"]                                    # closed even though the release raised
+
+
+def test_a_locked_waist_is_held_straight_and_stiff_in_every_arm_sdk_message():
+    from g1.core.action import Action
+    from g1.core.config import WAIST
+    from g1.core import limits
+    from g1.envs.robot import ArmSdk
+    sent = []
+
+    class Link:
+        def crc(self): return type("C", (), {"Crc": lambda self, c: 0})()
+        def lowstate(self, cb): return None
+        def arm_sdk(self): return type("P", (), {"Write": lambda self, c: sent.append([(m.q, m.kp) for m in c.motor_cmd])})()
+        def lowcmd(self):
+            class M:
+                q = dq = tau = kp = kd = 0.0
+            return type("C", (), {"motor_cmd": [M() for _ in range(NUM_JOINTS + 6)], "crc": 0})()
+    q = np.zeros(NUM_JOINTS)
+    q[WAIST[0]] = 0.6                                                    # a tool asks for a waist turn
+    for locked, waist in ((False, (0.6, 60.0)), (True, (0.0, limits.get("waist_lock_kp")))):
+        sent.clear()
+        ArmSdk(link=Link(), waist_locked=locked).send(Action(q=q, joints=list(range(12, NUM_JOINTS)), weight=1.0))
+        assert sent[0][WAIST[0]] == pytest.approx(waist)

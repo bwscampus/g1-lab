@@ -40,6 +40,20 @@ FSM_NAMES = {0: "zero torque", 1: "damp", 2: "squat", 3: "sit", 4: "locked stand
              200: "main operation", 500: "walk, 1-DoF waist", 501: "walk, 3-DoF waist", 702: "lie to stand",
              706: "stand to squat", 801: "run (walk-run)", 550: "playing a stored move",
              802: "after a stored move"}
+# What each FSM is, for people (/fsm with no id); our G1, 2026-11 (the names above are Unitree's or ours).
+FSM_INFO = {0: "every motor off: a standing robot falls (hanging only)",
+            1: "every joint limp: a standing robot falls (hanging only); also the remote's L2+B",
+            2: "",
+            3: "straight down where it stands (a chair right behind the heels)",
+            4: "from damp, hanging in the gantry with the feet just touching",
+            200: "Unitree's controller balances; arm_sdk takes the arms; Move walks",
+            500: "",
+            501: "our G1's walk mode (walk_fsm)",
+            550: "set as 550<id>; it ends in 802",
+            702: "",
+            706: "",
+            801: "stands up from sitting",
+            802: "the next stored move plays from here"}
 STANDING_FSMS = frozenset({4, 200, 500, 501})        # standing under Unitree's controller (g1 status's verdict)
 # where a run may start and stays (no FSM change): standing, plus run mode and after a stored move.
 # arm_sdk is verified in 200 only (2026-11-07); elsewhere the run warns
