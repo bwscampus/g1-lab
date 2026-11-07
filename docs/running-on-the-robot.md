@@ -339,9 +339,9 @@ Who the robot is and what it knows live in `knowledge/` on the machine that runs
 - **`SOUL.md`**: its personality, how it talks, where it is and who it talks to. Made from the tracked
   `SOUL.example.md` on the first start; edit it with any editor, and the next answer uses it.
 - **`MEMORY.md`**: what it has learned, one dated bullet each. The robot writes it itself: when someone
-  tells it something worth keeping (the model's `remember`), and at the end of each session, when the
-  model reads that session's log and adds or removes bullets (Esc skips it; at most
-  `memory_distill_timeout_s`). Its newest `memory_max_chars` go into every prompt.
+  tells it something worth keeping (the model's `remember`), and when you type `/save`: the model reads
+  what was said since the last save and adds or removes bullets (Esc skips it; at most
+  `memory_distill_timeout_s`). Nothing is distilled on its own: quitting does not save (the log keeps it). Its newest `memory_max_chars` go into every prompt.
 - **`sessions/DATE.md`**: one line per exchange (`[voice]`, `[typed]` or `[command]`, and what it did).
 
 The rules (its tools, never walking unless asked or toward people, declining what is unsafe) stay in

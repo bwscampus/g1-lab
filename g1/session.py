@@ -11,8 +11,8 @@ For each thing said (``rt/audio_msg``, the robot's speech recognition) or typed 
 
 Who the robot is comes from ``knowledge/SOUL.md`` (people write it) and what it knows from
 ``knowledge/MEMORY.md`` (the robot writes it), both read every turn after the rules in ``MECHANICS``;
-each exchange goes into the day's log, ``knowledge/sessions/DATE.md``, and when the session ends the
-model distills it into MEMORY.md (``g1/knowledge.py``).
+each exchange goes into the day's log, ``knowledge/sessions/DATE.md``, and ``/save`` has the model
+distill what was said since the last save into MEMORY.md (``g1/knowledge.py``); nothing is saved on its own.
 
 It only chooses, never writes a routine or task, and a routine or task it chooses is confirmed y/N
 first. You can also call any skill yourself (``g1/console.py``: ``/routine``, ``/task``, ``/move``,
@@ -1005,6 +1005,8 @@ class Session:
             self.run_skill("move", " ".join(a))
         elif n == "say":
             self.speak(cmd.text)
+        elif n == "save":
+            self.save_memory()
         elif n == "mode":
             self.set_mode(a[0] if a else "")
         elif n == "fsm":
@@ -1039,20 +1041,28 @@ class Session:
             self.shutdown()
         return 0
 
-    def _distill(self) -> None:
-        """At the end, once the robot is at neutral and the lidar saved: what this session taught goes
-        into MEMORY.md. Esc or Ctrl-C skips it."""
-        if self.knowledge is None or self.model is None or not self.knowledge.session_lines:
+    def save_memory(self) -> None:
+        """``/save``: what was said since the last save goes into MEMORY.md (the model distills it).
+        Nothing is distilled on its own: quitting does not save (sessions were noisy). Esc skips it."""
+        if self.knowledge is None:
+            print("no knowledge base: nothing to save into")
             return
-        print(f"memory: distilling this session (at most {limits.get('memory_distill_timeout_s'):g} s; Esc skips)")
+        if self.model is None:
+            print("no model: nothing can be distilled")
+            return
+        if not self.knowledge.unsaved():
+            print("memory: nothing new since the last save")
+            return
+        print(f"memory: distilling {len(self.knowledge.unsaved())} line(s) since the last save "
+              f"(at most {limits.get('memory_distill_timeout_s'):g} s; Esc skips)")
         try:
             self._busy("saving memory (Esc skips)", lambda: self.knowledge.distill(self.model))
         except KeyboardInterrupt:
             print("memory: skipped")
 
     def shutdown(self) -> None:
-        """Lidar mapping ended and saved, the camera closed (the FSM left as it is), this session distilled
-        into memory, the counts printed."""
+        """Lidar mapping ended and saved, the camera closed (the FSM left as it is), the counts printed.
+        Memory is not distilled here: /save does it."""
         from g1.envs.base import shield_sigint
         with shield_sigint("closing the session; this finishes on its own"):
             if self.lidar is not None:
@@ -1061,7 +1071,9 @@ class Session:
             self._stop_camera()
         self._refresh_fsm()
         print(f"left in FSM {sdk.fsm_name(self.fsm) if self.fsm is not None else 'unknown'} (quitting changes no FSM)")
-        self._distill()
+        if self.knowledge is not None and self.knowledge.unsaved():
+            print(f"memory: {len(self.knowledge.unsaved())} line(s) not saved into MEMORY.md (/save does that); "
+                  f"they stay in {self.knowledge.sessions}")
         print("session: " + ", ".join(f"{k} {v}" for k, v in self.counts.items())
               + (f"; microphone: {self.mic.counts}" if self.mic is not None else ""))
 

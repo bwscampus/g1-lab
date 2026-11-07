@@ -62,6 +62,7 @@ class Knowledge:
         self._lock = threading.Lock()
         self.started = self.now()
         self.session_lines: list[str] = []           # this session's log lines (the distill's input)
+        self.saved = 0                               # session_lines[:saved] already distilled (/save)
 
     # -- the files ----------------------------------------------------------------------------------
     def ensure(self) -> list[str]:
@@ -154,8 +155,12 @@ class Knowledge:
             self.session_lines.append(line)
 
     # -- the distill ----------------------------------------------------------------------------------
+    def unsaved(self) -> list[str]:
+        """This session's log lines not yet distilled into MEMORY.md (since the last /save)."""
+        return self.session_lines[self.saved:]
+
     def distill_messages(self) -> list[dict]:
-        log = "\n".join(self.session_lines)
+        log = "\n".join(self.unsaved())
         cap = int(limits.get("memory_distill_log_chars"))
         if len(log) > cap:
             log = "[earlier lines left out]\n" + log[-cap:]
@@ -171,11 +176,12 @@ class Knowledge:
         return added, removed
 
     def distill(self, model, *, timeout: Optional[float] = None) -> Optional[tuple[int, int]]:
-        """Ask the model once what this session taught, and apply it. None when skipped (nothing said,
-        no model, no reply in time, a bad reply). The call runs on a daemon thread so the wait is
-        bounded and a KeyboardInterrupt (Esc, Ctrl-C) ends it at once."""
-        if model is None or not self.session_lines:
+        """Ask the model once what was said since the last save taught, and apply it (``/save``). None when
+        skipped (nothing new, no model, no reply in time, a bad reply). The call runs on a daemon thread so
+        the wait is bounded and a KeyboardInterrupt (Esc, Ctrl-C) ends it at once."""
+        if model is None or not self.unsaved():
             return None
+        upto = len(self.session_lines)
         timeout = limits.get("memory_distill_timeout_s") if timeout is None else timeout
         box: dict = {}
 
@@ -195,7 +201,8 @@ class Knowledge:
             print(f"memory: nothing distilled ({box.get('error') or 'no update_memory call'})")
             return None
         added, removed = self.apply(box["args"].get("add") or [], box["args"].get("remove") or [])
-        print(f"memory: +{added} -{removed} from this session ({self.memory_path})")
+        self.saved = upto
+        print(f"memory: +{added} -{removed} ({self.memory_path})")
         return added, removed
 
 
