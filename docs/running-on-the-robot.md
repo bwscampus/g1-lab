@@ -282,6 +282,9 @@ thing said or typed the model (`configs/model.json`) makes one choice:
 * `move`: a **built-in**, standing mode only: a stored gesture or dance (ids 5xx/6xx, never a get-up or
   lie-down). The session never walks: asked to, it says it stays where it is (`g1 moves walk` still walks);
 * `play_routine`: a **routine** from `routines/`; `run_task`: a **task** from `tasks/`, with the camera;
+* `see`: asked what it sees (or anything it needs its eyes for), it takes the head camera's newest frame
+  (switching the camera on first if it is off) and, with `/lidar on`, the nearest thing in each of 8 directions
+  (`lidar_see_range_m`), and answers from them;
 * `look_up`: a web search (OpenRouter only) for facts it does not know or anything recent: it says a short line
   ("Let me check."), searches (`web.max_results` results, at most `look_up_timeout_s`), then answers from the
   results. Only the chat searches; a task never does;

@@ -87,6 +87,9 @@ meaning). Answer with exactly one tool call:
 - run_task: when someone asks for something one of your tasks does (listed in the tool with what each one does).
   A task uses your camera and takes a while; say briefly what you will do first. A task that names a slot (point_at:
   {{object}}) needs it filled from what was asked ("point at the water bottle": object "water bottle").
+- see: when someone asks what you see, what is around you, or anything you need your eyes for (who is there, what
+  someone is holding, how far something is). You get your head camera's image next (and your lidar's distances when
+  the lidar is on), then answer from them. Describe only what is in them; never guess.
 - look_up (when offered): for facts you do not know or anything recent (news, weather, sports, dates of events).
   Say a short line first ("Let me check."). You then get the results and answer. Never look up a person near you.
 - remember: when you learn something worth knowing next time (someone's name and role, a place, an event, a
@@ -173,7 +176,7 @@ def task_menu() -> dict[str, TaskInfo]:
 
 
 def tools(menu: dict[int, dict], routines: Optional[dict] = None, tasks: Optional[dict] = None,
-          *, builtins: bool = True, look_up: bool = False) -> list[dict]:
+          *, builtins: bool = True, look_up: bool = False, see: bool = False) -> list[dict]:
     """The model's tools for this session: say and ignore always; the built-ins when standing; the
     routines and tasks given (already filtered for the mode)."""
     out = [{"type": "function", "function": {
@@ -217,6 +220,12 @@ def tools(menu: dict[int, dict], routines: Optional[dict] = None, tasks: Optiona
             "forget": {"type": "string", "description": "optional: a memory to remove, copied exactly as it appears"},
             "say": {"type": "string", "description": "a short line to say, e.g. that you will remember it"}},
             "required": ["fact"]}}})
+    if see:
+        out.append({"type": "function", "function": {
+            "name": "see", "description": "Look through your head camera (and your lidar, when it is on) now; you get "
+                                          "the image next and then answer from it.",
+            "parameters": {"type": "object", "properties": {
+                "say": {"type": "string", "description": "optional: a very short line while you look"}}}}})
     if look_up:
         out.append({"type": "function", "function": {
             "name": "look_up", "description": "Search the web for a fact you do not know or something recent; "
@@ -313,7 +322,7 @@ class Session:
         self.lidar = None
         self.history: list[dict] = []           # user / assistant text turns, newest last
         self.counts = {"heard": 0, "typed": 0, "said": 0, "moves": 0, "routines": 0, "tasks": 0,
-                       "stopped": 0, "refused": 0, "ignored": 0, "remembered": 0, "looked_up": 0, "errors": 0}
+                       "stopped": 0, "refused": 0, "ignored": 0, "remembered": 0, "looked_up": 0, "looked": 0, "errors": 0}
         self._seq = mic.seq if mic is not None else 0
 
     # -- what may run ------------------------------------------------------------------------------
@@ -370,10 +379,14 @@ class Session:
         """The chat model may search the web: it has ``search`` and is served by OpenRouter."""
         return callable(getattr(self.model, "search", None)) and getattr(self.model, "provider", "") == "openrouter"
 
-    def model_tools(self, *, look_up: bool = True) -> list[dict]:
+    def can_see(self) -> bool:
+        """The chat model may look: a camera is open, or one can be opened."""
+        return self.camera is not None or self.camera_factory is not None
+
+    def model_tools(self, *, look_up: bool = True, see: bool = True) -> list[dict]:
         routines, tasks = self.offered()
         return tools(self.menu, routines, tasks, builtins=self.mode == "standing",
-                     look_up=look_up and self.can_look_up())
+                     look_up=look_up and self.can_look_up(), see=see and self.can_see())
 
     def skills(self) -> list[str]:
         """``/skills``: the skills this mode (and the mic) allows now, grouped; nothing else. Typing
@@ -533,6 +546,9 @@ class Session:
     def _act(self, text: str, name: str, args: dict, messages: Optional[list] = None) -> None:
         """Run the model's one choice ``name(args)`` for ``text``. ``messages``: the request it answered
         (a look_up asks again from them; None: no second look-up)."""
+        if name == "see" and messages is not None and self.can_see():
+            self._see(text, str(args.get("say") or ""), messages)
+            return
         if name == "look_up" and messages is not None and self.can_look_up() and str(args.get("query") or "").strip():
             self._look_up(text, str(args["query"]).strip(), str(args.get("say") or ""), messages)
             return
@@ -557,6 +573,62 @@ class Session:
         self.counts["ignored"] += 1
         print(f"  (ignored: {args.get('reason') or name})")
         self._log(text, f"ignored ({args.get('reason') or name})")
+
+    def _see(self, text: str, say: str, messages: list) -> None:
+        """The camera's newest frame (the camera switched on first if it is off) and, with the lidar on, its
+        distances; then the model is asked again with them, without see or look_up, and its choice runs."""
+        if say:
+            self.speak(say)
+        self.counts["looked"] += 1
+        if self.camera is None:
+            print("see: switching the camera on")
+            self.set_camera(True)
+        frame = None
+        if self.camera is not None:
+            t0 = self.now()
+            while (frame := self.camera.latest()) is None and self.now() - t0 < limits.get("see_frame_timeout_s"):
+                self.sleep(limits.get("talk_poll_s"))
+        lidar = self.lidar_text()
+        if frame is None and not lidar:
+            print("see: no camera frame (and no lidar)")
+            self._remember(text, "[looked: nothing to see: no camera frame]")
+            self.speak("Sorry, my camera is not working right now.")
+            return
+        print(f"see: {'a camera frame' if frame is not None else 'no camera frame'}" + (f"; {lidar}" if lidar else ""))
+        content = [{"type": "text", "text": ("Your head camera's image now." if frame is not None else
+                                             "Your camera gave no image.") + (f" {lidar}." if lidar else "")
+                    + f" Now answer what was said, from what you see: {text}"}]
+        if frame is not None:
+            from g1.vlm import image_part
+            content.append(image_part(frame.image))
+        again = messages + [{"role": "assistant", "content": "[looked through the camera]"},
+                            {"role": "user", "content": content}]
+        t0 = self.now()
+        try:
+            call = self.model.complete(again, tools=self.model_tools(look_up=False, see=False))
+            args = json.loads(call.arguments or "{}")
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            self.counts["errors"] += 1
+            print(f"model error after {self.now() - t0:.1f} s: {type(e).__name__}: {e}")
+            self.speak("Sorry, I could not think of an answer just now.")
+            return
+        print(f"  ({call.name} after {self.now() - t0:.1f} s)")
+        self._act(text, call.name, args)
+
+    def lidar_text(self) -> str:
+        """The lidar's surroundings line when it is on and has a scan, else ""."""
+        inner = getattr(self.lidar, "lidar", None)
+        scan = inner.latest() if inner is not None and hasattr(inner, "latest") else None
+        if scan is None:
+            return ""
+        from g1.lidar import surroundings
+        try:
+            return surroundings(scan)
+        except Exception as e:                       # a malformed scan never stops the answer
+            print(f"see: lidar summary failed: {e}")
+            return ""
 
     def _look_up(self, text: str, query: str, say: str, messages: list) -> None:
         """Say the line, search the web (bounded by look_up_timeout_s), then ask the model again with the

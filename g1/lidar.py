@@ -346,6 +346,32 @@ def wait_services(state, *, log: list, verbose: bool, timeout: float, poll: floa
         sleep(poll)
 
 
+SECTORS = ("ahead", "ahead-left", "left", "behind-left", "behind", "behind-right", "right", "ahead-right")
+
+
+def surroundings(scan: Scan) -> str:
+    """One line for the chat model: the nearest thing in each of 8 directions around the robot, in metres,
+    from one SLAM scan (the floor left out: points less than lidar_see_floor_m above the scan's lowest few
+    per cent). Directions are the robot body's (x ahead, y left)."""
+    pts = scan.map_points()[:, :3].astype(float)
+    if len(pts) == 0:
+        return "lidar: no points in the last scan"
+    rot, origin = scan.pose[:3, :3], scan.pose[:3, 3]
+    body = (pts - origin) @ rot                          # map -> body: R^T (p - t)
+    floor = np.percentile(body[:, 2], 3)
+    body = body[body[:, 2] > floor + limits.get("lidar_see_floor_m")]
+    rng = float(limits.get("lidar_see_range_m"))
+    dist = np.hypot(body[:, 0], body[:, 1])
+    keep = dist <= rng
+    body, dist = body[keep], dist[keep]
+    sector = ((np.degrees(np.arctan2(body[:, 1], body[:, 0])) + 22.5) % 360 // 45).astype(int)
+    parts = []
+    for i, name in enumerate(SECTORS):
+        d = dist[sector == i]
+        parts.append(f"{name} {d.min():.1f} m" if len(d) else f"{name} clear to {rng:g} m")
+    return "lidar, the nearest thing in each direction (approximate): " + ", ".join(parts)
+
+
 def scan_line(scan: Scan, rate: float, now: float) -> str:
     p = scan.points
     lo, hi = (p[:, :3].min(axis=0), p[:, :3].max(axis=0)) if len(p) else (np.zeros(3), np.zeros(3))

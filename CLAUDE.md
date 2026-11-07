@@ -236,6 +236,10 @@ root via `pythonpath`. `limits.ROOT` is the repo root (configs/, tasks/, assets/
   (`task_fill_max_chars`). In g1 start the model fills them through `run_task`'s arguments (`/task point_at water
   bottle` when typed); a task with an unfilled slot is refused and asked again. `"session": false` keeps a task out
   of g1 start (not yet tried on the robot); `g1 run` and `g1 bench` still run it.
+- **g1 start's chat sees on demand.** Its `see` tool takes the camera's newest frame (switching the camera on if
+  it is off; `see_frame_timeout_s`) and, with the lidar on, `lidar.surroundings` (the nearest thing in each of 8
+  directions from one SLAM scan, the floor left out), then asks the model again with them, without `see` or `look_up`.
+  Only that turn carries the image; the history keeps text.
 - **Only g1 start's chat searches the web.** Its `look_up(query)` tool runs `VLMClient.search` (OpenRouter's web
   plugin, `web.max_results` in configs/model.json, bounded by `look_up_timeout_s`), then asks the model again with
   the results and without `look_up`. A task's model never searches: it knows only what the robot senses.
