@@ -27,6 +27,21 @@
         "demo_image_width_px": 320
     },
     "web": {"max_results": 3},
+    "voice": {
+        "engine": "gpt-live",
+        "live_model": "gpt-live-1",
+        "backend_model": "openai/gpt-6.1-sol",
+        "backend_reasoning_effort": "low",
+        "realtime_model": "gpt-realtime-2.1",
+        "voice": "marin",
+        "reasoning_effort": "minimal",
+        "max_output_tokens": 400,
+        "noise_reduction": "far_field",
+        "turn_detection": "semantic_vad",
+        "eagerness": "auto",
+        "transcription_model": "gpt-4o-transcribe",
+        "language": "en"
+    },
 
     "notes": {
         "provider": "who serves the model: huggingface (HF_TOKEN in .env) or openrouter (OPENROUTER_API_KEY in .env); the model asked is models[provider]",
@@ -51,6 +66,19 @@
         "agent.demo_images_max": "count; camera images per demo, spread over its steps; the rest of its steps are one text line each; 0 sends text only",
         "agent.demo_image_width_px": "px; demo images are downscaled to this width (smaller than the live image: they are context, not the scene)",
         "web.max_results": "count, 1-10; g1 start's look_up only (never a task's model): web results per search, through OpenRouter's web plugin (it searches, then the model answers from them; billed per result by OpenRouter). 3 on 2026-11-06, a first guess for the demo",
+        "voice.engine": "g1 start's conversation. gpt-live (since 2026-11-10, the user's choice): OpenAI's GPT-Live, a full-duplex voice model, talks with people and hands everything that needs doing or knowing to the backend (client delegation: the session's chat engine on backend_model, with the menu and the y/N confirmations); g1/voice/openai_live.py. realtime: one OpenAI realtime speech-to-speech model hears, decides and calls the tools itself (g1/voice/openai_realtime.py). unitree: the robot's own speech recognition (rt/audio_msg), the chat model above, and TtsMaker. gpt-live and realtime need OPENAI_API_KEY (gpt-live also OPENROUTER_API_KEY for the backend) and fall back to unitree when they cannot connect. Tasks never use it",
+        "voice.live_model": "gpt-live: the GPT-Live voice model id",
+        "voice.backend_model": "gpt-live: the OpenRouter model id that decides for the voice (the session's tools, one call per request). openai/gpt-6.1-sol: the user's choice 2026-11-10 (its tool calls)",
+        "voice.backend_reasoning_effort": "gpt-live: the backend's reasoning_effort (none, minimal, low, medium, high, default); low: it decides while the voice keeps the conversation going",
+        "voice.realtime_model": "realtime: the OpenAI realtime model id (gpt-realtime-2.1, the newest listed 2026-11-10; gpt-realtime-2.1-mini is cheaper)",
+        "voice.voice": "its voice, fixed for a connection. Both engines have marin (the default) and cedar; realtime also alloy, ash, ballad, coral, echo, sage, shimmer, verse; gpt-live also quartz, ripple, vesper, willow, stone and more (developers.openai.com live-conversations)",
+        "voice.reasoning_effort": "realtime only: minimal, low, medium, high, xhigh, or default (not sent). minimal: the voice decides fast and short, and hands anything that needs planning to a task (the user's rule, 2026-11-10)",
+        "voice.max_output_tokens": "realtime only: tokens per spoken reply, at most 4096; keeps answers short",
+        "voice.noise_reduction": "realtime only: near_field, far_field or null: OpenAI's filter on the mic before turn detection and the model. far_field for the robot's head mic in a noisy room (2026-11-10, untested)",
+        "voice.turn_detection": "realtime only: semantic_vad (a model judges whether the person has finished, from the words) or server_vad (silence). semantic_vad for a room that is never quiet",
+        "voice.eagerness": "realtime only: semantic_vad: low, medium, high or auto (medium): how soon it answers (at most 8, 4 or 2 s of waiting)",
+        "voice.transcription_model": "realtime only: what writes down what people say, for the console, the history and the day's log (the voice model hears the audio itself)",
+        "voice.language": "realtime only: the language people speak to it (ISO code), a hint to the transcription",
         "agent.history_full_turns": "count; earlier turns sent in full (observation, image if still in live_image_window, reply); older ones are replaced by one host-written line each, as GPT-Policy's Claude adapter does (a limit until 2026-10-29)"
     }
 }

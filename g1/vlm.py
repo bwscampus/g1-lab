@@ -43,13 +43,20 @@ PROVIDERS = {
 }
 EFFORTS = ("none", "minimal", "low", "medium", "high", "default")
 MODEL_PATH = limits.ROOT / "configs" / "model.json"
-KEYS = ("version", "provider", "models", "routing", "reasoning_effort", "max_tokens", "temperature", "agent", "web", "notes")
+KEYS = ("version", "provider", "models", "routing", "reasoning_effort", "max_tokens", "temperature", "agent", "web", "voice",
+        "notes")
 # the agent loop's settings (g1/agent/): whole numbers are counts, the rest seconds or sizes; all > 0 but jitter
 AGENT = {"max_decisions": int, "step_timeout_s": float, "request_timeout_s": float, "retry_max": int,
          "retry_delay_base_s": float, "retry_delay_cap_s": float, "retry_jitter_s": float, "recovery_timeout_s": float,
          "image_width_px": int, "jpeg_quality": int, "live_image_window": int, "history_full_turns": int,
          "demos_max": int, "demo_images_max": int, "demo_image_width_px": int}
 ZERO_OK = ("retry_jitter_s", "demos_max", "demo_images_max")     # 0 turns these off
+# g1 start's live voice (g1/voice/): each key's allowed words, or the type it must be
+VOICE = {"engine": ("gpt-live", "realtime", "unitree"), "live_model": str, "backend_model": str,
+         "backend_reasoning_effort": EFFORTS, "realtime_model": str, "voice": str,
+         "reasoning_effort": ("minimal", "low", "medium", "high", "xhigh", "default"), "max_output_tokens": int,
+         "noise_reduction": ("near_field", "far_field", None), "turn_detection": ("semantic_vad", "server_vad"),
+         "eagerness": ("low", "medium", "high", "auto"), "transcription_model": str, "language": str}
 
 
 def load_model(path: Path | str | None = None) -> dict:
@@ -99,6 +106,19 @@ def load_model(path: Path | str | None = None) -> dict:
     if not isinstance(w, dict) or sorted(w) != ["max_results"] or isinstance(w["max_results"], bool) \
             or not isinstance(w["max_results"], int) or not 1 <= w["max_results"] <= 10:
         raise ValueError(f"model file {p}: web needs exactly max_results, a whole number 1-10")
+    v = m["voice"]
+    if not isinstance(v, dict) or sorted(v) != sorted(VOICE):
+        raise ValueError(f"model file {p}: voice needs exactly {list(VOICE)}, has {sorted(v) if isinstance(v, dict) else v}")
+    for name, kind in VOICE.items():
+        x = v[name]
+        if isinstance(kind, tuple):
+            if x not in kind:
+                raise ValueError(f"model file {p}: voice.{name} must be one of {list(kind)}, got {x!r}")
+        elif kind is int:
+            if isinstance(x, bool) or not isinstance(x, int) or not 1 <= x <= 4096:
+                raise ValueError(f"model file {p}: voice.{name} must be a whole number 1-4096, got {x!r}")
+        elif not isinstance(x, str) or not x.strip():
+            raise ValueError(f"model file {p}: voice.{name} must be a word, got {x!r}")
     return m
 
 
@@ -118,6 +138,7 @@ AGENT_SETTINGS = MODEL["agent"]           # the agent loop's budgets, timeouts, 
 # Settings that moved from .env to configs/model.json: refused if still set, so none is silently ignored.
 MOVED = {"VLM_MODEL": "models", "VLM_MAX_TOKENS": "max_tokens", "VLM_REASONING_EFFORT": "reasoning_effort"}
 WEB = MODEL["web"]                        # g1 start's look_up: OpenRouter's web search (results per search)
+VOICE_SETTINGS = MODEL["voice"]           # g1 start's live voice: the OpenAI realtime model and how it hears
 IMAGE_WIDTH = AGENT_SETTINGS["image_width_px"]
 JPEG_QUALITY = AGENT_SETTINGS["jpeg_quality"]
 

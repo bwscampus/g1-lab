@@ -23,7 +23,9 @@ sim = ["mujoco>=3.2", "onnxruntime"]
 # Camera feed. unitree_webrtc_connect is not on PyPI either; install it from
 # https://github.com/legion1581/go2_webrtc_connect for --env robot with the camera.
 camera = ["aiortc"]
-dev = ["pytest"]
+# g1 start's live voice (g1/voice/): the websocket to OpenAI's realtime model (OPENAI_API_KEY in .env).
+voice = ["websockets>=13"]
+dev = ["pytest", "websockets>=13"]
 
 [project.scripts]
 g1 = "g1.cli:main"

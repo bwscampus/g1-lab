@@ -150,7 +150,25 @@ network (`UNITREE_IFACE`), read with `unitree_sdk2py` (`g1.audio.AudioClient`):
 
 If the built-in assistant gets in the way (it answers, or plays over us), take the raw
 multicast stream and do our own speech-to-text instead of `rt/audio_msg`, as
-[unitree_converse](https://github.com/SaxionMechatronics/unitree_converse) does.
+[unitree_converse](https://github.com/SaxionMechatronics/unitree_converse) does. g1 start's
+**live voice** does exactly that (below).
+
+### To measure before the live voice is trusted (open, 2026-11-10)
+
+The live voice (`g1/voice/`) was built against the facts above and has not run on the robot yet.
+Measure these on the Jetson and write the answers here; the `voice_*` limits marked guess follow them:
+
+- **The assistant stays quiet.** A voice setting where the multicast flows but Unitree's own assistant does
+  not answer (the app's modes; community drivers switch the mic with voice API 1008 `{"mode": ...}`). If
+  there is none, it answers alongside ours: decide before a demo.
+- **The mic's packets** are 16 kHz mono s16le and not all zeros (record 30 s to a wav).
+- **PlayStream in pieces**: successive calls on one `stream_id` play without gaps (`voice_play_chunk_s`
+  0.32 s pieces, at most `voice_play_ahead_s` queued); the largest piece it takes; whether `play_state`
+  reports it; how fast `PlayStop` cuts it.
+- **Our own echo** left in the mic while it plays, in dBFS: `voice_gate_db` must sit above it, or
+  `voice_barge_in` can be `open` if it is close to silence.
+- **Latency** from the end of a question to the robot's first word, and false replies to chatter not meant
+  for it, in a noisy room.
 
 ## What can and cannot move
 
@@ -279,9 +297,22 @@ A mode never changes the FSM; it **blocks** FSMs. You switch them with `/fsm ID`
 | quit | the FSM is left as it is | the same |
 
 A Claude-Code-style terminal: an input box at the bottom, output scrolling above it, a status line
-under it (mode, FSM, mic, camera and lidar with their URLs, what is running). The robot listens (its
-speech recognition) and you type: **plain text is chat**, exactly as if you had said it. For each
-thing said or typed the model (`configs/model.json`) makes one choice:
+under it (mode, FSM, voice, mic, camera and lidar with their URLs, what is running). The robot listens
+and you type: **plain text is chat**, exactly as if you had said it.
+
+**The live voice** (`configs/model.json` `voice.engine`, `OPENAI_API_KEY` in `.env`) hears the raw mic and talks
+back through the robot's speaker. Talk over it and it stops; Esc stops it too; `/mic` and `/speaker` reach it; the
+mic is muted while a skill runs. Two engines:
+
+* `gpt-live` (the default): GPT-Live, full duplex, holds the conversation and hands everything that needs doing or
+  knowing to the **backend**: the session's chat engine below on `voice.backend_model` (Sol, on OpenRouter:
+  `OPENROUTER_API_KEY`). The backend makes the one choice as below; what it would say, the voice says in its own
+  words, and the voice is told what happened.
+* `realtime`: one OpenAI realtime model (far-field noise reduction, turn detection from the words) hears, decides
+  and calls the same skills itself (without `say`: it speaks itself), each confirmed and run the same way. When it cannot connect, or loses the connection more than
+`voice_restarts_max` times, the session goes on with the robot's own speech recognition and `TtsMaker`:
+
+For each thing said or typed the model (`configs/model.json`) makes one choice:
 
 * `say`: an answer (spoken with `TtsMaker`, English voice: `tts_speaker_id` 1), and nothing else;
 * `remember`: a fact kept in `knowledge/MEMORY.md` (or one forgotten), with a short line said;

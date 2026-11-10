@@ -204,6 +204,12 @@ def test_a_bad_model_file_is_refused_with_the_name(tmp_path):
     broken(lambda d: d["agent"].update(max_decisions=2.5), "agent.max_decisions must be a positive whole number")
     broken(lambda d: d["agent"].update(retry_delay_base_s=10.0), "must not exceed agent.retry_delay_cap_s")
     broken(lambda d: d.update(version=2), "version 1")
+    broken(lambda d: d["voice"].update(engine="loud"), "voice.engine must be one of")
+    broken(lambda d: d["voice"].update(noise_reduction="studio"), "voice.noise_reduction must be one of")
+    broken(lambda d: d["voice"].update(max_output_tokens=0), "voice.max_output_tokens must be a whole number")
+    broken(lambda d: d["voice"].update(live_model=""), "voice.live_model must be a word")
+    broken(lambda d: d["voice"].update(backend_reasoning_effort="lots"), "voice.backend_reasoning_effort must be one of")
+    broken(lambda d: d["voice"].pop("voice"), "voice needs exactly")
     with pytest.raises(ValueError, match="not found"):
         load_model(tmp_path / "none.json")
 
