@@ -436,6 +436,7 @@ class Session:
         self._delegation: Optional[str] = None      # gpt-live: the delegation being answered now
         self._heard_buf = ""                        # gpt-live: what was heard since the last exchange went in the history
         self._said_buf = ""                         # ... and what the voice said
+        self._said_from: Optional[int] = None       # ... from when (ms on GPT-Live's audio clock)
         self.voice = None
         self._voice_restarts = 0
         self._voice_failures = 0                    # the speaker's failed calls (PlayStream), for the warning
@@ -892,10 +893,13 @@ class Session:
         elif kind == "tool_call":
             self._live_call(*data[1:4])
         elif kind == "user_delta":
-            if self._said_buf.strip():                 # someone speaks after the voice did: that exchange is over
-                self._flush_talk()
-            self._heard_buf += data[1]
+            start = data[2] if len(data) > 2 else None
+            if self._said_buf.strip() and (start is None or self._said_from is None or start >= self._said_from):
+                self._flush_talk()                     # someone speaks after the voice did: that exchange is over
+            self._heard_buf += data[1]                 # (words from before the voice began belong to its question)
         elif kind == "robot_delta":
+            if not self._said_buf.strip():
+                self._said_from = data[2] if len(data) > 2 else None
             self._said_buf += data[1]
         elif kind == "delegation":
             self._delegated(str(data[1]))

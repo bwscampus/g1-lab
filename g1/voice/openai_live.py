@@ -91,12 +91,12 @@ class DuplexCore:
                 self.player.begin()
             self.player.feed(base64.b64decode(ev.get("delta", "")))
             self.player.end()                        # no done event: it ends once what came has played
-        elif t == "session.input_transcript.delta":
-            if ev.get("delta"):
-                self.emit(("user_delta", ev["delta"]))
+        elif t == "session.input_transcript.delta":       # with where it falls on the session's audio clock:
+            if ev.get("delta"):                           # a person's last words can arrive after the voice
+                self.emit(("user_delta", ev["delta"], ev.get("start_ms")))   # has started answering them
         elif t == "session.output_transcript.delta":
             if ev.get("delta"):
-                self.emit(("robot_delta", ev["delta"]))
+                self.emit(("robot_delta", ev["delta"], ev.get("start_ms")))
         elif t == "session.delegation.created":
             self.counts["delegations"] += 1
             self.emit(("delegation", (ev.get("delegation") or {}).get("id", "")))

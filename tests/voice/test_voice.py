@@ -330,13 +330,13 @@ def test_gpt_live_events_reach_the_player_and_the_session():
     core.on_server({"type": "session.output_audio.delta", "delta": base64.b64encode(pcm).decode()})
     assert player.calls == ["begin", "end", "end"] and player.fed == 2 * len(pcm)   # one stream while it plays
     core.on_server({"type": "session.input_transcript.delta", "delta": "can you ", "start_ms": 0, "end_ms": 300})
-    core.on_server({"type": "session.output_transcript.delta", "delta": "Sure!"})
+    core.on_server({"type": "session.output_transcript.delta", "delta": "Sure!", "start_ms": 400, "end_ms": 600})
     core.on_server({"type": "session.delegation.created", "delegation": {"id": "del_7", "type": "delegation",
                                                                         "target": "client"}})
     core.on_server({"type": "session.thinking.appended", "client_event_id": "g1_1"})
     core.on_server({"type": "error", "error": {"code": "bad_delegation", "message": "unknown id"}})
     core.on_server({"type": "session.closed", "reason": "idle"})
-    assert emitted == [("ready",), ("user_delta", "can you "), ("robot_delta", "Sure!"), ("delegation", "del_7"),
+    assert emitted == [("ready",), ("user_delta", "can you ", 0), ("robot_delta", "Sure!", 400), ("delegation", "del_7"),
                        ("error", "bad_delegation: unknown id"), ("closed", "idle")]
     assert sent == []
 

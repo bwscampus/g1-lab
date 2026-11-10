@@ -153,6 +153,24 @@ multicast stream and do our own speech-to-text instead of `rt/audio_msg`, as
 [unitree_converse](https://github.com/SaxionMechatronics/unitree_converse) does. g1 start's
 **live voice** does exactly that (below).
 
+### The live voice against the API, as measured (2026-11-10, a laptop, no robot)
+
+A 19.5 s clip of three questions (macOS `say`, 16 kHz, 5 s quiet after each) streamed at real time
+into both engines with g1 start's real instructions and a sample menu (the replay script; skills not run):
+
+- **gpt-live** accepted `session.start` as built (16 kHz PCM both ways, client delegation). It answered the
+  greeting itself and handed "can you bow" and "what do you see" to the backend; Sol chose `move` 516 and
+  `see` in 1.4-1.6 s each. First audible audio after a question: about 1.1 s for small talk; about 1.8 s
+  for a delegated one (its own "Sure!" or "Let me check.", 0.15 s after the delegation), then its own
+  paraphrase of Sol's line about 2 s later. `acknowledgement_delay_ms` 0 changed nothing.
+- GPT-Live streams quiet audio between words: most `session.output_audio.delta` pieces are near-silent
+  (230 of 286 below -40 dBFS), so time the first *audible* piece. Transcript deltas are word or sub-word
+  pieces with their own leading spaces (" I'm Unit", "ree"), and both sides and `offset_ms` of a delegation
+  share one audio clock (`start_ms`, 200 ms steps): a person's last word can arrive after the voice has
+  started answering it, so the session orders the two by `start_ms`, not by arrival.
+- **realtime** (gpt-realtime-2.1) called `move` 516 and `see` itself; first audible audio about 1.9 s after
+  each question (one first answer took 4.3 s).
+
 ### To measure before the live voice is trusted (open, 2026-11-10)
 
 The live voice (`g1/voice/`) was built against the facts above and has not run on the robot yet.

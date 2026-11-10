@@ -888,6 +888,13 @@ def test_gpt_live_talk_goes_into_the_history_and_typed_lines_reach_it(capsys):
     said(s, "Hi! Nice to meet you.", who="robot_delta")
     said(s, "my name is Ada")                                       # someone speaks again: the first exchange is done
     assert s.history == [{"role": "user", "content": "hi robot"}, {"role": "assistant", "content": "Hi! Nice to meet you."}]
+    s.history.clear()
+    for who, text, at in (("user_delta", " what's your", 1800), ("robot_delta", " I'm", 2400),
+                          ("user_delta", " name", 2200), ("robot_delta", " G1.", 2600), ("user_delta", " cool", 5000)):
+        s.handle(Command("voice", data=(who, text, at)))            # " name" came late, but was said before " I'm"
+    assert s.history == [{"role": "user", "content": "my name is Ada what's your name"},
+                         {"role": "assistant", "content": "I'm G1."}]
+    s._heard_buf = " my name is Ada"
     s.handle(Command("chat", text="say hello to her"))
     assert v.sent[-1] == ("text", "say hello to her")
     s.handle(Command("voice", data=("delegation", "del_5")))
