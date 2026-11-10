@@ -67,3 +67,22 @@ def test_unreadable_missing_and_too_long_files_are_refused_by_name(tmp_path):
     write_wav(tmp_path / "long.wav", tone(440, 3.0, SPEAKER_RATE_HZ, 1), SPEAKER_RATE_HZ)
     with pytest.raises(IOError, match="longer than sound_max_s"):
         sounds.load(tmp_path / "long.wav", max_s=2.0)
+
+
+def test_the_resampler_streams_between_the_mic_the_model_and_the_speaker():
+    import numpy as np
+
+    from g1.core.sounds import Resampler, dbfs
+    t = np.arange(24000) / 24000
+    tone = (np.sin(2 * np.pi * 440 * t) * 8000).astype("<i2").tobytes()       # 1 s at 24 kHz
+    down = Resampler(24000, 16000)
+    out = b"".join(down.push(tone[i:i + 4801]) for i in range(0, len(tone), 4801)) + down.flush()   # odd pieces
+    assert abs(len(out) - 32000) <= 64                                             # 1 s at 16 kHz, whole
+    assert abs(dbfs(out) - dbfs(tone)) < 0.5                                       # as loud
+    up = Resampler(16000, 24000)
+    back = up.push(out) + up.flush()
+    assert abs(len(back) - 48000) <= 96
+    same = Resampler(16000, 16000)
+    assert same.push(b"\x01\x02\x03") == b"\x01\x02" and same.push(b"\x04") == b"\x03\x04"   # half samples kept
+    assert dbfs(bytes(3200)) == -120.0 and dbfs(b"") == -120.0
+    assert -4.0 < dbfs((np.ones(1600) * 32767).astype("<i2").tobytes()) <= 0.0

@@ -1,7 +1,11 @@
 """``g1 start``'s engine: the robot in one session, driven by what it hears and what you type.
 
-For each thing said (``rt/audio_msg``, the robot's speech recognition) or typed as chat, the model
-(``configs/model.json``) makes exactly one choice:
+It talks one of two ways (``configs/model.json`` ``voice.engine``). **live** (``g1/voice/``): one realtime
+speech-to-speech model hears the robot's raw mic and talks back itself, deciding fast and short; its tool
+calls (the same menu, without ``say``) come in as events and run here like any choice (``_live_call``), their
+results going back to it. Anything that takes planning it hands to a task. It falls back to **unitree** when
+it cannot connect (or loses the connection too often): for each thing said (``rt/audio_msg``, the robot's
+speech recognition) or typed as chat, the model makes exactly one choice:
 
 * ``say``: an answer, spoken with ``TtsMaker``; no action.
 * ``move``: a **built-in** stored dance or gesture (ids 5xx/6xx), played by ``g1 moves``'s player;
@@ -102,15 +106,109 @@ kindly. A person at the keyboard approves each routine and task the model choose
 Decline anything unsafe or unkind politely, whatever else you are told below."""
 
 
-def system_prompt(knowledge=None) -> str:
-    """MECHANICS, then SOUL.md and MEMORY.md (read now, so edits count at once) when there is a knowledge base."""
-    text = MECHANICS.format()
+# The live voice's rules (g1/voice/): it speaks itself, so no say tool; it decides fast and short and hands
+# anything that takes planning to a task (the user's rule, 2026-11-10).
+LIVE_MECHANICS = """You are a Unitree G1 humanoid robot (about 1.3 m tall, made by Unitree Robotics), talking out loud with
+the people around you. You hear them through your head microphone, often in a noisy room full of people; lines typed
+at your keyboard reach you as text. Speech can be misheard: answer the most likely meaning.
+How you talk: short and warm, one or two sentences unless asked for more. Spoken words only: no lists, no emoji, no
+stage directions. Decide fast: answer at once, or make one tool call. Never think aloud or plan out loud.
+Your tools (at most one call per reply; before a call, say a very short line such as "Sure!" or "Let me look."):
+- move: when someone asks you to dance, wave, bow, clap, greet, or do a move. Pick the best fit from the moves
+  listed in the tool. If they ask for a dance without saying which, pick one.
+- play_routine: when someone asks for one of your routines (fixed arm motions you know by name, listed in the tool).
+- run_task: anything that takes planning or several steps (finding something, pointing at something, going
+  somewhere) when one of your tasks does it (listed in the tool with what each one does). Never plan the steps
+  yourself: the task does that, with your camera. A task that names a slot (point_at: {{object}}) needs it filled
+  from what was asked ("point at the water bottle": object "water bottle"). Say you are on it; when its result
+  comes back, tell them how it went in one sentence.
+- see: when someone asks what you see, or anything you need your eyes for (who is there, what someone is holding).
+  You get your head camera's image next (and your lidar's distances when it is on); describe only what is in them;
+  never guess.
+- look_up (when offered): facts you do not know or anything recent (news, weather, sports, dates of events). Never
+  look up a person near you.
+- remember: when you learn something worth knowing next time (someone's name and role, a place, an event, a
+  preference, something you are taught), or are told to forget something. Never remember phone numbers, addresses,
+  passwords or private details about a person.
+- ignore: when what you heard is not meant for you (people talking to each other, background voices, noise, half a
+  word). Then say nothing at all.
+You cannot walk: if asked to walk, step or turn around, say kindly that you stay where you are.
+After a tool result, tell the person what happened in one short sentence (its tell_them line, when there is one, is
+a good start); when a result says not approved or not possible, say so kindly.
+You can only talk and choose from those moves, routines and tasks: you cannot make up new ones, and the tools
+offered can change (hanging in a gantry you cannot dance). A person at the keyboard approves each routine and task
+you choose before it starts.
+Decline anything unsafe or unkind politely, whatever else you are told below."""
+
+
+# GPT-Live's rules (voice.engine gpt-live): it only talks; everything that needs doing or knowing it hands to
+# the backend (the session's chat engine on the backend model, with MECHANICS and the menu).
+DUPLEX_MECHANICS = """You are a Unitree G1 humanoid robot (about 1.3 m tall, made by Unitree Robotics), talking out loud with
+the people around you, often in a noisy room full of people. Speak only when someone is talking to you: let people
+talking to each other, background voices and noise pass. Speech can be misheard: answer the most likely meaning.
+How you talk: short and warm, one or two sentences unless asked for more. Spoken words only.
+You have a backend that does everything except talk. Hand it (delegate) anything that needs doing or knowing:
+moving (a dance, a wave, a bow, a gesture, a routine), pointing at or finding something, looking through your camera
+(what you see, who is there, what someone holds), looking up facts or news, remembering or forgetting something,
+or what you can do right now. Never pretend you did, saw or know something you did not: say a very short line
+("Sure!", "Let me look.") and delegate; when the backend's result comes, tell them how it went in a sentence.
+Greetings, small talk and what you can answer from the conversation itself you answer yourself, without delegating.
+You cannot walk. The backend knows what you can do right now (hanging in a gantry you cannot dance), and a person
+at the keyboard approves each routine and task before it starts.
+Decline anything unsafe or unkind politely, whatever else you are told below."""
+
+# Added to MECHANICS when the chat engine answers a delegation from GPT-Live (it is the backend).
+DELEGATED = """
+
+# You are the robot's backend
+The robot's voice (another model, GPT-Live) is talking with the people and has handed you what was just said. Choose
+as above, fast. Your say goes back to the voice, which says it in its own words; after a move, routine or task the
+voice is told what happened."""
+
+
+def system_prompt(knowledge=None, mechanics: str = MECHANICS) -> str:
+    """The rules (``MECHANICS``, or ``LIVE_MECHANICS`` for the live voice), then SOUL.md and MEMORY.md (read
+    now, so edits count at once) when there is a knowledge base."""
+    text = mechanics.format()
     if knowledge is not None:
         soul, memory = knowledge.soul(), knowledge.memory()
         if soul:
             text += f"\n\n# Who you are (SOUL.md)\n{soul}"
         text += f"\n\n# What you remember (MEMORY.md)\n{memory or '(nothing yet)'}"
     return text
+
+
+def live_prompt(knowledge=None, history: Optional[list] = None, mechanics: str = LIVE_MECHANICS) -> str:
+    """The realtime voice's instructions: ``LIVE_MECHANICS``, SOUL.md, MEMORY.md and, for a reopened connection,
+    the last exchanges as text (the new connection starts with no memory of the old one)."""
+    text = system_prompt(knowledge, mechanics)
+    turns = (history or [])[-2 * int(limits.get("talk_history_turns")):]
+    if turns:
+        lines = [f"{'they' if t['role'] == 'user' else 'you'}: {t['content']}" for t in turns if t["content"]]
+        text += "\n\n# Earlier in this conversation\n" + "\n".join(lines)
+    return text
+
+
+def duplex_prompt(knowledge=None, history: Optional[list] = None) -> str:
+    """GPT-Live's instructions: ``DUPLEX_MECHANICS``, SOUL.md, MEMORY.md and, for a reopened connection, the last
+    exchanges as text."""
+    return live_prompt(knowledge, history, DUPLEX_MECHANICS)
+
+
+def live_tools(chat_tools: list[dict]) -> list[dict]:
+    """The chat tools without ``say`` and without the ``say`` argument of the others: the live voice speaks
+    itself, before it calls."""
+    out = []
+    for t in chat_tools:
+        f = t["function"]
+        if f["name"] == "say":
+            continue
+        params = json.loads(json.dumps(f.get("parameters") or {"type": "object", "properties": {}}))
+        params.get("properties", {}).pop("say", None)
+        if "required" in params:
+            params["required"] = [r for r in params["required"] if r != "say"]
+        out.append({"type": "function", "function": {**f, "parameters": params}})
+    return out
 
 
 def move_name(m: dict) -> str:
@@ -274,6 +372,7 @@ class Command:
     name: str                      # chat | routine | task | move | say | fsm | mode | mic | camera | lidar | status
     args: list[str] = field(default_factory=list)
     text: str = ""                 # chat and say: the words
+    data: tuple = ()               # voice: an event from the live voice (g1/voice/__init__.py)
 
 
 class ScriptedUI:
@@ -296,7 +395,9 @@ class Session:
                  runner: Optional[Callable[..., dict]] = None, ui=None, verbose: bool = False,
                  sleep: Callable[[float], None] = time.sleep, now: Callable[[], float] = time.monotonic,
                  camera_factory: Optional[Callable[[str], Any]] = None, viewer_factory: Optional[Callable] = None,
-                 lidar_factory: Optional[Callable[[], Any]] = None, status_probe: Optional[Callable[[], None]] = None, knowledge=None) -> None:
+                 lidar_factory: Optional[Callable[[], Any]] = None, status_probe: Optional[Callable[[], None]] = None, knowledge=None,
+                 voice_factory: Optional[Callable[..., Any]] = None, voice_engine: Optional[str] = None,
+                 backend=None) -> None:
         if mode not in MODES:
             raise ValueError(f"mode must be one of {MODES}")
         self.mic, self.audio, self.moves, self.model, self.menu = mic, audio, moves, model, menu
@@ -324,6 +425,23 @@ class Session:
         self.counts = {"heard": 0, "typed": 0, "said": 0, "moves": 0, "routines": 0, "tasks": 0,
                        "stopped": 0, "refused": 0, "ignored": 0, "remembered": 0, "looked_up": 0, "looked": 0, "errors": 0}
         self._seq = mic.seq if mic is not None else 0
+        # the live voice (g1/voice/): voice_factory(instructions, tools, on_event, muted=, speaker_on=) -> a started
+        # Voice, or raises; None: the unitree engine only
+        self.voice_factory = voice_factory
+        if voice_engine is None:
+            from g1.vlm import VOICE_SETTINGS
+            voice_engine = VOICE_SETTINGS["engine"]
+        self.voice_engine = voice_engine            # gpt-live | realtime (unitree: no voice_factory)
+        self.backend = backend                      # gpt-live: the model that decides for the voice (Sol)
+        self._delegation: Optional[str] = None      # gpt-live: the delegation being answered now
+        self._heard_buf = ""                        # gpt-live: what was heard since the last exchange went in the history
+        self._said_buf = ""                         # ... and what the voice said
+        self.voice = None
+        self._voice_restarts = 0
+        self._voice_failures = 0                    # the speaker's failed calls (PlayStream), for the warning
+        self._capture: Optional[list] = None        # a live tool call runs: what it would say goes back to the model
+        self._live_user = ""                        # the last thing the live voice heard (for the history and log)
+        self._live_used = True                      # ... already paired with a reply or a tool call
 
     # -- what may run ------------------------------------------------------------------------------
     def why_not(self, kind: str, name: str = "", *, fsm: bool = True) -> Optional[str]:
@@ -409,6 +527,8 @@ class Session:
         parts = [self.mode]
         if self.fsm is not None:
             parts.append(f"FSM {self.fsm}" + ("" if fsm_allowed(self.mode, self.fsm) else f" (blocked in {self.mode})"))
+        parts.append(f"voice {self.voice_engine}" + (" (speaking)" if getattr(self.voice, "speaking", False) else "")
+                     if self.live else "voice unitree")
         parts.append(f"mic {'on' if self.mic_on else 'off'}")
         parts.append(f"speaker {'on' if self.speaker_on else 'off'}")
         parts.append(f"camera {self.viewer.url if self.viewer is not None else 'off'}")
@@ -423,6 +543,18 @@ class Session:
         sentence ends (one TtsMaker call each, the next after the speaker is quiet), never cut off."""
         text = " ".join(text.split())
         if not text:
+            return
+        if self._delegation is not None and self.live:      # gpt-live's backend: the voice says it, its own way
+            self.counts["said"] += 1
+            print(f"  (to the voice: {text})")
+            self.voice.commentary(self._delegation, text)
+            return
+        if self._capture is not None:               # a live tool call: the model says it, from the result
+            self._capture.append(text)
+            return
+        if self.live:                               # said by the live voice as written; printed when it is said
+            self.counts["said"] += 1
+            self.voice.say(text)
             return
         print(f"robot: {text}")
         if self.audio is None or not self.speaker_on:
@@ -476,6 +608,8 @@ class Session:
             else:
                 print(f"memory: already known: {fact.strip()}")
         self._remember(heard, f"[{'; '.join(done) or 'memory unchanged'}]" + (f" {say}" if say else ""))
+        if done:
+            self.refresh_voice()                     # the live voice's instructions carry MEMORY.md
         if say:
             self.speak(say)
 
@@ -507,6 +641,9 @@ class Session:
         (None if nothing, or the mic is off)."""
         if self.mic is None:
             return None
+        if self.live:                               # the live voice hears for itself: rt/audio_msg is never chat
+            self._seq = self.mic.seq
+            return None
         got = self.mic.since(self._seq)
         if not got:
             return None
@@ -522,11 +659,19 @@ class Session:
     def chat(self, text: str, source: str = "typed") -> None:
         """``text`` as if said: the model chooses, and its choice runs."""
         self.counts["heard" if source == "heard" else "typed"] += 1
+        if self.live and self._delegation is None:  # typed: answered aloud by the live voice, like speech
+            if self.duplex:
+                self._heard_buf += " " + text
+            else:
+                self._live_user, self._live_used = text, False
+            self.voice.text(text)
+            return
         if self.model is None:
             print("no model (configs/model.json and its key in .env): chat is off; call skills directly (/skills)")
             return
         self._refresh_fsm()                          # what may run (the tools offered) depends on it
-        messages = ([{"role": "system", "content": system_prompt(self.knowledge)}]
+        system = system_prompt(self.knowledge) + (DELEGATED if self._delegation is not None else "")
+        messages = ([{"role": "system", "content": system}]
                     + self.history[-2 * int(limits.get("talk_history_turns")):]
                     + [{"role": "user", "content": text}])
         t0 = self.now()
@@ -579,16 +724,7 @@ class Session:
         distances; then the model is asked again with them, without see or look_up, and its choice runs."""
         if say:
             self.speak(say)
-        self.counts["looked"] += 1
-        if self.camera is None:
-            print("see: switching the camera on")
-            self.set_camera(True)
-        frame = None
-        if self.camera is not None:
-            t0 = self.now()
-            while (frame := self.camera.latest()) is None and self.now() - t0 < limits.get("see_frame_timeout_s"):
-                self.sleep(limits.get("talk_poll_s"))
-        lidar = self.lidar_text()
+        frame, lidar = self._look()
         if frame is None and not lidar:
             print("see: no camera frame (and no lidar)")
             self._remember(text, "[looked: nothing to see: no camera frame]")
@@ -617,6 +753,20 @@ class Session:
         print(f"  ({call.name} after {self.now() - t0:.1f} s)")
         self._act(text, call.name, args)
 
+    def _look(self) -> tuple:
+        """What ``see`` gets: the camera's newest frame (the camera switched on first if it is off; None when
+        none comes within see_frame_timeout_s) and the lidar's surroundings line ("" when it is off)."""
+        self.counts["looked"] += 1
+        if self.camera is None:
+            print("see: switching the camera on")
+            self.set_camera(True)
+        frame = None
+        if self.camera is not None:
+            t0 = self.now()
+            while (frame := self.camera.latest()) is None and self.now() - t0 < limits.get("see_frame_timeout_s"):
+                self.sleep(limits.get("talk_poll_s"))
+        return frame, self.lidar_text()
+
     def lidar_text(self) -> str:
         """The lidar's surroundings line when it is on and has a scan, else ""."""
         inner = getattr(self.lidar, "lidar", None)
@@ -635,22 +785,8 @@ class Session:
         results, without look_up, and run its choice."""
         if say:
             self.speak(say)
-        self.counts["looked_up"] += 1
-        timeout = limits.get("look_up_timeout_s")
-        box: dict = {}
-
-        def search():
-            try:
-                box["text"] = self.model.search(query, timeout=timeout)
-            except Exception as e:                   # the network, the provider
-                box["error"] = e
-        t = threading.Thread(target=search, name="look-up", daemon=True)
-        t.start()
-        t.join(timeout)
-        found = None if t.is_alive() else box.get("text")
+        found = self._search(query)
         if not found:
-            why = "no reply in time" if t.is_alive() else (box.get("error") or "nothing found")
-            print(f"  look_up {query!r}: {why}")
             self._remember(text, f"[looked up: {query}: no answer]")
             self.speak("Sorry, I could not look that up right now.")
             return
@@ -672,15 +808,269 @@ class Session:
         print(f"  ({call.name} after {self.now() - t0:.1f} s)")
         self._act(text, call.name, args)
 
+    def _search(self, query: str) -> Optional[str]:
+        """The web's answer to ``query`` through the chat model (bounded by look_up_timeout_s), or None."""
+        self.counts["looked_up"] += 1
+        timeout = limits.get("look_up_timeout_s")
+        box: dict = {}
+
+        def search():
+            try:
+                box["text"] = self.model.search(query, timeout=timeout)
+            except Exception as e:                   # the network, the provider
+                box["error"] = e
+        t = threading.Thread(target=search, name="look-up", daemon=True)
+        t.start()
+        t.join(timeout)
+        found = None if t.is_alive() else box.get("text")
+        if not found:
+            why = "no reply in time" if t.is_alive() else (box.get("error") or "nothing found")
+            print(f"  look_up {query!r}: {why}")
+        return found
+
+    # -- the live voice ---------------------------------------------------------------------------------
+    @property
+    def live(self) -> bool:
+        """The live voice is talking (else the unitree engine: rt/audio_msg, the chat model, TtsMaker)."""
+        return self.voice is not None and getattr(self.voice, "alive", True)
+
+    @property
+    def duplex(self) -> bool:
+        """The live voice is GPT-Live (it delegates; the session's chat engine decides on the backend model)."""
+        return self.live and self.voice_engine == "gpt-live"
+
+    def live_tools(self) -> list[dict]:
+        return live_tools(self.model_tools(look_up=True, see=True))
+
+    def start_voice(self) -> bool:
+        """Connect the live voice (``voice_factory``); on failure say why and stay on the unitree engine."""
+        if self.voice_factory is None:
+            return False
+        self._refresh_fsm()
+        prompt = (duplex_prompt if self.voice_engine == "gpt-live" else live_prompt)(self.knowledge, self.history)
+        try:
+            self.voice = self.voice_factory(prompt, self.live_tools(),
+                                            self._voice_event, muted=not self.mic_on, speaker_on=self.speaker_on)
+        except Exception as e:
+            self.voice = None
+            print(f"voice: not live ({e}); the robot's own speech recognition and TtsMaker instead")
+            return False
+        settings = getattr(self.voice, "settings", None) or {}
+        print("voice: live" + (f" ({settings['model']}, {settings['voice']})" if settings else "")
+              + "; Esc stops it talking")
+        return True
+
+    def refresh_voice(self) -> None:
+        """New instructions and tools for the live voice (the mode changed, a memory was kept)."""
+        if self.live and not self.duplex:            # gpt-live's backend reads the mode and memory each time
+            self.voice.update(live_prompt(self.knowledge), self.live_tools())
+
+    def _voice_event(self, msg: tuple) -> None:
+        """From the voice's reader thread: onto the session's queue, handled on the main thread in order."""
+        self.events.put(Command("voice", data=tuple(msg)))
+
+    def stop_speech(self) -> bool:
+        """Esc with nothing running: the live voice stops talking now (True when it was)."""
+        if self.live and getattr(self.voice, "speaking", False):
+            self.voice.stop()
+            return True
+        return False
+
+    def _on_voice(self, data: tuple) -> None:
+        kind = data[0] if data else ""
+        if kind == "user_said":
+            self.counts["heard"] += 1
+            self._live_user, self._live_used = data[1], False
+            print(f"\nheard: {data[1]}")
+        elif kind == "robot_said":
+            self.counts["said"] += 1
+            print(f"robot: {data[1]}")
+            heard = "" if self._live_used else self._live_user
+            self._live_used = True
+            self._source = "voice"
+            self._remember(heard, data[1])
+        elif kind == "tool_call":
+            self._live_call(*data[1:4])
+        elif kind == "user_delta":
+            if self._said_buf.strip():                 # someone speaks after the voice did: that exchange is over
+                self._flush_talk()
+            self._heard_buf += data[1]
+        elif kind == "robot_delta":
+            self._said_buf += data[1]
+        elif kind == "delegation":
+            self._delegated(str(data[1]))
+        elif kind == "sdk_call":
+            entry = data[1]
+            self.moves.log.append(entry)
+            if entry.get("code"):
+                self._voice_failures += 1
+                if self._voice_failures == 1 or self._voice_failures % 50 == 0:     # a piece every 0.3 s: not each
+                    print(f"warning: {entry.get('name')} failed ({sdk.explain(entry['code'])}; {self._voice_failures} so far); "
+                          "voice interaction on in the app?")
+        elif kind == "error":
+            self.counts["errors"] += 1
+            print(f"voice: {data[1]}")
+        elif kind == "closed":
+            self._voice_lost(str(data[1]))
+
+    def _flush_talk(self) -> None:
+        """gpt-live: what was heard and said since the last exchange, into the history and the day's log."""
+        heard, said = " ".join(self._heard_buf.split()), " ".join(self._said_buf.split())
+        self._heard_buf = self._said_buf = ""
+        if heard:
+            self.counts["heard"] += 1
+            print(f"\nheard: {heard}")
+            self.history.append({"role": "user", "content": heard})
+        if said:
+            self.counts["said"] += 1
+            print(f"robot: {said}")
+            self.history.append({"role": "assistant", "content": said})
+        if heard or said:
+            self._source = "voice"
+            self._log(heard, said)
+
+    def _await_words(self) -> None:
+        """gpt-live delegated before its transcript came: take the voice's transcript events for up to
+        voice_transcript_wait_s (the rest wait their turn)."""
+        held = []
+        poll = limits.get("talk_poll_s")
+        for _ in range(max(1, int(limits.get("voice_transcript_wait_s") / poll))):
+            if self._heard_buf.strip():
+                break
+            try:
+                cmd = self.events.get(timeout=poll)
+            except queue.Empty:
+                continue
+            if cmd.name == "voice" and cmd.data[:1] in (("user_delta",), ("robot_delta",)):
+                self._on_voice(cmd.data)
+            else:
+                held.append(cmd)
+        for cmd in held:
+            self.events.put(cmd)
+
+    def _delegated(self, delegation_id: str) -> None:
+        """gpt-live handed something over: what was said since the last exchange goes to the chat engine on the
+        backend model (the menu, the confirmations, the run); what it says goes to the voice to say
+        (``speak`` -> commentary), and what happened is the voice's to know (thinking)."""
+        if not self._heard_buf.strip():
+            self._await_words()
+        request = " ".join(self._heard_buf.split())
+        ack = " ".join(self._said_buf.split())
+        self._heard_buf = self._said_buf = ""
+        if not request:                              # the transcript never came: the last thing heard
+            request = next((t["content"] for t in reversed(self.history) if t["role"] == "user" and t["content"]), "")
+        voice = self.voice
+        if not request:
+            voice.commentary(delegation_id, "Sorry, I did not catch that. Could you say it again?")
+            return
+        if ack:
+            print(f"robot: {ack}")
+        model, self.model = self.model, self.backend or self.model
+        self._delegation = delegation_id
+        before, ignored = len(self.history), self.counts["ignored"]
+        print(f"\nheard: {request}\n  (handed to the backend{': ' + self.model.model if hasattr(self.model, 'model') else ''})")
+        try:
+            self.chat(request, "heard")
+        finally:
+            self.model, self._delegation = model, None
+        done = "; ".join(t["content"] for t in self.history[before:] if t["role"] == "assistant" and t["content"])
+        if self.counts["ignored"] > ignored:
+            done = "nothing to do: it was not meant for you"
+        if voice.alive:
+            voice.thinking(delegation_id, f"The backend: {done}" if done else "The backend is done.")
+
+    def _voice_lost(self, why: str) -> None:
+        """The connection dropped: reopen it (at most voice_restarts_max times a session), else go back to the
+        unitree engine."""
+        if self.voice is None:
+            return
+        old, self.voice = self.voice, None
+        try:
+            old.close()
+        except Exception:
+            pass
+        print(f"voice: connection lost ({why})")
+        if self._voice_restarts < int(limits.get("voice_restarts_max")):
+            self._voice_restarts += 1
+            if self.start_voice():
+                return
+        print("voice: the robot's own speech recognition and TtsMaker from now on (the mic is "
+              f"{'on' if self.mic_on else 'off'})")
+
+    def _live_call(self, call_id: str, name: str, arguments: str) -> None:
+        """The live voice's tool call: run it the one way (``_act``: checked, confirmed, run), muted meanwhile,
+        and send the result back; the model then says how it went (not after ignore)."""
+        try:
+            args = json.loads(arguments or "{}")
+            args = args if isinstance(args, dict) else {}
+        except ValueError:
+            args = {}
+        heard = self._live_user or "(voice)"
+        self._live_used = True
+        self._source = "voice"
+        print(f"  ({name})")
+        voice = self.voice
+        voice.mute(True)
+        self._capture = []
+        before = len(self.history)
+        image = None
+        try:
+            if name == "see":
+                result, image = self._live_see(heard)
+            elif name == "look_up":
+                query = str(args.get("query") or "").strip()
+                found = self._search(query) if query and self.can_look_up() else None
+                result = f"web results for {query!r}: {found}" if found else f"[looked up {query!r}: no answer]"
+                self._remember(heard, f"[looked up: {query}" + ("]" if found else ": no answer]"))
+            else:
+                ignored = self.counts["ignored"]
+                self._act(heard, name, args)
+                result = " ".join(t["content"] for t in self.history[before:] if t["role"] == "assistant")
+                if name != "ignore" and self.counts["ignored"] > ignored:      # not on the menu now (the mode)
+                    result = f"[{name}: not possible now]"
+                    self._capture.append("Sorry, I cannot do that right now.")
+        except KeyboardInterrupt:
+            result = "[stopped at the keyboard]"
+        finally:
+            lines, self._capture = self._capture, None
+            if voice.alive:
+                voice.mute(not self.mic_on)
+        output = {"result": result or "done"}
+        if lines:
+            output["tell_them"] = lines[-1]
+        if voice.alive:
+            voice.tool_result(call_id, json.dumps(output), image=image, respond=name != "ignore")
+
+    def _live_see(self, heard: str) -> tuple:
+        """``see`` for the live voice: the result line and (a line, the frame as a JPEG data URL), or no image."""
+        frame, lidar = self._look()
+        if frame is None and not lidar:
+            print("see: no camera frame (and no lidar)")
+            self._remember(heard, "[looked: nothing to see: no camera frame]")
+            return "[no camera frame: your camera is not working right now]", None
+        print(f"see: {'a camera frame' if frame is not None else 'no camera frame'}" + (f"; {lidar}" if lidar else ""))
+        self._remember(heard, "[looked through the camera]")
+        line = (("Your head camera's image now." if frame is not None else "Your camera gave no image.")
+                + (f" {lidar}." if lidar else "") + " Answer from it.")
+        if frame is None:
+            return line, None
+        from g1.vlm import image_part
+        return "[the image follows]", (line, image_part(frame.image)["image_url"]["url"])
+
     # -- running a skill ------------------------------------------------------------------------------
     def _busy(self, what: str, action: Callable[[], object]) -> object:
+        """``action`` as the running skill (Esc stops it); the live voice does not listen meanwhile."""
         self.busy.set()
         self.running = what
+        if self.live:
+            self.voice.mute(True)
         try:
             return action()
         finally:
             self.busy.clear()
             self.running = ""
+            if self.live and self._capture is None:
+                self.voice.mute(not self.mic_on)
 
     def _stopped(self, what: str) -> None:
         self.counts["stopped"] += 1
@@ -912,22 +1302,28 @@ class Session:
             print("mode unchanged")
             return
         self.mode = mode
+        self.refresh_voice()                         # what the live voice is offered depends on the mode
         print(f"mode: {mode}, FSMs allowed: {allowed_text(mode)}" + (
             " (we command the legs: built-in moves)" if mode == "standing" else
             " (the legs are never commanded: no built-ins or base motion)"))
         self._remember(f"/mode {mode}", f"[now in {mode} mode]")
 
     def set_mic(self, on: bool) -> None:
-        if self.mic is None:
+        if self.mic is None and not self.live:
             print("no microphone: the robot's speech recognition did not subscribe")
             return
         self.mic_on = on
-        if not on:
+        if self.mic is not None and not on:
             self._seq = self.mic.seq                # nothing said so far is answered
-        print(f"mic {'on: what the robot hears is handled like chat' if on else 'off: speech is ignored'}")
+        if self.live:
+            self.voice.mute(not on)
+        print(f"mic {'on: what the robot hears is handled like chat' if on else 'off: speech is ignored'}"
+              + (" (the live voice)" if self.live else ""))
 
     def set_speaker(self, on: bool) -> None:
         self.speaker_on = on
+        if self.live:
+            self.voice.speaker(on)
         print("speaker on: replies are said out loud" if on else "speaker off: replies only here (tasks' say too)")
 
     def set_camera(self, on: bool) -> None:
@@ -990,7 +1386,9 @@ class Session:
         """One command, on the main thread."""
         n, a = cmd.name, cmd.args
         self._source = {"chat": "typed", "heard": "voice"}.get(n, "command")
-        if n == "chat":
+        if n == "voice":
+            self._on_voice(cmd.data)
+        elif n == "chat":
             self.chat(cmd.text, "typed")
         elif n == "heard":
             print(f"\nheard: {cmd.text}")
@@ -1025,6 +1423,8 @@ class Session:
         """Events and speech, one at a time, until quit. A stop (Esc, Ctrl-C) with nothing running is
         a no-op; quitting ends any running skill first (through SIGINT) and then the session."""
         self._refresh_fsm()
+        if self.voice is None:
+            self.start_voice()
         try:
             while not self.quit.is_set():
                 try:
@@ -1065,6 +1465,10 @@ class Session:
         Memory is not distilled here: /save does it."""
         from g1.envs.base import shield_sigint
         with shield_sigint("closing the session; this finishes on its own"):
+            self._flush_talk()
+            if self.voice is not None:
+                voice, self.voice = self.voice, None
+                voice.close()
             if self.lidar is not None:
                 self.lidar.stop()
                 self.lidar = None

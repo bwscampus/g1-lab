@@ -117,7 +117,7 @@ def parse(line: str) -> Command:
 def help_lines() -> list[str]:
     width = max(len(u) for u, _ in COMMANDS.values())
     return ([f"  {u.ljust(width)}  {d}" for u, d in COMMANDS.values()]
-            + ["  Esc stops what the robot is doing · Ctrl-C clears the line (stops a running skill) · "
+            + ["  Esc stops what the robot is doing (or saying) · Ctrl-C clears the line (stops a running skill) · "
                "Ctrl-C twice on an empty line exits · the remote's L2+B is the emergency stop"])
 
 
@@ -200,10 +200,15 @@ class Console:
             self.session.events.put(cmd)
 
     def stop(self) -> bool:
-        """Esc, /stop: stop the running skill (SIGINT). Nothing running: nothing to do."""
+        """Esc, /stop: stop the running skill (SIGINT); with none running, the live voice stops talking
+        (nothing moves, so not through SIGINT). Neither: nothing to do."""
         if self.session.busy.is_set():
             self.out("stopping: back to neutral")
             self.interrupt()
+            return True
+        stop_speech = getattr(self.session, "stop_speech", None)
+        if stop_speech is not None and stop_speech():
+            self.out("stopped talking")
             return True
         return False
 
@@ -423,9 +428,27 @@ def start_main(argv: list[str]) -> int:
     knowledge = Knowledge()
     for note in knowledge.ensure():
         print(note)
+    from g1.voice import VOICE_SETTINGS, Voice, available
+    why_not_live = available()
+    voice_factory = backend = None
+    if why_not_live is None and VOICE_SETTINGS["engine"] == "gpt-live":
+        try:                                     # the model that decides for GPT-Live (Sol, on OpenRouter)
+            backend = VLMClient.from_env(model=VOICE_SETTINGS["backend_model"], provider="openrouter")
+            effort = VOICE_SETTINGS["backend_reasoning_effort"]
+            backend.reasoning_effort = None if effort == "default" else effort
+        except Exception as e:
+            why_not_live = f"no backend model ({e})"
+    if why_not_live is None:
+        def voice_factory(instructions, tools, on_event, *, muted, speaker_on):
+            v = Voice(iface, dds_domain(iface), instructions, tools, on_event, muted=muted, speaker_on=speaker_on)
+            v.start()
+            return v
+    elif VOICE_SETTINGS["engine"] != "unitree":
+        print(f"warning: the live voice is off ({why_not_live}): the robot's own speech recognition and TtsMaker")
     session = Session(mic, audio, moves, model, menu, mode=a.mode, routines=routine_menu(), tasks=task_menu(),
                       runner=robot_runner(), verbose=verbose, camera_factory=open_camera, viewer_factory=view,
-                      lidar_factory=lidar, status_probe=status, knowledge=knowledge)
+                      lidar_factory=lidar, status_probe=status, knowledge=knowledge, voice_factory=voice_factory,
+                      voice_engine=VOICE_SETTINGS["engine"], backend=backend)
     console = Console(session)
     quit_on_signals(console)
     from prompt_toolkit.patch_stdout import patch_stdout

@@ -103,7 +103,8 @@ allow-listed by service: `config.LOCO_METHODS` (`WaveHand`, `ShakeHand`, `Sit`) 
 `config.AUDIO_METHODS` (`TtsMaker`); the robot env routes by name and refuses the rest.
 `Sit` is the one FSM switch (`config.LOCO_FSM`: sent as `SetFsmId(3)`; the teardown stands
 up with 801). Nothing else on the SDK — other FSMs, damp, torque, squat, stand height, raw
-audio playback, volume, the LED strip — is reachable from a reply. `locate_point(x_px, y_px)`
+audio playback, volume, the LED strip — is reachable from a reply. (Raw audio is played only by g1 start's
+live voice, `g1/voice/`: the realtime model's own voice through `PlayStream`, `config.VOICE_METHODS`.) `locate_point(x_px, y_px)`
 is GPT-Policy's pixel query for one monocular camera: the pixel's direction (from the torso, the
 waist yaw that centres it, and the angle below horizontal), carried through the measured waist
 joints and the IMU's pelvis tilt, never a distance.

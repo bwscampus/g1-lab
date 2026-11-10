@@ -63,11 +63,12 @@ g1 moves play MOVE... | fsm TARGET   # the robot only, asks first: play stored m
                                      # a move runs in 550 and ends in 802, where the next plays
 g1 moves walk|side|turn N            # the robot only, asks first: a short walk (SetVelocity's 1 s dead-man, re-sent) in limit walk_fsm (walk mode, 501)
 g1 start --mode standing|gantry      # the robot only: one interactive session (Claude-Code-style terminal). It listens
-                                     # (rt/audio_msg) and you type: plain text is chat (as if said); the model answers or
+                                     # (the live voice: GPT-Live on the raw mic, Sol deciding; else rt/audio_msg) and you type:
+                                     # plain text is chat (as if said); the model answers or
                                      # chooses a built-in (5xx/6xx move; standing only; it never walks), a routine or a task
                                      # (model-chosen ones confirmed y/N). /routine /task /move /say call one directly;
                                      # /skills /mode /fsm /mic /speaker /camera /lidar /memory /soul /status /help /quit. Esc stops what runs, to
-                                     # neutral; Ctrl-C clears the line (stops a running skill); Ctrl-C twice exits. Modes never change
+                                     # neutral (or the voice talking); Ctrl-C clears the line (stops a running skill); Ctrl-C twice exits. Modes never change
                                      # the FSM, they block FSMs (gantry: only 0 1 4 200; standing: not 0 1); /fsm ID switches; the
                                      # start brings it up 0 -> 1 -> 4 -> 802 standing, -> 200 gantry (y/N); quitting changes no FSM
 g1 twin fetch|status
@@ -75,9 +76,11 @@ g1 trace compare RUN_A RUN_B | show RUN   # two run dirs of the same task: track
 g1 limits [SOURCE]                   # every limit and default in configs/limits.json as one table, + the model in use
 
 TASK = a folder under tasks/ (find_the_mug) or a path; a routine under routines/ (tpose) plays the same way. .env: UNITREE_IFACE, UNITREE_ROBOT_IP,
-UNITREE_AES_128_KEY, UNITREE_DOMAIN, HF_TOKEN, VLM_BASE_URL, OPENROUTER_API_KEY; G1_VERBOSE=1 prints every SDK call.
+UNITREE_AES_128_KEY, UNITREE_DOMAIN, HF_TOKEN, VLM_BASE_URL, OPENROUTER_API_KEY, OPENAI_API_KEY (the live voice; gpt-live's backend also needs OPENROUTER_API_KEY); G1_VERBOSE=1 prints every SDK call.
 Which model is asked, and how, is `configs/model.json` (`provider`, `models`, `reasoning_effort`, `max_tokens`,
-`temperature`, and `agent`: the decision budget, timeouts, retries, image size, history windows). It may be tuned
+`temperature`, and `agent`: the decision budget, timeouts, retries, image size, history windows; `voice`: g1 start's
+live voice: its engine (gpt-live | realtime | unitree), the GPT-Live model and its backend model (Sol) and effort,
+the realtime model and its noise reduction and turn detection, the voice). It may be tuned
 (benchmark with `g1 bench`); `configs/limits.json` holds the robot's and the run's hard limits, not to be changed
 to make a task pass. VLM_MODEL etc. in .env are refused.
 
@@ -114,9 +117,14 @@ g1/lidar.py        Scan (points N x 4 in m + the 4x4 pose), points_from_cloud2, 
                    SlamLidar (SLAM's points + odom from a child process), save_map, lidar_main (g1 lidar);
                    lidar_view.py: LidarViewer (the live 3D view: a canvas page, state.json, scan.bin, map.bin)
 g1/microphone.py   Microphone (rt/audio_msg: the robot's speech recognition, an utterance log), heard_view; sounds in g1/core/sounds.py
-g1/vlm.py          VLMClient (Hugging Face or OpenRouter), load_dotenv
+g1/vlm.py          VLMClient (Hugging Face or OpenRouter), load_dotenv, VOICE_SETTINGS (model.json voice)
 g1/session.py      g1 start's engine (Session: mode, mic/speaker/camera/lidar, the events queue, chat -> the model's one choice,
-                   run_skill: the one executor; robot_runner: cli.run_once in the session's mode, its mic and camera)
+                   run_skill: the one executor; robot_runner: cli.run_once in the session's mode, its mic and camera;
+                   the live voice's events: _on_voice; gpt-live: DUPLEX_MECHANICS, _delegated -> chat() on the backend;
+                   realtime: LIVE_MECHANICS, live_tools, _live_call -> _act; the fallback)
+g1/voice/          g1 start's live voice: Voice (the process handle, events), child (the spawned process: MicSocket on the
+                   mic multicast, Player -> PlayStream, serve), openai_live (GPT-Live: session_start, DuplexCore),
+                   openai_realtime (session_update, LiveCore: events in and out)
 g1/knowledge.py    g1 start's knowledge base (knowledge/: SOUL.md by people, MEMORY.md by the robot, sessions/DATE.md;
                    the prompt's soul and memory, remember/forget, the daily log, the /save distill)
 g1/console.py      g1 start's terminal (prompt_toolkit in its own thread: input box, status line, / completion;
@@ -179,13 +187,15 @@ root via `pythonpath`. `limits.ROOT` is the repo root (configs/, tasks/, assets/
   neutral and the session goes on; Ctrl-C clears the line or, with a skill running, stops it like Esc; **Ctrl-C
   twice** on an empty line exits (so do /quit, SIGTERM, SIGHUP), stopping anything running first. Every stop
   is SIGINT to the process (the UI thread sends it; skills run on the main thread), so every stop takes the
-  one shielded path and nothing cuts a return short. The remote's
+  one shielded path and nothing cuts a return short. With nothing running, Esc stops the live voice talking
+  (`Session.stop_speech`: PlayStop and the reply cancelled; nothing moves, so not SIGINT). The remote's
   L2+B (damp) is the emergency stop. Never call the SDK from `step`. Walking is `LocoClient.Move` in `--mode standing` only; no
   low-level leg control. Onboard calls are allow-listed per service — `config.LOCO_METHODS`
   (`WaveHand`, `ShakeHand`; `needs_loco`; and `Sit`, the one FSM, `config.LOCO_FSM`: `sit`, sent as
   `SetFsmId(3)`, standing mode only, the teardown stands up with 801) and `config.AUDIO_METHODS` (`TtsMaker`; `say`) — routed by name
   in `RobotEnv._command`; a failed speech warns and continues, a failed gesture raises.
-  `PlayStream`/`SetVolume`/`LedControl` are never reachable from a reply. Built-ins (Unitree's stored
+  `PlayStream`/`SetVolume`/`LedControl` are never reachable from a reply. `config.VOICE_METHODS` (`PlayStream`,
+  `PlayStop`) are called only by `g1/voice/` with the realtime model's own voice (`tests/voice/test_voice.py` guards it). Built-ins (Unitree's stored
   moves) play only from `g1 moves` (a person at the keyboard, any move) and talk (the model, ids 5xx/6xx
   only, standing mode); only `g1 moves`, the session's `/fsm`, its start's bring-up and a built-in move (and back) change the FSM outside a run.
   The session runs a routine or task only through `cli.run_once` (never arm_sdk, the FSM or a tool itself;
@@ -250,9 +260,26 @@ root via `pythonpath`. `limits.ROOT` is the repo root (configs/, tasks/, assets/
 - **Only g1 start's chat searches the web.** Its `look_up(query)` tool runs `VLMClient.search` (OpenRouter's web
   plugin, `web.max_results` in configs/model.json, bounded by `look_up_timeout_s`), then asks the model again with
   the results and without `look_up`. A task's model never searches: it knows only what the robot senses.
-- **Hugging Face or OpenRouter** for the model, switched by `provider` in `configs/model.json` (`HF_TOKEN`,
-  `VLM_BASE_URL` | `OPENROUTER_API_KEY`; a model id for each in `models`; `g1/vlm.py:PROVIDERS`, `load_model`); no other providers,
-  no Anthropic SDK. Fakes are test doubles only (`tests/doubles.py`); `search` always uses the real model.
+- **Where the models come from.** The chat and task model's provider is `provider` in `configs/model.json` (today
+  Hugging Face or OpenRouter: `HF_TOKEN`, `VLM_BASE_URL` | `OPENROUTER_API_KEY`; a model id for each in `models`;
+  `g1/vlm.py:PROVIDERS`, `load_model`); a provider is added there, with its key in `.env`, never as a flag.
+  **g1 start's live voice** is an OpenAI voice model, directly (`OPENAI_API_KEY`; OpenRouter's audio is
+  request/response only), `voice` in model.json; tasks never use it. Fakes are test doubles only
+  (`tests/doubles.py`); `search` always uses the real model.
+- **The live voice decides fast and short** (the user's rule, 2026-11-10); anything that takes planning or several
+  steps goes to a task (`run_task`), whose agent loop plans. Two engines. **gpt-live** (the default, the user's
+  choice): GPT-Live talks (full duplex: it hears while it speaks, decides itself when to talk) and runs no tools;
+  it delegates everything that needs doing or knowing (client delegation: `session.delegation.created`, an id only),
+  and `Session._delegated` sends what was heard since the last exchange to the session's own chat engine on the
+  backend model (`voice.backend_model`, Sol on OpenRouter): MECHANICS + `DELEGATED`, the whole menu, one choice,
+  `_act`, the y/N; what it says goes to the voice to say in its own words (`speak` -> `session.commentary.append`),
+  what happened as `session.thinking.append`. **realtime**: one realtime model hears, decides and calls the menu
+  itself (no `say`, no planning or chaining tool); its calls run through `Session._act` like any choice, muted
+  meanwhile, and the result goes back (`tell_them`: what the session would have said). It hears the raw mic multicast
+  (239.168.123.161:5555, needs voice interaction on in the app) in its own spawned process (`g1/voice/child.py`),
+  which also plays its voice (`PlayStream`, paced `voice_play_ahead_s` ahead); someone talking over it stops it.
+  A connection that fails is reopened `voice_restarts_max` times (recent exchanges carried over), then the session
+  is on the unitree engine (rt/audio_msg, the chat model, TtsMaker). While live, rt/audio_msg is never chat.
 - **Sim is the robot code.** `--sim` runs `RobotEnv` itself over DDS against the twin process; the tests'
   `SimEnv` subclasses `RobotEnv` and only swaps the link (`envs/link.py`). Never give sim its own path for
   something the robot does. Robot code takes every SDK object, sleep and clock read from `self.link`. The

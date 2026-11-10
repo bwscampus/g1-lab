@@ -126,4 +126,4 @@ def test_env_holds_nothing_editable():
     keys = [line.split("=")[0].lstrip("# ").strip() for line in (ROOT / ".env.example").read_text().splitlines()
             if "=" in line and line.lstrip("# ").split("=")[0].strip().isupper()]
     assert set(keys) <= {"HF_TOKEN", "VLM_BASE_URL", "OPENROUTER_API_KEY", "UNITREE_IFACE", "UNITREE_ROBOT_IP", "UNITREE_AES_128_KEY",
-                         "UNITREE_DOMAIN", "G1_VERBOSE"}, keys
+                         "UNITREE_DOMAIN", "G1_VERBOSE", "OPENAI_API_KEY"}, keys
